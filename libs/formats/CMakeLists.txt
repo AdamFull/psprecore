@@ -4,6 +4,7 @@ add_library(ff7cc_formats STATIC
     src/formats/atel.cpp
     src/formats/atel_vm.cpp
     src/formats/atel_disasm.cpp
+    src/formats/atel_asm.cpp
 )
 add_library(ff7cc::formats ALIAS ff7cc_formats)
 
