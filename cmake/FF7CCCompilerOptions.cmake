@@ -1,8 +1,7 @@
 # Common compile options for first-party targets.
 #
-# Generated (recompiled) code will get its own stricter semantics flags
-# (-fwrapv -fno-strict-aliasing) via ff7cc_generated_code_options() once the
-# recompiler lands.
+# Recompiled code (generated/) is not built with these: it gets its own flags
+# (-fwrapv -fno-strict-aliasing, no warnings) in runtime/CMakeLists.txt.
 
 function(ff7cc_target_defaults target)
     if(MSVC)  # MSVC or clang-cl
