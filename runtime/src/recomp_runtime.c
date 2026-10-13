@@ -1,11 +1,8 @@
-/* Placeholder runtime for the recompiled code: enough to link and to trace what is still missing.
- * The real implementations (HLE kernel, VFPU, threads) replace these in Phase 4. */
+/* C-side runtime services for recompiled code. VFPU entry points are placeholders until vfpu.cpp exists. */
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "ff7cc/recomp/recomp.h"
-
-uint8_t* g_membase;
 
 void recomp_call(Context* ctx, uint32_t target) {
     const RecompFunc f = recomp_lookup(target);
@@ -24,12 +21,6 @@ void recomp_trap(Context* ctx, uint32_t pc, uint32_t word) {
 
 uint32_t recomp_mfic(Context* ctx) { return ctx->interrupts_enabled; }
 void recomp_mtic(Context* ctx, uint32_t value) { ctx->interrupts_enabled = value; }
-
-void hle_call(Context* ctx, uint32_t nid) {
-    (void)ctx;
-    fprintf(stderr, "hle_call: NID 0x%08X not implemented\n", nid);
-    abort();
-}
 
 void vfpu_op(Context* ctx, uint32_t word) {
     (void)ctx;
