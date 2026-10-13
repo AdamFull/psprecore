@@ -1,7 +1,9 @@
 // sceDisplay, sceGe_user, sceCtrl. Display lists are recorded but not rendered yet (Phase 5).
 
 #include <cstdio>
+#include <memory>
 
+#include "ff7cc/runtime/ge.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
 
@@ -13,14 +15,38 @@ GuestMemory& mem() { return kernel().memory(); }
 
 struct DisplayState {
     std::uint32_t framebuffer = 0, stride = 512, format = 3;
-    std::uint64_t lists = 0;
-    int next_list_id = 1, next_callback_id = 1;
+    std::uint64_t lists = 0, frames = 0;
+    int next_callback_id = 1;
+    std::unique_ptr<ge::Processor> ge;
+    std::uint64_t dump_frame = ~0ull;
+    std::FILE* dump = nullptr;
 } g_display;
+
+ge::Processor& gpu() {
+    if (!g_display.ge) {
+        g_display.ge = std::make_unique<ge::Processor>(mem());
+        g_display.ge->on_command = [](std::uint32_t pc, std::uint32_t word) {
+            if (g_display.dump && g_display.frames == g_display.dump_frame)
+                std::fprintf(g_display.dump, "%08X: %08X  %s\n", pc, word, ge::describe(word).c_str());
+        };
+    }
+    return *g_display.ge;
+}
 
 // ---- sceDisplay --------------------------------------------------------------------------------
 
 void SetMode(Context& c) { ret(c, 0); }
 void SetFrameBuf(Context& c) {
+    if (g_display.dump && g_display.frames == g_display.dump_frame) {
+        const auto& st = gpu().stats();
+        std::fprintf(g_display.dump, "--- end of frame %llu (totals: %llu lists, %llu draws, %llu vertices)\n",
+                     static_cast<unsigned long long>(g_display.frames), static_cast<unsigned long long>(st.lists),
+                     static_cast<unsigned long long>(st.draws), static_cast<unsigned long long>(st.vertices));
+        std::fclose(g_display.dump);
+        g_display.dump = nullptr;
+        std::fprintf(stderr, "GE dump of frame %llu written\n", static_cast<unsigned long long>(g_display.dump_frame));
+    }
+    ++g_display.frames;
     g_display.framebuffer = arg(c, 0);
     g_display.stride = arg(c, 1);
     g_display.format = arg(c, 2);
@@ -46,7 +72,11 @@ void ListEnQueue(Context& c) {
         std::fprintf(stderr, "*** first GE display list at 0x%08X (stall 0x%08X) after %.3f s of guest time, vblank %llu\n",
                      arg(c, 0), arg(c, 1), static_cast<double>(k.now()) / 1e6,
                      static_cast<unsigned long long>(k.vblank_count()));
-    ret(c, static_cast<std::uint32_t>(g_display.next_list_id++));
+    ret(c, static_cast<std::uint32_t>(gpu().enqueue(arg(c, 0), arg(c, 1), false)));
+}
+void UpdateStallAddr(Context& c) {
+    gpu().update_stall(static_cast<int>(arg(c, 0)), arg(c, 1));
+    ret(c, 0);
 }
 void ListSync(Context& c) { ret(c, 0); }  // lists complete immediately until the renderer exists
 void DrawSync(Context& c) { ret(c, 0); }
@@ -78,7 +108,7 @@ constexpr HleBinding kBindings[] = {
     {"sceGeEdramGetAddr", EdramGetAddr},
     {"sceGeListEnQueue", ListEnQueue},
     {"sceGeListEnQueueHead", ListEnQueue},
-    {"sceGeListUpdateStallAddr", ReturnZero},
+    {"sceGeListUpdateStallAddr", UpdateStallAddr},
     {"sceGeListSync", ListSync},
     {"sceGeDrawSync", DrawSync},
     {"sceGeSetCallback", SetCallback},
@@ -93,5 +123,10 @@ constexpr HleBinding kBindings[] = {
 }  // namespace
 
 void hle_install_display() { hle_bind(kBindings); }
+
+void set_ge_dump(std::uint64_t frame, const char* path) {
+    g_display.dump_frame = frame;
+    g_display.dump = std::fopen(path, "w");
+}
 
 }  // namespace ff7cc::rt

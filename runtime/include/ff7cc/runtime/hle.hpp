@@ -34,6 +34,9 @@ void hle_bind(const HleBinding (&bindings)[N]) { hle_bind(bindings, N); }
 // Prints the fault and a symbolised host stack on crashes (Windows).
 void install_crash_handler();
 
+// Writes every GE command executed during display frame `frame` to `path` (debugging).
+void set_ge_dump(std::uint64_t frame, const char* path);
+
 // Registers every HLE module (call once at startup).
 void hle_install();
 

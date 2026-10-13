@@ -1,6 +1,6 @@
 // ff7cc — runs the recompiled game (headless for now).
 //
-//   ff7cc <extracted disc folder> [--trace] [--vblanks N]
+//   ff7cc <extracted disc folder> [--trace] [--vblanks N] [--ge-dump FRAME]
 
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
             const std::string_view a = argv[i];
             if (a == "--trace") trace = true;
             else if (a == "--vblanks" && i + 1 < argc) max_vblanks = std::stoull(argv[++i]);
+            else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
         }
 
         rt::install_crash_handler();

@@ -7,7 +7,7 @@
 function(ff7cc_target_defaults target)
     if(MSVC)  # MSVC or clang-cl
         target_compile_options(${target} PRIVATE /W4 /utf-8 /permissive-)
-        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()

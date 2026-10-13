@@ -12,6 +12,7 @@ add_library(ff7cc_runtime STATIC
     src/hle_audio.cpp
     src/crash_handler.cpp
     src/vfpu.cpp
+    src/ge.cpp
 )
 if(WIN32)
     target_link_libraries(ff7cc_runtime PRIVATE dbghelp)
