@@ -1,17 +1,20 @@
 // ccprx — inspect PSP PRX modules (BOOT.BIN): module info, imports by name, relocated memory images.
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "ff7cc/analysis/program.hpp"
 #include "ff7cc/error.hpp"
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
@@ -142,6 +145,90 @@ int cmd_image(const fs::path& path, std::string_view base_text, const fs::path& 
     return 0;
 }
 
+// Function list with recovered names. Registered script natives are named "scr_<Name>"; when a handler is
+// registered under several names, or a name maps to several handlers, the registrar address disambiguates.
+int cmd_symbols(const fs::path& path, const fs::path& nid_path, const fs::path& out_path, std::uint32_t ghidra_base,
+                const fs::path& ghidra_path) {
+    const auto data = io::read_all(path);
+    const elf::File f(data);
+    analysis::Program program(f, prx::parse(f));
+    auto functions = analysis::discover_functions(program);
+    const auto registrations = analysis::find_registrations(program, functions);
+
+    const auto nids = nid_path.empty() ? std::map<std::uint32_t, std::string>{} : load_nids(nid_path);
+    std::map<std::uint32_t, std::string> import_names;
+    for (const auto& imp : program.module().imports)
+        for (const auto& fn : imp.functions)
+            if (const auto it = nids.find(fn.nid); it != nids.end()) import_names[fn.stub] = it->second;
+
+    std::map<std::uint32_t, std::size_t> per_registrar;
+    std::map<std::string, std::set<std::uint32_t>> handlers_by_name;
+    for (const auto& r : registrations) {
+        ++per_registrar[r.registrar];
+        handlers_by_name[r.name].insert(r.handler);
+    }
+    // Prefix by registrar: kernel thread/callback creation vs. the script native registries.
+    const auto prefix_for = [&](std::uint32_t registrar) -> std::string {
+        const auto it = import_names.find(registrar);
+        if (it == import_names.end()) return "scr_";
+        if (it->second.find("CreateThread") != std::string::npos) return "thread_";
+        if (it->second.find("CreateCallback") != std::string::npos) return "callback_";
+        return it->second + "_";
+    };
+    const auto identifier = [](std::string s) {
+        for (auto& c : s)
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') c = '_';
+        return s;
+    };
+    std::map<std::uint32_t, std::string> handler_names;
+    for (const auto& r : registrations) {
+        std::string name = prefix_for(r.registrar) + identifier(r.name);
+        if (handlers_by_name[r.name].size() > 1) {
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "_%x", r.registrar);
+            name += buf;
+        }
+        handler_names.try_emplace(r.handler, name);
+    }
+
+    std::map<std::string, std::size_t> by_origin;
+    std::size_t named = 0;
+    std::ofstream out(out_path, std::ios::binary);
+    if (!out) throw IoError("cannot write '" + out_path.string() + "'");
+    out << "# address (module-relative)\tsize\torigin\tname\n";
+    std::ofstream ghidra;
+    if (!ghidra_path.empty()) ghidra.open(ghidra_path, std::ios::binary);
+    static constexpr const char* kOrigin[] = {"entry", "export", "import", "call", "pointer", "gap"};
+    char buf[160];
+    for (auto& fn : functions) {
+        if (const auto it = import_names.find(fn.start); it != import_names.end()) fn.name = it->second;
+        else if (const auto h = handler_names.find(fn.start); h != handler_names.end()) fn.name = h->second;
+        else if (per_registrar.contains(fn.start)) {
+            std::snprintf(buf, sizeof buf, "register_%x", fn.start);
+            fn.name = buf;
+        }
+        if (!fn.name.empty()) ++named;
+        const char* origin = kOrigin[static_cast<int>(fn.origin)];
+        ++by_origin[origin];
+        const std::string name = fn.name.empty() ? "" : fn.name;
+        std::snprintf(buf, sizeof buf, "%08x\t%u\t%s\t", fn.start, fn.end - fn.start, origin);
+        out << buf << name << '\n';
+        if (ghidra) {  // ImportSymbolsScript.py format: "<name> <address> f" creates a function there
+            if (name.empty())
+                std::snprintf(buf, sizeof buf, "FUN_%08x 0x%08x f\n", ghidra_base + fn.start, ghidra_base + fn.start);
+            else
+                std::snprintf(buf, sizeof buf, "%s 0x%08x f\n", name.c_str(), ghidra_base + fn.start);
+            ghidra << buf;
+        }
+    }
+    std::fprintf(stderr, "%zu functions (%zu named):", functions.size(), named);
+    for (const auto& [k, n] : by_origin) std::fprintf(stderr, " %s=%zu", k.c_str(), n);
+    std::fprintf(stderr, "\n%zu registrations through %zu registrar functions:", registrations.size(), per_registrar.size());
+    for (const auto& [addr, n] : per_registrar) std::fprintf(stderr, " %x(%zu)", addr, n);
+    std::fprintf(stderr, "\n");
+    return 0;
+}
+
 int cmd_disasm(const fs::path& path, std::string_view section_name) {
     const auto data = io::read_all(path);
     const elf::File f(data);
@@ -179,6 +266,10 @@ int main(int argc, char** argv) {
         if (cmd == "nids" && args.size() == 3) return cmd_nids(fs::path(args[1]), fs::path(args[2]));
         if (cmd == "disasm" && (args.size() == 2 || args.size() == 3))
             return cmd_disasm(fs::path(args[1]), args.size() == 3 ? args[2] : std::string_view(".text"));
+        if (cmd == "symbols" && (args.size() == 4 || args.size() == 6))
+            return cmd_symbols(fs::path(args[1]), fs::path(args[2]), fs::path(args[3]),
+                               args.size() == 6 ? static_cast<std::uint32_t>(std::stoul(std::string(args[4]), nullptr, 0)) : 0,
+                               args.size() == 6 ? fs::path(args[5]) : fs::path());
         if (cmd == "image" && args.size() == 4) return cmd_image(fs::path(args[1]), args[2], fs::path(args[3]));
         usage();
         return 2;

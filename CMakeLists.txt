@@ -26,6 +26,7 @@ include(FF7CCCompilerOptions)
 
 add_subdirectory(libs/formats)
 add_subdirectory(libs/mips)
+add_subdirectory(libs/analysis)
 
 if(FF7CC_BUILD_TOOLS)
     add_subdirectory(tools/ccpkg)
