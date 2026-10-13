@@ -25,6 +25,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FF7CCCompilerOptions)
 
 add_subdirectory(libs/formats)
+add_subdirectory(libs/mips)
 
 if(FF7CC_BUILD_TOOLS)
     add_subdirectory(tools/ccpkg)

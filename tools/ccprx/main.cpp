@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/io/file.hpp"
+#include "ff7cc/mips/allegrex.hpp"
 
 namespace fs = std::filesystem;
 using namespace ff7cc;
@@ -28,7 +30,8 @@ void usage() {
         "  info    <module>                      module info, segments, imports/exports, relocations\n"
         "  imports <module> [nids.tsv]           every imported function (named when a NID database is given)\n"
         "  nids    <sdk-lib-dir> <nids.tsv>      build a NID database from PSPSDK stub libraries (lib*.a)\n"
-        "  image   <module> <base> <out.bin>     write the loaded, relocated image (e.g. base 0x08804000)\n",
+        "  image   <module> <base> <out.bin>     write the loaded, relocated image (e.g. base 0x08804000)\n"
+        "  disasm  <module> [section]            objdump-style listing (default .text, module-relative)\n",
         stderr);
 }
 
@@ -139,6 +142,27 @@ int cmd_image(const fs::path& path, std::string_view base_text, const fs::path& 
     return 0;
 }
 
+int cmd_disasm(const fs::path& path, std::string_view section_name) {
+    const auto data = io::read_all(path);
+    const elf::File f(data);
+    const auto* section = f.find_section(section_name);
+    if (!section) throw FormatError("no section '" + std::string(section_name) + "'");
+    const auto bytes = f.contents(*section);
+    std::string out;
+    char buf[48];
+    for (std::size_t i = 0; i + 4 <= bytes.size(); i += 4) {
+        std::uint32_t word;
+        std::memcpy(&word, bytes.data() + i, 4);
+        const auto pc = section->addr + static_cast<std::uint32_t>(i);
+        std::snprintf(buf, sizeof buf, "%8x:\t%08x \t", pc, word);
+        out += buf;
+        out += mips::format(mips::decode(word, pc));
+        out += '\n';
+    }
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -153,6 +177,8 @@ int main(int argc, char** argv) {
         if (cmd == "imports" && (args.size() == 2 || args.size() == 3))
             return cmd_imports(fs::path(args[1]), args.size() == 3 ? fs::path(args[2]) : fs::path());
         if (cmd == "nids" && args.size() == 3) return cmd_nids(fs::path(args[1]), fs::path(args[2]));
+        if (cmd == "disasm" && (args.size() == 2 || args.size() == 3))
+            return cmd_disasm(fs::path(args[1]), args.size() == 3 ? args[2] : std::string_view(".text"));
         if (cmd == "image" && args.size() == 4) return cmd_image(fs::path(args[1]), args[2], fs::path(args[3]));
         usage();
         return 2;
