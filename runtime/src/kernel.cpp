@@ -23,8 +23,9 @@ Kernel& kernel() {
 }
 void set_kernel(Kernel* k) { g_kernel = k; }
 
-Kernel::Kernel(GuestMemory& memory) : memory_(memory), user_heap_(kUserRam, kRam + kRamSize) {
-    interrupt_stack_ = user_heap_.alloc(0x4000, 16, true);
+Kernel::Kernel(GuestMemory& memory)
+    : memory_(memory), user_heap_(kUserRam, kRam + kRamSize), kernel_heap_(kRam + 0x10000, 0x08400000) {
+    interrupt_stack_ = kernel_heap_.alloc(0x4000, 16, true);
 }
 
 Kernel::~Kernel() {
@@ -69,7 +70,7 @@ std::uint32_t Kernel::start_thread(int id, std::uint32_t arg_size, std::uint32_t
     Thread* t = thread(id);
     if (!t) return kErrorUnknownThread;
     if (t->state != Thread::State::Dormant) return kErrorNotDormant;
-    t->ctx = Context{};
+    recomp_context_init(&t->ctx);
     // The kernel keeps a 0x100-byte thread info area at the top of the stack and points k0 at it; the SDK's
     // C runtime stores per-thread data there.
     const std::uint32_t k0 = t->stack + t->stack_size - 0x100;
@@ -90,7 +91,6 @@ std::uint32_t Kernel::start_thread(int id, std::uint32_t arg_size, std::uint32_t
     t->ctx.r[29] = sp;
     t->ctx.r[28] = t->gp;
     t->ctx.r[31] = 0;  // returning from the entry function exits the thread
-    t->ctx.fcr31 = 0x00000E00;
     make_ready(*t);
     if (t->host.joinable()) t->host.join();
     t->host = std::thread(&Kernel::host_thread_main, this, t);
@@ -117,12 +117,17 @@ void Kernel::host_thread_main(Thread* t) {
     }
     t->exit_status = status;
     t->state = Thread::State::Dead;
+    if (t->delete_on_exit && t->stack) {  // the thread object stays for WaitThreadEnd; its stack is released
+        user_heap_.free(t->stack);
+        t->stack = 0;
+    }
     for (Thread* w : waiters(WaitType::ThreadEnd, t->id)) wake(*w, status);
     schedule_from(nullptr);  // hand the baton on; this host thread then ends
 }
 
-[[noreturn]] void Kernel::exit_current_thread(std::uint32_t status, bool) {
+[[noreturn]] void Kernel::exit_current_thread(std::uint32_t status, bool delete_thread) {
     current().exit_status = status;
+    current().delete_on_exit |= delete_thread;
     throw ThreadExit{};
 }
 
@@ -131,7 +136,7 @@ std::uint32_t Kernel::delete_thread(int id) {
     if (!t) return kErrorUnknownThread;
     if (t->state != Thread::State::Dead && t->state != Thread::State::Dormant) return kErrorNotDormant;
     if (t->host.joinable()) t->host.join();
-    user_heap_.free(t->stack);
+    if (t->stack) user_heap_.free(t->stack);
     threads_.erase(id);
     return 0;
 }
@@ -285,7 +290,7 @@ void Kernel::fire_vblank() {
         if (key.first != kVblankInterrupt || !s.enabled || !s.handler) continue;
         const RecompFunc f = recomp_lookup(s.handler);
         if (!f) continue;
-        interrupt_ctx_ = Context{};
+        recomp_context_init(&interrupt_ctx_);
         interrupt_ctx_.r[4] = static_cast<std::uint32_t>(key.second);
         interrupt_ctx_.r[5] = s.arg;
         interrupt_ctx_.r[29] = interrupt_stack_ + 0x4000 - 0x40;
@@ -295,6 +300,7 @@ void Kernel::fire_vblank() {
 
 int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_ptr) {
     const int main_id = create_thread("module_start", entry, 0x20, 0x40000, 0x80000000);
+    thread(main_id)->delete_on_exit = true;  // the loader deletes module_start's thread when it returns
     start_thread(main_id, arg_size, arg_ptr);
     for (;;) {
         schedule_from(nullptr);

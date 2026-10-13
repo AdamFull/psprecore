@@ -61,6 +61,7 @@ extern "C" void hle_call(Context* ctx, uint32_t nid) {
                      ctx->r[4], ctx->r[5], ctx->r[6], ctx->r[7], ctx->r[31]);
     if (e && e->fn) {
         e->fn(*ctx);
+        if (k.trace_hle) std::fprintf(stderr, "             -> %08x\n", ctx->r[2]);
         return;
     }
     static std::set<std::uint32_t> reported;

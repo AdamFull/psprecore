@@ -11,12 +11,14 @@ add_library(ff7cc_runtime STATIC
     src/hle_display.cpp
     src/hle_audio.cpp
     src/crash_handler.cpp
+    src/vfpu.cpp
 )
 if(WIN32)
     target_link_libraries(ff7cc_runtime PRIVATE dbghelp)
 endif()
 add_library(ff7cc::runtime ALIAS ff7cc_runtime)
 target_include_directories(ff7cc_runtime PUBLIC include)
+target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips)
 ff7cc_target_defaults(ff7cc_runtime)
 
 # The game executable needs code generated from the user's own BOOT.BIN (ccrecomp -> generated/).

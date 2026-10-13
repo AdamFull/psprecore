@@ -60,6 +60,7 @@ struct Thread {
 
     int wakeup_requests = 0;
     std::uint32_t exit_status = 0;
+    bool delete_on_exit = false;  // ExitDeleteThread / loader-owned module_start thread
     std::uint64_t ready_order = 0;  // FIFO position among equal priorities
 
     std::binary_semaphore baton{0};
@@ -158,6 +159,7 @@ private:
 
     GuestMemory& memory_;
     GuestHeap user_heap_;
+    GuestHeap kernel_heap_;  // kernel-owned allocations (interrupt stack), outside the user partition
     std::map<int, std::unique_ptr<Thread>> threads_;
     std::map<int, std::unique_ptr<Semaphore>> semas_;
     std::map<int, std::unique_ptr<EventFlag>> event_flags_;

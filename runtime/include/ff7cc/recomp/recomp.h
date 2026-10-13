@@ -33,6 +33,14 @@ typedef struct Context {
 
 typedef void (*RecompFunc)(Context* ctx);
 
+/* Power-on state of a thread context: default FPU control, identity VFPU source prefixes. */
+static inline void recomp_context_init(Context* ctx) {
+    memset(ctx, 0, sizeof *ctx);
+    ctx->fcr31 = 0x00000E00u;
+    ctx->vfpu_ctrl[VFPU_PFXS] = 0xE4u;
+    ctx->vfpu_ctrl[VFPU_PFXT] = 0xE4u;
+}
+
 /* ---- Memory: one host block mirrors the PSP's physical space; the mask folds cached/uncached/kernel ---- */
 
 extern uint8_t* g_membase;

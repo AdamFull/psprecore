@@ -1,4 +1,4 @@
-/* C-side runtime services for recompiled code. VFPU entry points are placeholders until vfpu.cpp exists. */
+/* C-side runtime services for recompiled code (indirect calls, traps, interrupt flag). */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -21,19 +21,3 @@ void recomp_trap(Context* ctx, uint32_t pc, uint32_t word) {
 
 uint32_t recomp_mfic(Context* ctx) { return ctx->interrupts_enabled; }
 void recomp_mtic(Context* ctx, uint32_t value) { ctx->interrupts_enabled = value; }
-
-void vfpu_op(Context* ctx, uint32_t word) {
-    (void)ctx;
-    fprintf(stderr, "vfpu_op: 0x%08X not implemented\n", word);
-    abort();
-}
-void vfpu_load(Context* ctx, uint32_t word, uint32_t address) {
-    (void)ctx;
-    fprintf(stderr, "vfpu_load: 0x%08X @ 0x%08X not implemented\n", word, address);
-    abort();
-}
-void vfpu_store(Context* ctx, uint32_t word, uint32_t address) {
-    (void)ctx;
-    fprintf(stderr, "vfpu_store: 0x%08X @ 0x%08X not implemented\n", word, address);
-    abort();
-}
