@@ -13,18 +13,19 @@ add_library(ff7cc_runtime STATIC
     src/crash_handler.cpp
     src/vfpu.cpp
     src/ge.cpp
+    src/image_io.cpp
 )
 if(WIN32)
     target_link_libraries(ff7cc_runtime PRIVATE dbghelp)
 endif()
 add_library(ff7cc::runtime ALIAS ff7cc_runtime)
 target_include_directories(ff7cc_runtime PUBLIC include)
-target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips)
+target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips PRIVATE ff7cc_stb)
 ff7cc_target_defaults(ff7cc_runtime)
 
 # The game executable needs code generated from the user's own BOOT.BIN (ccrecomp -> generated/).
 set(FF7CC_GENERATED_DIR "${PROJECT_SOURCE_DIR}/generated" CACHE PATH "ccrecomp output directory")
-if(EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
+if(FF7CC_BUILD_GAME AND EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
     file(GLOB _ff7cc_generated_sources CONFIGURE_DEPENDS "${FF7CC_GENERATED_DIR}/*.c")
     # Semantics the translation relies on: wrapping integer arithmetic, no type-based alias analysis.
     if(MSVC)
@@ -34,9 +35,9 @@ if(EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
     endif()
     set_source_files_properties(${_ff7cc_generated_sources} PROPERTIES COMPILE_OPTIONS "${_ff7cc_generated_flags}")
 
-    add_executable(ff7cc src/main.cpp ${_ff7cc_generated_sources})
+    add_executable(ff7cc src/main.cpp src/platform/display_vulkan.cpp ${_ff7cc_generated_sources})
     target_include_directories(ff7cc PRIVATE "${FF7CC_GENERATED_DIR}")
-    target_link_libraries(ff7cc PRIVATE ff7cc::runtime ff7cc::formats)
+    target_link_libraries(ff7cc PRIVATE ff7cc::runtime ff7cc::formats SDL3::SDL3-static ff7cc_vulkan)
     ff7cc_target_defaults(ff7cc)
 else()
     message(STATUS "FF7CC: no generated code in ${FF7CC_GENERATED_DIR} (run ccrecomp to create it)")

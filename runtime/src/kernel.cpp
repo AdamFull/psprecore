@@ -1,6 +1,7 @@
 #include "ff7cc/runtime/kernel.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -299,6 +300,8 @@ void Kernel::fire_vblank() {
 }
 
 int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_ptr) {
+    using Clock = std::chrono::steady_clock;
+    auto anchor = Clock::now();  // host time corresponding to virtual time 0 (realtime mode)
     const int main_id = create_thread("module_start", entry, 0x20, 0x40000, 0x80000000);
     thread(main_id)->delete_on_exit = true;  // the loader deletes module_start's thread when it returns
     start_thread(main_id, arg_size, arg_ptr);
@@ -314,9 +317,17 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
         std::uint64_t next = next_vblank_us_;
         for (const auto& [_, t] : threads_)
             if (t->state == Thread::State::Waiting && t->wake_time) next = std::min(next, t->wake_time);
+        if (realtime && next > now_us_) {
+            const auto due = anchor + std::chrono::microseconds(next);
+            const auto host = Clock::now();
+            if (due > host) std::this_thread::sleep_until(due);
+            else if (host - due > std::chrono::milliseconds(100)) anchor = host - std::chrono::microseconds(next);  // fell behind
+        }
         now_us_ = std::max(now_us_, next);
         if (now_us_ >= next_vblank_us_) {
             fire_vblank();
+            if (on_vblank) on_vblank();
+            if (quit_) break;
             if (max_vblanks && vblanks_ >= max_vblanks) break;
         }
         for (auto& [_, t] : threads_) {

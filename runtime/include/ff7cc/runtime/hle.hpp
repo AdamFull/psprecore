@@ -7,6 +7,7 @@
 // Calls without an implementation are logged once and return 0.
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -36,6 +37,11 @@ void install_crash_handler();
 
 // Writes every GE command executed during display frame `frame` to `path` (debugging).
 void set_ge_dump(std::uint64_t frame, const char* path);
+
+// Display output and controller input for the host frontend.
+bool read_framebuffer(std::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8
+void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly);
+bool write_png(const std::string& path, const std::uint32_t* rgba, int width, int height);
 
 // Registers every HLE module (call once at startup).
 void hle_install();

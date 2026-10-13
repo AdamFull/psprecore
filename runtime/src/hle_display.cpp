@@ -1,7 +1,9 @@
 // sceDisplay, sceGe_user, sceCtrl. Display lists are recorded but not rendered yet (Phase 5).
 
 #include <cstdio>
+#include <cstring>
 #include <memory>
+#include <vector>
 
 #include "ff7cc/runtime/ge.hpp"
 #include "ff7cc/runtime/hle.hpp"
@@ -21,6 +23,9 @@ struct DisplayState {
     std::uint64_t dump_frame = ~0ull;
     std::FILE* dump = nullptr;
 } g_display;
+
+std::uint32_t g_pad_buttons = 0;
+std::uint8_t g_pad_lx = 128, g_pad_ly = 128;
 
 ge::Processor& gpu() {
     if (!g_display.ge) {
@@ -94,8 +99,9 @@ void ReadBufferPositive(Context& c) {
         const std::uint32_t p = data + i * 16;
         mem().fill(p, 0, 16);
         mem().write32(p, static_cast<std::uint32_t>(k.now()));
-        *mem().ptr(p + 8) = 128;
-        *mem().ptr(p + 9) = 128;
+        mem().write32(p + 4, g_pad_buttons);
+        *mem().ptr(p + 8) = g_pad_lx;
+        *mem().ptr(p + 9) = g_pad_ly;
     }
     ret(c, count);
 }
@@ -123,6 +129,43 @@ constexpr HleBinding kBindings[] = {
 }  // namespace
 
 void hle_install_display() { hle_bind(kBindings); }
+
+void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly) {
+    g_pad_buttons = buttons;
+    g_pad_lx = lx;
+    g_pad_ly = ly;
+}
+
+bool read_framebuffer(std::vector<std::uint32_t>& rgba, int& width, int& height) {
+    if (!g_display.framebuffer) return false;
+    width = 480;
+    height = 272;
+    rgba.resize(static_cast<std::size_t>(width) * height);
+    const std::uint32_t format = g_display.format, stride = g_display.stride ? g_display.stride : 512;
+    const std::uint32_t bpp = format == 3 ? 4 : 2;
+    const auto expand = [](std::uint32_t v, int bits) { return (v << (8 - bits)) | (v >> (2 * bits - 8)); };
+    for (int y = 0; y < height; ++y) {
+        const std::uint8_t* row = mem().ptr(g_display.framebuffer + static_cast<std::uint32_t>(y) * stride * bpp);
+        std::uint32_t* out = rgba.data() + static_cast<std::size_t>(y) * width;
+        for (int x = 0; x < width; ++x) {
+            if (bpp == 4) {  // 8888 is stored as R,G,B,A bytes, like VK_FORMAT_R8G8B8A8
+                std::uint32_t p;
+                std::memcpy(&p, row + x * 4, 4);
+                out[x] = p | 0xFF000000u;
+                continue;
+            }
+            const std::uint32_t p = static_cast<std::uint32_t>(row[x * 2] | (row[x * 2 + 1] << 8));
+            std::uint32_t r, g, b;
+            switch (format) {
+                case 0: r = expand(p & 31, 5); g = expand((p >> 5) & 63, 6); b = expand(p >> 11, 5); break;            // 565
+                case 1: r = expand(p & 31, 5); g = expand((p >> 5) & 31, 5); b = expand((p >> 10) & 31, 5); break;     // 5551
+                default: r = (p & 15) * 17; g = ((p >> 4) & 15) * 17; b = ((p >> 8) & 15) * 17; break;               // 4444
+            }
+            out[x] = r | (g << 8) | (b << 16) | 0xFF000000u;
+        }
+    }
+    return true;
+}
 
 void set_ge_dump(std::uint64_t frame, const char* path) {
     g_display.dump_frame = frame;

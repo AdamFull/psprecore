@@ -24,6 +24,13 @@ option(FF7CC_BUILD_TESTS "Build unit tests (no game data required)" ${_ff7cc_hos
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FF7CCCompilerOptions)
 
+include(FF7CCStb)
+
+option(FF7CC_BUILD_GAME "Build the game executable (needs SDL3/ImGui/miniaudio, fetched at configure time)" ON)
+if(FF7CC_BUILD_GAME)
+    include(FF7CCDependencies)
+endif()
+
 add_subdirectory(libs/formats)
 add_subdirectory(libs/mips)
 add_subdirectory(libs/analysis)

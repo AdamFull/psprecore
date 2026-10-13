@@ -148,6 +148,9 @@ public:
     int run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_ptr);
 
     bool trace_hle = false;
+    bool realtime = false;           // pace virtual time to the host clock (windowed play)
+    std::function<void()> on_vblank;  // runs on the host main thread at every vblank (present, input)
+    void request_quit() { quit_ = true; }
     std::uint64_t max_vblanks = 0;  // stop after this many vblanks (0 = run forever)
 
 private:
