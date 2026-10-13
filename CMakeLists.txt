@@ -29,6 +29,7 @@ add_subdirectory(libs/formats)
 if(FF7CC_BUILD_TOOLS)
     add_subdirectory(tools/ccpkg)
     add_subdirectory(tools/ccatel)
+    add_subdirectory(tools/ccprx)
 endif()
 
 if(FF7CC_BUILD_TESTS)

@@ -4,6 +4,7 @@ add_executable(ff7cc_tests
     atel_tests.cpp
     atel_vm_tests.cpp
     atel_asm_tests.cpp
+    prx_tests.cpp
 )
 target_link_libraries(ff7cc_tests PRIVATE ff7cc::formats)
 ff7cc_target_defaults(ff7cc_tests)
