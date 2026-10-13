@@ -1,0 +1,48 @@
+# --- Copyrighted / third-party inputs: never commit ---
+/Crisis Core - Final Fantasy VII EU/
+/PSP SDK/
+*.iso
+*.cso
+*.pbp
+*.prx
+BOOT.BIN
+EBOOT.BIN
+discimg.fse
+discimg.pkg
+PARAM.SFO
+*.at3
+*.pmf
+
+# --- Data derived from the user's game copy (generated locally) ---
+/game/
+/extracted/
+/cooked/
+/generated/
+/saves/
+
+# --- Build output ---
+/build/
+/out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.pdb
+*.apk
+*.aab
+
+# --- Tooling / editors ---
+__pycache__/
+*.pyc
+.venv/
+.vs/
+.vscode/
+.idea/
+*.user
+*.gpr
+*.rep/
+.DS_Store
+Thumbs.db
