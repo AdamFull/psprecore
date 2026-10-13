@@ -97,6 +97,107 @@ const prx::Relocation* Program::relocation_at(std::uint32_t addr) const {
     return it == reloc_by_addr_.end() ? nullptr : &module_.relocations[it->second];
 }
 
+std::map<std::uint32_t, JumpTable> find_jump_tables(const Program& p) {
+    constexpr std::uint32_t kWindow = 24 * 4;  // how far back to look for the table load / bounds check
+
+    // Constant value of `reg` just before `pc`, following lui/addiu/ori/addu chains. For addu, the constant
+    // operand is returned (the other one is the scaled index).
+    const auto constant = [&](auto&& self, std::uint32_t reg, std::uint32_t pc, int depth) -> std::optional<std::uint32_t> {
+        if (reg == 0) return 0u;
+        if (depth > 6) return std::nullopt;
+        for (std::uint32_t q = pc; q >= p.text_begin() + 4 && q + kWindow > pc;) {
+            q -= 4;
+            const auto in = p.insn(q);
+            if (written_gpr(in) != reg) continue;
+            switch (in.op) {
+                case Op::Lui: return in.uimm() << 16;
+                case Op::Addiu:
+                    if (auto v = self(self, in.rs(), q, depth + 1)) return *v + static_cast<std::uint32_t>(in.simm());
+                    return std::nullopt;
+                case Op::Ori:
+                    if (auto v = self(self, in.rs(), q, depth + 1)) return *v | in.uimm();
+                    return std::nullopt;
+                case Op::Addu:
+                    if (auto v = self(self, in.rs(), q, depth + 1)) return v;
+                    return self(self, in.rt(), q, depth + 1);
+                default: return std::nullopt;
+            }
+        }
+        return std::nullopt;
+    };
+
+    // Pass 1: table addresses and entry limits.
+    struct Candidate {
+        std::uint32_t jr, table, limit;
+    };
+    std::vector<Candidate> candidates;
+    for (std::uint32_t pc = p.text_begin(); pc < p.text_end(); pc += 4) {
+        const auto jr = p.insn(pc);
+        if (jr.op != Op::Jr || jr.rs() == kRa) continue;
+        // The load that produced the jump register.
+        std::optional<std::uint32_t> table;
+        for (std::uint32_t q = pc; q >= p.text_begin() + 4 && q + kWindow > pc && !table;) {
+            q -= 4;
+            const auto in = p.insn(q);
+            if (written_gpr(in) != jr.rs()) continue;
+            if (in.op != Op::Lw) break;
+            if (auto base = constant(constant, in.rs(), q, 0)) table = *base + static_cast<std::uint32_t>(in.simm());
+            break;
+        }
+        if (!table) continue;
+
+        // Index rebase: `sll x, idx, 2` fed by `addiu idx, src, -K` means the bound check compares src with K + N.
+        std::uint32_t rebase = 0, rebase_src = 0;
+        for (std::uint32_t q = pc; q >= p.text_begin() + 4 && q + kWindow > pc;) {
+            q -= 4;
+            const auto sll = p.insn(q);
+            if (sll.op != Op::Sll || sll.sa() != 2) continue;
+            for (std::uint32_t k = q; k >= p.text_begin() + 4 && k + kWindow > q;) {
+                k -= 4;
+                const auto in = p.insn(k);
+                if (written_gpr(in) != sll.rt()) continue;
+                if (in.op == Op::Addiu && in.simm() < 0 && in.rs() != in.rt()) {
+                    rebase = static_cast<std::uint32_t>(-in.simm());
+                    rebase_src = in.rs();
+                }
+                break;
+            }
+            break;
+        }
+        std::uint32_t limit = 0;
+        for (std::uint32_t q = pc; q >= p.text_begin() + 4 && q + kWindow > pc;) {
+            q -= 4;
+            const auto in = p.insn(q);
+            if ((in.op == Op::Sltiu || in.op == Op::Slti) && in.simm() > 0) {  // index bound check
+                // Subtract the rebase only if the check tests the pre-rebase register.
+                const auto n = static_cast<std::uint32_t>(in.simm());
+                limit = rebase && in.rs() == rebase_src && n > rebase ? n - rebase : n;
+                break;
+            }
+        }
+        candidates.push_back({pc, *table, limit});
+    }
+
+    // Pass 2: entries, never running into the next table.
+    std::set<std::uint32_t> starts;
+    for (const auto& c : candidates) starts.insert(c.table);
+    std::map<std::uint32_t, JumpTable> tables;
+    for (const auto& c : candidates) {
+        JumpTable jt{c.jr, c.table, {}};
+        for (std::uint32_t i = 0; c.limit == 0 || i < c.limit; ++i) {
+            const std::uint32_t at = c.table + 4 * i;
+            if (i > 0 && starts.contains(at)) break;
+            const auto* r = p.relocation_at(at);
+            const auto target = p.word(at);
+            if (!r || r->type != prx::kRel32 || !target || !p.in_text(*target)) break;
+            if (c.limit == 0 && (*target + 0x10000 < c.jr || *target > c.jr + 0x10000)) break;  // unbounded: stay local
+            jt.targets.push_back(*target);
+        }
+        if (!jt.targets.empty()) tables.emplace(c.jr, std::move(jt));
+    }
+    return tables;
+}
+
 std::vector<Function> discover_functions(const Program& p) {
     std::map<std::uint32_t, Function> funcs;
     const auto seed = [&](std::uint32_t addr, Function::Origin origin, std::string name = {}) {
@@ -148,8 +249,11 @@ std::vector<Function> discover_functions(const Program& p) {
         if (r.type == prx::kRelLo16 && r.address_segment == 0)
             pointers.push_back(hi_value + static_cast<std::uint32_t>(static_cast<std::int16_t>(*w & 0xFFFF)));
     }
+    std::set<std::uint32_t> case_labels;
+    for (const auto& [_, jt] : find_jump_tables(p)) case_labels.insert(jt.targets.begin(), jt.targets.end());
     for (auto ptr : pointers)
-        if (p.in_text(ptr) && ptr % 4 == 0 && looks_like_start(ptr)) seed(ptr, Function::Origin::Pointer);
+        if (p.in_text(ptr) && ptr % 4 == 0 && !case_labels.contains(ptr) && looks_like_start(ptr))
+            seed(ptr, Function::Origin::Pointer);
 
     // Gap filling: a function ends after `jr ra` + delay slot when no earlier branch jumps past it and no
     // computed jump (switch) precedes it; the next non-nop instruction then starts a new function.

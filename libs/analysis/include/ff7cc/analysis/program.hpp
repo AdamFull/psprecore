@@ -47,7 +47,18 @@ struct Function {
     enum class Origin : std::uint8_t { Entry, Export, Import, Call, Pointer, Gap } origin = Origin::Gap;
 };
 
+// Switch jump tables: `jr rX` (rX != ra) whose target is loaded from a table of R32-relocated code addresses.
+// The table address is recovered by evaluating the load's base register backwards (lui/addiu/ori/addu);
+// the entry count comes from a preceding `sltiu idx, N` bound, or else the run of consecutive R32 entries.
+struct JumpTable {
+    std::uint32_t jr = 0;     // address of the jr instruction
+    std::uint32_t table = 0;  // address of the table
+    std::vector<std::uint32_t> targets;
+};
+std::map<std::uint32_t, JumpTable> find_jump_tables(const Program& program);
+
 // Every instruction of .text ends up in exactly one function (sorted by start).
+// Jump-table targets are never treated as function starts.
 std::vector<Function> discover_functions(const Program& program);
 
 struct Registration {
