@@ -44,8 +44,27 @@ if(FF7CC_BUILD_GAME AND EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
     endif()
     set_source_files_properties(${_ff7cc_generated_sources} PROPERTIES COMPILE_OPTIONS "${_ff7cc_generated_flags}")
 
+    # Hand-written replacements for recompiled functions (game/, GAME_FUNC). ccrecomp must have been run with
+    # --overrides game so the generated originals are renamed to f_XXXXXXXX_orig.
+    file(GLOB_RECURSE _ff7cc_game_overrides CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/game/*.c" "${PROJECT_SOURCE_DIR}/game/*.cpp")
+    file(READ "${FF7CC_GENERATED_DIR}/funcs.h" _ff7cc_funcs_h)
+    foreach(_src IN LISTS _ff7cc_game_overrides)
+        file(STRINGS "${_src}" _lines REGEX "GAME_FUNC[(] *[0-9A-Fa-f]+")
+        foreach(_line IN LISTS _lines)
+            string(REGEX MATCH "GAME_FUNC[(] *([0-9A-Fa-f]+)" _ "${_line}")
+            if(NOT _ff7cc_funcs_h MATCHES "f_${CMAKE_MATCH_1}_orig")
+                # Stale generated code: build without game/ (so ccrecomp itself can still be built) until it is
+                # regenerated.
+                message(WARNING "generated/ predates the replacement of f_${CMAKE_MATCH_1} in ${_src}; game/ is left "
+                                "out of this build. Regenerate: ccrecomp <BOOT.BIN> \"${FF7CC_GENERATED_DIR}\" --overrides game")
+                set(_ff7cc_game_overrides "")
+                break()
+            endif()
+        endforeach()
+    endforeach()
+
     set(_ff7cc_game_sources src/main.cpp src/platform/display_vulkan.cpp src/platform/audio_miniaudio.cpp
-        src/platform/gpu_vulkan.cpp src/platform/overlay.cpp src/platform/settings.cpp src/platform/touch_controls.cpp ${_ff7cc_generated_sources})
+        src/platform/gpu_vulkan.cpp src/platform/overlay.cpp src/platform/settings.cpp src/platform/touch_controls.cpp ${_ff7cc_generated_sources} ${_ff7cc_game_overrides})
     if(ANDROID)
         # SDL's Java activity loads libmain.so and calls SDL_main (see android/).
         add_library(ff7cc SHARED ${_ff7cc_game_sources})

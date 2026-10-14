@@ -1,11 +1,17 @@
 // ccrecomp — translate BOOT.BIN into C (see docs/recompiler.md).
 //
-//   ccrecomp <BOOT.BIN> <output dir> [functions per file]
+//   ccrecomp <BOOT.BIN> <output dir> [--overrides DIR] [--per-file N]
 
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <regex>
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ff7cc/analysis/program.hpp"
@@ -26,20 +32,43 @@ void write_text(const fs::path& path, const std::string& text) {
 
 }  // namespace
 
+// Addresses of GAME_FUNC(XXXXXXXX, name) replacements in the C/C++ sources under `dir`.
+std::set<std::uint32_t> scan_overrides(const fs::path& dir) {
+    std::set<std::uint32_t> out;
+    const std::regex pattern(R"(GAME_FUNC\s*\(\s*([0-9A-Fa-f]{8})\s*,)");
+    for (const auto& entry : fs::recursive_directory_iterator(dir)) {
+        const auto ext = entry.path().extension().string();
+        if (ext != ".c" && ext != ".cpp" && ext != ".h" && ext != ".hpp") continue;
+        std::ifstream in(entry.path());
+        const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        for (std::sregex_iterator it(text.begin(), text.end(), pattern), end; it != end; ++it)
+            out.insert(static_cast<std::uint32_t>(std::stoul((*it)[1].str(), nullptr, 16)));
+    }
+    return out;
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fputs("usage: ccrecomp <BOOT.BIN> <output dir> [functions per file]\n", stderr);
+        std::fputs("usage: ccrecomp <BOOT.BIN> <output dir> [--overrides DIR] [--per-file N]\n"
+                   "  --overrides DIR   scan DIR for GAME_FUNC(XXXXXXXX, ...) replacements (default: none)\n",
+                   stderr);
         return 2;
     }
     try {
         const fs::path input = argv[1], out_dir = argv[2];
-        const std::size_t per_file = argc > 3 ? std::stoul(argv[3]) : 200;
+        std::size_t per_file = 200;
+        recomp::Options options;
+        for (int i = 3; i < argc; ++i) {
+            const std::string_view a = argv[i];
+            if (a == "--overrides" && i + 1 < argc) options.overrides = scan_overrides(argv[++i]);
+            else if (a == "--per-file" && i + 1 < argc) per_file = std::stoul(argv[++i]);
+            else throw std::runtime_error("unknown option " + std::string(a));
+        }
 
         const auto data = io::read_all(input);
         const elf::File file(data);
         const auto module = prx::parse(file);
         const analysis::Program program(file, module);
-        recomp::Options options;
         recomp::Generator gen(program, prx::load_image(file, module, options.base),
                               analysis::discover_functions(program), options);
 
@@ -66,6 +95,8 @@ int main(int argc, char** argv) {
                     " -> %zu files in %s\n",
                     s.functions, s.instructions, s.jump_tables, s.tail_calls, s.null_calls, files,
                     out_dir.string().c_str());
+        if (!options.overrides.empty())
+            std::printf("%zu of %zu overrides matched a function\n", s.overrides, options.overrides.size());
         std::printf("%zu warnings\n", s.warnings.size());
         for (std::size_t i = 0; i < s.warnings.size() && i < 100; ++i) std::printf("  %s\n", s.warnings[i].c_str());
         return 0;

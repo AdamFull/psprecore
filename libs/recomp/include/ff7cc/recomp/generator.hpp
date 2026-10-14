@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,9 @@ namespace ff7cc::recomp {
 
 struct Options {
     std::uint32_t base = 0x08804000;  // load address the code is translated for
+    // Functions replaced by hand-written code (GAME_FUNC in game/): their translation is emitted as
+    // f_XXXXXXXX_orig, and every call and the lookup table reach the replacement f_XXXXXXXX.
+    std::set<std::uint32_t> overrides;
 };
 
 struct Stats {
@@ -21,6 +25,7 @@ struct Stats {
     std::size_t jump_tables = 0;
     std::size_t tail_calls = 0;
     std::size_t null_calls = 0;  // jal 0x0 to unlinked weak symbols
+    std::size_t overrides = 0;   // functions emitted as _orig because game/ replaces them
     std::vector<std::string> warnings;  // unexpected control flow, each with its address
 };
 

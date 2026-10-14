@@ -28,6 +28,8 @@ $extra = @(
 ) | Where-Object { Test-Path $_ }
 $env:PATH = ($extra + $env:PATH) -join ';'
 
+# Native tools report warnings on stderr; under 'Stop' PowerShell 5.1 would abort on them. Exit codes are checked.
+$ErrorActionPreference = 'Continue'
 Push-Location $root
 try {
     cmake --preset $Preset

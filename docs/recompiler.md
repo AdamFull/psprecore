@@ -31,8 +31,11 @@ x64 and ARM64. The generated code depends only on `runtime/include/ff7cc/recomp/
 Writes to `$zero` are dropped. Integer division follows Allegrex results for division by zero and overflow
 instead of trapping.
 
+## Hand-written replacements
+
+`--overrides game` scans `game/` for `GAME_FUNC(XXXXXXXX, ...)` and emits those functions as `f_XXXXXXXX_orig`;
+see [decompilation.md](decompilation.md).
+
 ## Not covered yet
 
-- Hand-written overrides by address (planned: the generator receives a list of overridden addresses and
-  renames the generated versions).
 - Faster register handling (locals instead of `ctx->r`), and VFPU code generated as plain SIMD.
