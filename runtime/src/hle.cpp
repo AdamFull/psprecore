@@ -47,6 +47,7 @@ void hle_install() {
     hle_install_display();
     hle_install_audio();
     hle_install_mpeg();
+    hle_install_atrac();
 }
 
 }  // namespace ff7cc::rt

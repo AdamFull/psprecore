@@ -42,6 +42,7 @@ if(FF7CC_BUILD_TOOLS)
     add_subdirectory(tools/ccatel)
     add_subdirectory(tools/ccprx)
     add_subdirectory(tools/ccrecomp)
+    add_subdirectory(tools/cccook)
 endif()
 
 if(FF7CC_BUILD_TESTS)

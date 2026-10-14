@@ -11,6 +11,7 @@ add_library(ff7cc_runtime STATIC
     src/hle_display.cpp
     src/hle_audio.cpp
     src/hle_mpeg.cpp
+    src/hle_atrac.cpp
     src/crash_handler.cpp
     src/vfpu.cpp
     src/ge.cpp
@@ -18,6 +19,7 @@ add_library(ff7cc_runtime STATIC
     src/gpu/texture.cpp
     src/gpu/soft_renderer.cpp
     src/audio/sas.cpp
+    src/audio/vorbis.cpp
 )
 if(WIN32)
     target_link_libraries(ff7cc_runtime PRIVATE dbghelp)

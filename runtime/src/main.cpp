@@ -2,6 +2,7 @@
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
+//       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
 //       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
 //       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
 //                                        up/down/left/right/l/r for 6 vblanks; for automated testing)
@@ -119,6 +120,7 @@ int main(int argc, char** argv) {
         std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
         std::string screenshot_path;
         std::string audio_dump;
+        fs::path cooked_dir;
         std::uint64_t max_vblanks = 0;
         std::vector<ScriptedPress> presses;
         for (int i = 2; i < argc; ++i) {
@@ -131,6 +133,8 @@ int main(int argc, char** argv) {
             } else if (a == "--screenshot-every" && i + 2 < argc) {
                 screenshot_every = std::stoull(argv[++i]);
                 screenshot_path = argv[++i];
+            } else if (a == "--cooked" && i + 1 < argc) {
+                cooked_dir = argv[++i];
             } else if (a == "--audio-dump" && i + 1 < argc) {
                 audio_dump = argv[++i];
             }
@@ -156,6 +160,11 @@ int main(int argc, char** argv) {
         kernel.max_vblanks = max_vblanks;
         kernel.user_heap().alloc_at(kLoadBase, static_cast<std::uint32_t>(image.size()));
         rt::set_storage(game_dir, fs::current_path() / "saves");
+        if (cooked_dir.empty()) {
+            cooked_dir = fs::current_path() / "cooked";
+            if (!fs::exists(cooked_dir)) cooked_dir = fs::path(argv[0]).parent_path() / "cooked";
+        }
+        rt::set_cooked_root(cooked_dir);
         rt::hle_install();
 
         // module_start(argc = strlen(path) + 1, argv = path), as the PSP loader does.

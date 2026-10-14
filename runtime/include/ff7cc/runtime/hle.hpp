@@ -7,6 +7,7 @@
 // Calls without an implementation are logged once and return 0.
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -43,6 +44,10 @@ bool read_framebuffer(std::vector<std::uint32_t>& rgba, int& width, int& height)
 void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly);
 bool write_png(const std::string& path, const std::uint32_t* rgba, int width, int height);
 
+// Directory with cooked media (cccook output); sceAtrac/sceMpeg look up replacements there.
+void set_cooked_root(const std::filesystem::path& root);
+const std::filesystem::path& cooked_root();
+
 // Registers every HLE module (call once at startup).
 void hle_install();
 
@@ -63,5 +68,6 @@ void hle_install_io();
 void hle_install_display();
 void hle_install_audio();
 void hle_install_mpeg();
+void hle_install_atrac();
 
 }  // namespace ff7cc::rt

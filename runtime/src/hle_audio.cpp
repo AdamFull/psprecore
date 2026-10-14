@@ -1,8 +1,7 @@
-// sceAudio, sceSasCore, sceAtrac3plus, sceUtility.
+// sceAudio, sceSasCore, sceUtility.
 //
 // Blocking outputs take as long as the samples they play (virtual time), and their samples go to the frontend's
-// AudioSink. sceSasCore is a native mixer (audio/sas.cpp). sceAtrac still reports "finished" until music
-// decoding lands (cooked Opus, PORT_PLAN.md Phase 6).
+// AudioSink. sceSasCore is a native mixer (audio/sas.cpp); sceAtrac lives in hle_atrac.cpp.
 
 #include <algorithm>
 #include <cstdio>
@@ -244,18 +243,6 @@ void SasRevVON(Context& c) {
     ret(c, 0);
 }
 
-// ---- sceAtrac3plus -----------------------------------------------------------------------------
-
-int g_next_atrac = 0;
-void AtracSetDataAndGetID(Context& c) { ret(c, static_cast<std::uint32_t>(g_next_atrac++ & 3)); }
-// (id, out, samplesOut*, end*, remainFrames*): report the end of the stream.
-void AtracDecodeData(Context& c) {
-    if (arg(c, 2)) mem().write32(arg(c, 2), 0);
-    if (arg(c, 3)) mem().write32(arg(c, 3), 1);
-    if (arg(c, 4)) mem().write32(arg(c, 4), 0);
-    ret(c, 0);
-}
-
 // ---- sceUtility (save data dialog: report "no data" so the game proceeds) -----------------------
 
 enum : std::uint32_t { kStatusNone = 0, kStatusFinished = 3, kStatusShutdown = 4 };
@@ -314,8 +301,6 @@ constexpr HleBinding kBindings[] = {
     {"__sceSasRevParam", SasRevParam},
     {"__sceSasRevEVOL", SasRevEVOL},
     {"__sceSasRevVON", SasRevVON},
-    {"sceAtracSetDataAndGetID", AtracSetDataAndGetID},
-    {"sceAtracDecodeData", AtracDecodeData},
     {"sceUtilityLoadModule", ReturnZero},
     {"sceUtilityUnloadModule", ReturnZero},
     {"sceUtilitySavedataInitStart", SavedataInitStart},
