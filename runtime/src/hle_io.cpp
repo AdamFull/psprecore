@@ -300,6 +300,8 @@ void set_storage(const fs::path& game_dir, const fs::path& save_dir) {
     if (!g_pkg) std::fprintf(stderr, "warning: discimg.pkg not found under %s\n", game_dir.string().c_str());
 }
 
+const fs::path& save_dir() { return g_save_dir; }
+
 void hle_install_io() { hle_bind(kBindings); }
 
 }  // namespace ff7cc::rt

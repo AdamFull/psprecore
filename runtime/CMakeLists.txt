@@ -12,6 +12,7 @@ add_library(ff7cc_runtime STATIC
     src/hle_audio.cpp
     src/hle_mpeg.cpp
     src/hle_atrac.cpp
+    src/hle_savedata.cpp
     src/crash_handler.cpp
     src/vfpu.cpp
     src/ge.cpp

@@ -1,4 +1,4 @@
-// sceAudio, sceSasCore, sceUtility.
+// sceAudio, sceSasCore, and the remaining sceUtility stubs (module loading, message dialog status).
 //
 // Blocking outputs take as long as the samples they play (virtual time), and their samples go to the frontend's
 // AudioSink. sceSasCore is a native mixer (audio/sas.cpp); sceAtrac lives in hle_atrac.cpp.
@@ -243,23 +243,6 @@ void SasRevVON(Context& c) {
     ret(c, 0);
 }
 
-// ---- sceUtility (save data dialog: report "no data" so the game proceeds) -----------------------
-
-enum : std::uint32_t { kStatusNone = 0, kStatusFinished = 3, kStatusShutdown = 4 };
-std::uint32_t g_savedata_status = kStatusNone, g_savedata_param = 0;
-void SavedataInitStart(Context& c) {
-    g_savedata_param = arg(c, 0);
-    std::fprintf(stderr, "sceUtilitySavedataInitStart(mode %u) -> reporting no save data\n", mem().read32(g_savedata_param + 48));
-    mem().write32(g_savedata_param + 28, 0x80110307);  // SceUtilityParamBase.result = SAVEDATA no data
-    g_savedata_status = kStatusFinished;
-    ret(c, 0);
-}
-void SavedataGetStatus(Context& c) { ret(c, g_savedata_status); }
-void SavedataShutdownStart(Context& c) {
-    g_savedata_status = kStatusNone;
-    ret(c, 0);
-}
-
 constexpr HleBinding kBindings[] = {
     {"sceAudioChReserve", ChReserve},
     {"sceAudioChRelease", ChRelease},
@@ -303,10 +286,6 @@ constexpr HleBinding kBindings[] = {
     {"__sceSasRevVON", SasRevVON},
     {"sceUtilityLoadModule", ReturnZero},
     {"sceUtilityUnloadModule", ReturnZero},
-    {"sceUtilitySavedataInitStart", SavedataInitStart},
-    {"sceUtilitySavedataGetStatus", SavedataGetStatus},
-    {"sceUtilitySavedataShutdownStart", SavedataShutdownStart},
-    {"sceUtilitySavedataUpdate", ReturnZero},
     {"sceUtilityMsgDialogGetStatus", ReturnZero},
     {"sceUtilityMsgDialogUpdate", ReturnZero},
 };
