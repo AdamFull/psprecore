@@ -2,7 +2,6 @@
 
 #include <cstring>
 #include <string>
-#include <vector>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO_DEPRECATION
@@ -13,6 +12,7 @@
 #include <stb_image.h>
 
 #include "ff7cc/runtime/hle.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -20,7 +20,7 @@ bool write_png(const std::string& path, const std::uint32_t* rgba, int width, in
     return stbi_write_png(path.c_str(), width, height, 4, rgba, width * 4) != 0;
 }
 
-bool read_png(const std::string& path, std::vector<std::uint32_t>& rgba, int& width, int& height) {
+bool read_png(const std::string& path, nx::vector<std::uint32_t>& rgba, int& width, int& height) {
     int channels = 0;
     stbi_uc* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
     if (!pixels) return false;

@@ -7,7 +7,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::platform {
 
@@ -22,7 +23,7 @@ constexpr double kRateAdjust = 0.002;                 // ~3.5 cents, inaudible
 // One audio source: single producer (the guest audio threads, which never run concurrently) / single consumer (the
 // device callback).
 struct AudioRing {
-    std::vector<std::int16_t> data = std::vector<std::int16_t>(kRingFrames * 2);
+    nx::vector<std::int16_t> data = nx::vector<std::int16_t>(kRingFrames * 2);
     std::atomic<std::size_t> read{0}, write{0};
     // consumer state
     std::size_t target = kMinTargetFrames;

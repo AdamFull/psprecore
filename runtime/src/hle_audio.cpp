@@ -5,12 +5,12 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <vector>
 
 #include "audio/sas.hpp"
 #include "ff7cc/runtime/audio.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -33,7 +33,7 @@ void play_for(std::uint32_t samples) { kernel().wait(WaitType::Audio, 0, 0, fals
 // Converts guest samples (mono or stereo s16) to stereo with volumes (0x8000 = unity) and submits them.
 void submit(int source, std::uint32_t buffer, std::uint32_t samples, bool mono, int left, int right) {
     if (!g_sink || !buffer || !samples) return;
-    static thread_local std::vector<std::int16_t> frames;
+    static thread_local nx::vector<std::int16_t> frames;
     frames.resize(static_cast<std::size_t>(samples) * 2);
     const auto* in = reinterpret_cast<const std::int16_t*>(mem().ptr(buffer));
     for (std::uint32_t i = 0; i < samples; ++i) {
@@ -124,7 +124,7 @@ void SasCore(Context& c) {  // (core, out)
 }
 void SasCoreWithMix(Context& c) {  // (core, inout, left, right)
     auto* buffer = reinterpret_cast<std::int16_t*>(mem().ptr(arg(c, 1)));
-    static thread_local std::vector<std::int16_t> input;
+    static thread_local nx::vector<std::int16_t> input;
     input.assign(buffer, buffer + 2 * g_sas.grain());
     g_sas.mix(mem(), buffer, input.data(), static_cast<int>(arg(c, 2)), static_cast<int>(arg(c, 3)));
     ret(c, 0);

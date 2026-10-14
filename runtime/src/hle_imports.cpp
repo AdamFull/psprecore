@@ -1,11 +1,12 @@
 // The 197 system functions BOOT.BIN imports (library, NID, name), from `ccprx imports`.
 // Implementations are bound to these entries by name (see hle.hpp).
 #include "ff7cc/runtime/hle.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
-const std::vector<HleImport>& hle_imports() {
-    static const std::vector<HleImport> kImports = {
+const nx::vector<HleImport>& hle_imports() {
+    static const nx::vector<HleImport> kImports = {
         {"IoFileMgrForUser", 0x06A70004, "sceIoMkdir"},
         {"IoFileMgrForUser", 0x42EC03AC, "sceIoWrite"},
         {"IoFileMgrForUser", 0x54F5FB11, "sceIoDevctl"},

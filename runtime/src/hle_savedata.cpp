@@ -14,11 +14,11 @@
 #include <fstream>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -73,8 +73,8 @@ std::string guest_string(std::uint32_t addr, std::size_t max) {
 
 fs::path save_folder(const std::string& game, const std::string& save) { return save_dir() / "SAVEDATA" / (game + save); }
 
-std::vector<std::string> save_name_list(std::uint32_t param) {
-    std::vector<std::string> names;
+nx::vector<std::string> save_name_list(std::uint32_t param) {
+    nx::vector<std::string> names;
     const std::uint32_t list = mem().read32(param + kSaveNameList);
     if (!list) return names;
     for (std::uint32_t i = 0; i < 256; ++i) {
@@ -94,7 +94,7 @@ fs::file_time_type save_time(const std::string& game, const std::string& save, c
     return fs::last_write_time(save_folder(game, save) / file, ec);
 }
 
-std::vector<std::uint8_t> read_file(const fs::path& path) {
+nx::vector<std::uint8_t> read_file(const fs::path& path) {
     std::ifstream f(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
@@ -181,9 +181,9 @@ std::uint32_t do_load(std::uint32_t param, const std::string& game, const std::s
 // Picks the slot a list dialog would end on.
 std::string pick_slot(std::uint32_t param, const std::string& game, bool for_save) {
     const std::string file = guest_string(param + kFileName, 13);
-    std::vector<std::string> names = save_name_list(param);
+    nx::vector<std::string> names = save_name_list(param);
     if (names.empty()) names.push_back(guest_string(param + kSaveName, 20));
-    std::vector<std::string> existing;
+    nx::vector<std::string> existing;
     for (const auto& n : names)
         if (save_exists(game, n, file)) existing.push_back(n);
     const auto newest = [&] {
@@ -236,7 +236,7 @@ SaveSlotInfo slot_info(const std::string& game, const std::string& save, const s
 // Opens the frontend's picker for a list dialog; the game polls GetStatus until answer_save_dialog().
 void open_dialog(std::uint32_t param, std::uint32_t mode, const std::string& game) {
     const std::string file = guest_string(param + kFileName, 13);
-    std::vector<std::string> names = save_name_list(param);
+    nx::vector<std::string> names = save_name_list(param);
     if (names.empty()) names.push_back(guest_string(param + kSaveName, 20));
     Pending p{param, mode, game, {}};
     p.dialog.save = mode == kListSave;

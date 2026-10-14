@@ -9,18 +9,17 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <deque>
 #include <functional>
 #include <initializer_list>
-#include <map>
 #include <memory>
 #include <semaphore>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include "ff7cc/recomp/recomp.h"
 #include "ff7cc/runtime/memory.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::rt {
 
@@ -86,7 +85,7 @@ struct Fpl {
     int id = 0;
     std::string name;
     std::uint32_t attr = 0, block_size = 0, base = 0;
-    std::vector<bool> used;
+    nx::vector<bool> used;
 };
 
 struct Callback {
@@ -129,11 +128,11 @@ public:
     void wake(Thread& t, std::uint32_t result);
     void yield_to_higher_priority();  // preempt the current thread if a better one became ready
     void rotate_ready_queue();        // yield to equal-priority threads
-    std::vector<Thread*> waiters(WaitType type, int object);
+    nx::vector<Thread*> waiters(WaitType type, int object);
 
     // ---- objects ----
     template <typename T>
-    std::map<int, std::unique_ptr<T>>& objects();
+    nx::map<int, std::unique_ptr<T>>& objects();
     int new_id() { return next_id_++; }
     void check_callbacks();  // run pending callbacks for the current thread (CB waits)
     // Calls guest function `entry` on the current thread (EABI args a0-a3, t0-t3) and returns v0. The caller's
@@ -173,16 +172,16 @@ private:
     GuestMemory& memory_;
     GuestHeap user_heap_;
     GuestHeap kernel_heap_;  // kernel-owned allocations (interrupt stack), outside the user partition
-    std::map<int, std::unique_ptr<Thread>> threads_;
-    std::map<int, std::unique_ptr<Semaphore>> semas_;
-    std::map<int, std::unique_ptr<EventFlag>> event_flags_;
-    std::map<int, std::unique_ptr<Fpl>> fpls_;
-    std::map<int, std::unique_ptr<Callback>> callbacks_;
+    nx::map<int, std::unique_ptr<Thread>> threads_;
+    nx::map<int, std::unique_ptr<Semaphore>> semas_;
+    nx::map<int, std::unique_ptr<EventFlag>> event_flags_;
+    nx::map<int, std::unique_ptr<Fpl>> fpls_;
+    nx::map<int, std::unique_ptr<Callback>> callbacks_;
     struct SubIntr {
         std::uint32_t handler = 0, arg = 0;
         bool enabled = false;
     };
-    std::map<std::pair<int, int>, SubIntr> subintrs_;
+    nx::map<std::pair<int, int>, SubIntr> subintrs_;
     int next_id_ = 0x100;
     std::uint64_t ready_counter_ = 0;
     std::uint64_t now_us_ = 0, next_vblank_us_ = 16683, vblanks_ = 0;
@@ -193,10 +192,10 @@ private:
     int exit_code_ = 0;
 };
 
-template <> inline std::map<int, std::unique_ptr<Semaphore>>& Kernel::objects() { return semas_; }
-template <> inline std::map<int, std::unique_ptr<EventFlag>>& Kernel::objects() { return event_flags_; }
-template <> inline std::map<int, std::unique_ptr<Fpl>>& Kernel::objects() { return fpls_; }
-template <> inline std::map<int, std::unique_ptr<Callback>>& Kernel::objects() { return callbacks_; }
+template <> inline nx::map<int, std::unique_ptr<Semaphore>>& Kernel::objects() { return semas_; }
+template <> inline nx::map<int, std::unique_ptr<EventFlag>>& Kernel::objects() { return event_flags_; }
+template <> inline nx::map<int, std::unique_ptr<Fpl>>& Kernel::objects() { return fpls_; }
+template <> inline nx::map<int, std::unique_ptr<Callback>>& Kernel::objects() { return callbacks_; }
 
 Kernel& kernel();  // the single kernel instance (set by the host before running)
 void set_kernel(Kernel* k);

@@ -8,7 +8,8 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -55,7 +56,7 @@ private:
         std::uint32_t addr, size;
     };
     std::uint32_t begin_, end_;
-    std::vector<Block> used_;  // sorted by address
+    nx::vector<Block> used_;  // sorted by address
 };
 
 }  // namespace ff7cc::rt

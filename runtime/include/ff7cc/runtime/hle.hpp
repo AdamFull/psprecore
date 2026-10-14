@@ -12,9 +12,9 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "ff7cc/recomp/recomp.h"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -30,7 +30,7 @@ struct HleImport {
     std::uint32_t nid;
     const char* name;
 };
-const std::vector<HleImport>& hle_imports();
+const nx::vector<HleImport>& hle_imports();
 
 using HleFunction = void (*)(Context& ctx);
 struct HleBinding {
@@ -71,10 +71,10 @@ void set_ge_draw_listener(std::function<void(const ge::Draw&)> listener);
 void set_flip_handler(std::function<void(std::uint32_t address, std::uint32_t stride, std::uint32_t format)> handler);
 
 // Display output and controller input for the host frontend.
-bool read_framebuffer(std::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8
+bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8
 void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly);
 bool write_png(const std::string& path, const std::uint32_t* rgba, int width, int height);
-bool read_png(const std::string& path, std::vector<std::uint32_t>& rgba, int& width, int& height);  // RGBA8
+bool read_png(const std::string& path, nx::vector<std::uint32_t>& rgba, int& width, int& height);  // RGBA8
 
 // Save/load list dialogs (sceUtilitySavedata list modes). With a frontend UI enabled, a dialog stays open
 // (status RUNNING) until the frontend answers it; otherwise a slot is chosen automatically. Both calls are made
@@ -89,7 +89,7 @@ struct SaveSlotInfo {
 };
 struct SaveDialog {
     bool save = false;  // save (any slot) or load (existing slots only)
-    std::vector<SaveSlotInfo> slots;
+    nx::vector<SaveSlotInfo> slots;
     int focus = 0;      // slot the PSP dialog would highlight first
 };
 void set_savedata_ui(bool enabled);

@@ -5,10 +5,10 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
-#include <set>
-#include <unordered_map>
 
 #include "ff7cc/runtime/kernel.hpp"
+#include "core/foundation/containers/map.h"
+#include "core/foundation/containers/hash_map.h"
 
 namespace ff7cc::rt {
 
@@ -53,8 +53,8 @@ struct Entry {
     HleFunction fn = nullptr;
 };
 
-std::unordered_map<std::uint32_t, Entry>& table() {
-    static std::unordered_map<std::uint32_t, Entry> t;
+nx::hash_map<std::uint32_t, Entry>& table() {
+    static nx::hash_map<std::uint32_t, Entry> t;
     return t;
 }
 
@@ -103,7 +103,7 @@ extern "C" void hle_call(Context* ctx, uint32_t nid) {
         if (k.trace_hle) std::fprintf(stderr, "             -> %08x\n", ctx->r[2]);
         return;
     }
-    static std::set<std::uint32_t> reported;
+    static nx::set<std::uint32_t> reported;
     static std::mutex mutex;
     {
         std::lock_guard lock(mutex);

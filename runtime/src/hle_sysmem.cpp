@@ -5,10 +5,10 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
-#include <map>
 
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::rt {
 
@@ -16,7 +16,7 @@ namespace {
 
 GuestMemory& mem() { return kernel().memory(); }
 
-std::map<int, std::uint32_t> g_blocks;  // partition memory uid -> address
+nx::map<int, std::uint32_t> g_blocks;  // partition memory uid -> address
 
 // sceKernelAllocPartitionMemory(partition, name, type, size, addr): type 0 = low, 1 = high, 2 = at addr.
 void AllocPartitionMemory(Context& c) {

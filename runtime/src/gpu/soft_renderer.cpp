@@ -3,11 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <vector>
 
 #include "ff7cc/runtime/memory.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt::gpu {
 
@@ -152,7 +152,7 @@ class SoftRenderer final : public ge::Renderer {
 public:
     explicit SoftRenderer(GuestMemory& memory) : memory_(memory) {}
 
-    void draw(const State& s, Prim prim, const std::vector<Vertex>& vertices) override;
+    void draw(const State& s, Prim prim, const nx::vector<Vertex>& vertices) override;
     void transfer(const State& s) override;
 
 private:
@@ -171,7 +171,7 @@ private:
     GuestMemory& memory_;
     Setup d_;
     VertexPipeline vp_;
-    std::vector<ClipVertex> clip_;
+    nx::vector<ClipVertex> clip_;
 };
 
 std::unique_ptr<ge::Renderer> make_soft_renderer_impl(GuestMemory& memory) {
@@ -294,7 +294,7 @@ ScreenVertex SoftRenderer::project(const ClipVertex& v) const {
     return o;
 }
 
-void SoftRenderer::draw(const State& s, Prim prim, const std::vector<Vertex>& vertices) {
+void SoftRenderer::draw(const State& s, Prim prim, const nx::vector<Vertex>& vertices) {
     configure(s);
     clip_.resize(vertices.size());
     for (std::size_t i = 0; i < vertices.size(); ++i) clip_[i] = vp_.transform(s, vertices[i]);

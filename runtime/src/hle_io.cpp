@@ -9,16 +9,17 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <map>
+#include <memory>
 #include <string>
 #include <system_error>
-#include <vector>
 
 #include "ff7cc/formats/pkg.hpp"
 #include "ff7cc/io/file.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace fs = std::filesystem;
 
@@ -35,7 +36,7 @@ GuestMemory& mem() { return kernel().memory(); }
 
 struct OpenFile {
     std::fstream stream;
-    const std::vector<char>* memory = nullptr;  // served from memory (the patched discimg.fse)
+    const nx::vector<char>* memory = nullptr;  // served from memory (the patched discimg.fse)
     std::uint64_t memory_pos = 0;
     bool block = false;        // umd0:/umd1:
     std::uint64_t sector = 0;  // block devices: current absolute LBN
@@ -43,14 +44,15 @@ struct OpenFile {
     bool async_pending = false;
     std::string path;
 };
-std::map<int, OpenFile> g_files;
+// Open files stay where they are (nx::map moves its elements; std::fstream is not cheap to move).
+nx::map<int, std::unique_ptr<OpenFile>> g_files;
 int g_next_fd = 3;
 
 struct OpenDir {
-    std::vector<fs::directory_entry> entries;
+    nx::vector<fs::directory_entry> entries;
     std::size_t next = 0;
 };
-std::map<int, OpenDir> g_dirs;
+nx::map<int, OpenDir> g_dirs;
 
 std::fstream g_pkg;  // discimg.pkg for block reads
 std::uint64_t g_pkg_sectors = 0;
@@ -64,8 +66,8 @@ struct VirtualEntry {
     std::uint64_t source_sector = 0;        // original position (unmodified entries)
     fs::path mod;                           // replacement file, if any
 };
-std::vector<VirtualEntry> g_virtual;  // empty when no mod replaces anything
-std::vector<char> g_patched_fse;
+nx::vector<VirtualEntry> g_virtual;  // empty when no mod replaces anything
+nx::vector<char> g_patched_fse;
 
 // Reads `count` sectors of the virtual archive starting at `first` (relative to its start) into `out`.
 void read_virtual(std::uint64_t first, std::uint64_t count, char* out) {
@@ -114,7 +116,7 @@ bool is_block_device(const std::string& guest) {
 }
 
 std::int64_t block_read(OpenFile& f, std::uint32_t buffer, std::uint32_t sectors) {
-    std::vector<char> data(static_cast<std::size_t>(sectors) * kSector, 0);
+    nx::vector<char> data(static_cast<std::size_t>(sectors) * kSector, 0);
     if (f.sector >= kPkgLbn && !g_virtual.empty()) {
         read_virtual(f.sector - kPkgLbn, sectors, data.data());
     } else if (f.sector >= kPkgLbn && g_pkg) {
@@ -130,7 +132,7 @@ std::int64_t block_read(OpenFile& f, std::uint32_t buffer, std::uint32_t sectors
 std::int64_t do_read(int fd, std::uint32_t buffer, std::uint32_t size) {
     const auto it = g_files.find(fd);
     if (it == g_files.end()) return static_cast<std::int32_t>(kErrorBadFile);
-    OpenFile& f = it->second;
+    OpenFile& f = *it->second;
     if (f.block) return block_read(f, buffer, size);
     if (f.memory) {
         const std::uint64_t n = std::min<std::uint64_t>(size, f.memory->size() - std::min<std::uint64_t>(f.memory_pos, f.memory->size()));
@@ -147,7 +149,7 @@ std::int64_t do_read(int fd, std::uint32_t buffer, std::uint32_t size) {
 std::int64_t do_seek(int fd, std::int64_t offset, int whence) {
     const auto it = g_files.find(fd);
     if (it == g_files.end()) return static_cast<std::int32_t>(kErrorBadFile);
-    OpenFile& f = it->second;
+    OpenFile& f = *it->second;
     if (f.block) {
         f.sector = whence == 0 ? static_cast<std::uint64_t>(offset) : f.sector + offset;
         return static_cast<std::int64_t>(f.sector);
@@ -175,7 +177,7 @@ int do_open(const std::string& path, std::uint32_t flags) {
         if (!g_patched_fse.empty() && lower(host.filename().string()) == "discimg.fse") {
             f.memory = &g_patched_fse;
             const int fd = g_next_fd++;
-            g_files.emplace(fd, std::move(f));
+            g_files.emplace(fd, std::make_unique<OpenFile>(std::move(f)));
             return fd;
         }
         std::ios::openmode mode = std::ios::binary;
@@ -190,7 +192,7 @@ int do_open(const std::string& path, std::uint32_t flags) {
         if (!f.stream) return static_cast<int>(kErrorNotFound);
     }
     const int fd = g_next_fd++;
-    g_files.emplace(fd, std::move(f));
+    g_files.emplace(fd, std::make_unique<OpenFile>(std::move(f)));
     return fd;
 }
 
@@ -221,15 +223,15 @@ void Open(Context& c) {
 }
 void OpenAsync(Context& c) {
     const int fd = do_open(mem().string(arg(c, 0)), arg(c, 1));
-    if (fd > 0) g_files[fd].async_result = fd;
+    if (fd > 0) g_files[fd]->async_result = fd;
     ret(c, static_cast<std::uint32_t>(fd));
 }
 void Close(Context& c) { ret(c, g_files.erase(static_cast<int>(arg(c, 0))) ? 0 : kErrorBadFile); }
 void CloseAsync(Context& c) {
     const int fd = static_cast<int>(arg(c, 0));
     if (!g_files.contains(fd)) return ret(c, kErrorBadFile);
-    g_files[fd].async_result = 0;
-    g_files[fd].async_pending = true;  // closed after the result is collected
+    g_files[fd]->async_result = 0;
+    g_files[fd]->async_pending = true;  // closed after the result is collected
     ret(c, 0);
 }
 void Read(Context& c) {
@@ -240,7 +242,7 @@ void ReadAsync(Context& c) {
     mark_guest_written(arg(c, 1), arg(c, 2));
     const int fd = static_cast<int>(arg(c, 0));
     if (!g_files.contains(fd)) return ret(c, kErrorBadFile);
-    g_files[fd].async_result = do_read(fd, arg(c, 1), arg(c, 2));
+    g_files[fd]->async_result = do_read(fd, arg(c, 1), arg(c, 2));
     ret(c, 0);
 }
 // 64-bit offset arrives in a2/a3 (aligned register pair); whence in t0.
@@ -252,15 +254,15 @@ void LseekAsync(Context& c) {
     const int fd = static_cast<int>(arg(c, 0));
     if (!g_files.contains(fd)) return ret(c, kErrorBadFile);
     const std::int64_t off = static_cast<std::int64_t>(static_cast<std::uint64_t>(arg(c, 2)) | (static_cast<std::uint64_t>(arg(c, 3)) << 32));
-    g_files[fd].async_result = do_seek(fd, off, static_cast<int>(arg(c, 4)));
+    g_files[fd]->async_result = do_seek(fd, off, static_cast<int>(arg(c, 4)));
     ret(c, 0);
 }
 void WaitAsync(Context& c) {
     const int fd = static_cast<int>(arg(c, 0));
     const auto it = g_files.find(fd);
     if (it == g_files.end()) return ret(c, kErrorBadFile);
-    if (arg(c, 1)) write64(arg(c, 1), it->second.async_result);
-    if (it->second.async_pending) g_files.erase(it);  // pending close
+    if (arg(c, 1)) write64(arg(c, 1), it->second->async_result);
+    if (it->second->async_pending) g_files.erase(it);  // pending close
     ret(c, 0);
 }
 void Write(Context& c) {
@@ -272,7 +274,7 @@ void Write(Context& c) {
     }
     const auto it = g_files.find(fd);
     if (it == g_files.end()) return ret(c, kErrorBadFile);
-    it->second.stream.write(reinterpret_cast<const char*>(mem().ptr(arg(c, 1))), size);
+    it->second->stream.write(reinterpret_cast<const char*>(mem().ptr(arg(c, 1))), size);
     ret(c, size);
 }
 void Getstat(Context& c) {
@@ -375,11 +377,11 @@ void set_mods(const fs::path& mods_dir) {
     g_patched_fse.clear();
     std::error_code ec;
     if (!fs::is_directory(mods_dir, ec)) return;
-    std::vector<fs::path> mods;
+    nx::vector<fs::path> mods;
     for (const auto& d : fs::directory_iterator(mods_dir, ec))
         if (d.is_directory() && fs::is_directory(d.path() / "pkg")) mods.push_back(d.path());
     std::sort(mods.begin(), mods.end());
-    std::map<std::size_t, fs::path> replaced;  // entry -> file (later mods win)
+    nx::map<std::size_t, fs::path> replaced;  // entry -> file (later mods win)
     for (const auto& m : mods)
         for (const auto& f : fs::directory_iterator(m / "pkg", ec)) {
             const std::string stem = f.path().stem().string();

@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <utility>
-#include <vector>
 
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_DECODING
@@ -20,13 +19,15 @@
 #define MA_NO_ENGINE
 #include <miniaudio.h>
 
+#include "core/foundation/core/foundation.h"
+
 namespace ff7cc::platform {
 
 struct AudioDevice::Impl {
     ma_device device{};
     bool ok = false;
     std::array<AudioRing, rt::AudioSink::kSources> rings;
-    std::vector<std::int32_t> acc;
+    nx::vector<std::int32_t> acc;
     std::atomic<std::int32_t> gain{256};  // master volume, 256 = unity
 
     static void callback(ma_device* device, void* output, const void*, ma_uint32 frames) {

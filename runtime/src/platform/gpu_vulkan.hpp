@@ -12,10 +12,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <vector>
 
 #include "ff7cc/platform/vulkan_context.hpp"
 #include "ff7cc/runtime/ge.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 class GuestMemory;
@@ -31,7 +31,7 @@ public:
                      std::filesystem::path pipeline_cache = {});
     ~VulkanGeRenderer() override;
 
-    void draw(const rt::ge::State& state, rt::ge::Prim prim, const std::vector<rt::ge::Vertex>& vertices) override;
+    void draw(const rt::ge::State& state, rt::ge::Prim prim, const nx::vector<rt::ge::Vertex>& vertices) override;
     void transfer(const rt::ge::State& state) override;
     // Counters since the last call (performance diagnostics, --perf).
     struct Stats {
@@ -55,7 +55,7 @@ public:
     // Ends the frame and submits it; returns the render target holding framebuffer `address`. With `capture`,
     // also reads the displayed region back (RGBA8, Output::width x height); this waits for the GPU.
     Output finish_frame(std::uint32_t address, std::uint32_t stride, int format,
-                        std::vector<std::uint32_t>* capture = nullptr);
+                        nx::vector<std::uint32_t>* capture = nullptr);
 
 private:
     struct Impl;

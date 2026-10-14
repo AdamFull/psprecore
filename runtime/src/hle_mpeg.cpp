@@ -9,7 +9,6 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
-#include <vector>
 
 #include "audio/vorbis.hpp"
 #include "ff7cc/formats/cooked.hpp"
@@ -17,6 +16,7 @@
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
 #include "media/av1_video.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -51,7 +51,7 @@ struct Mpeg {
     // Cooked media for the current movie (ff7cc/formats/cooked.hpp).
     std::unique_ptr<media::Av1Video> video;
     std::unique_ptr<audio::VorbisStream> audio;
-    std::vector<std::uint32_t> frame;
+    nx::vector<std::uint32_t> frame;
     int frame_width = 0;
     std::uint64_t audio_base = 0;
     bool have_audio_base = false;

@@ -40,14 +40,12 @@
 #include <ctime>
 #include <exception>
 #include <filesystem>
-#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include <SDL3/SDL_keycode.h>
 #ifdef __ANDROID__
@@ -73,6 +71,8 @@
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
 #include "ff7cc/runtime/memory.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace fs = std::filesystem;
 
@@ -118,14 +118,14 @@ public:
 private:
     std::string prefix_;
     ff7cc::rt::AudioSink* next_;
-    std::vector<std::int16_t> samples_[kSources];
+    nx::vector<std::int16_t> samples_[kSources];
 };
 
 // Sends every display list to two renderers (--renderer compare).
 class TeeRenderer final : public ff7cc::rt::ge::Renderer {
 public:
     TeeRenderer(std::unique_ptr<Renderer> a, std::unique_ptr<Renderer> b) : a_(std::move(a)), b_(std::move(b)) {}
-    void draw(const ff7cc::rt::ge::State& s, ff7cc::rt::ge::Prim prim, const std::vector<ff7cc::rt::ge::Vertex>& v) override {
+    void draw(const ff7cc::rt::ge::State& s, ff7cc::rt::ge::Prim prim, const nx::vector<ff7cc::rt::ge::Vertex>& v) override {
         a_->draw(s, prim, v);
         b_->draw(s, prim, v);
     }
@@ -141,9 +141,9 @@ private:
 // Reference frame (w x h) next to the GPU frame (box-filtered down from `scale` times the size) and their
 // difference (x4). Returns the composite; `mean` is the mean per-pixel max-channel difference and `bad` the
 // share of pixels differing by more than 32.
-std::vector<std::uint32_t> compare_frames(const std::vector<std::uint32_t>& ref, const std::vector<std::uint32_t>& gpu, int w,
+nx::vector<std::uint32_t> compare_frames(const nx::vector<std::uint32_t>& ref, const nx::vector<std::uint32_t>& gpu, int w,
                                           int h, int scale, double& mean, double& bad) {
-    std::vector<std::uint32_t> out(static_cast<std::size_t>(w) * 3 * h, 0xFF000000u);
+    nx::vector<std::uint32_t> out(static_cast<std::size_t>(w) * 3 * h, 0xFF000000u);
     double total = 0;
     std::size_t over = 0;
     for (int y = 0; y < h; ++y)
@@ -274,7 +274,7 @@ private:
         bool is_dialog = false;
         int dialog = -1;
     };
-    std::vector<Event> events_;
+    nx::vector<Event> events_;
     std::size_t next_ = 0;
     std::int64_t clock_base_ = 0;
     std::uint32_t buttons_ = 0;
@@ -303,7 +303,7 @@ std::uint32_t button_from_name(std::string_view name) {
     throw std::runtime_error("unknown button: " + std::string(name));
 }
 
-std::uint32_t scripted_buttons(const std::vector<ScriptedPress>& presses, std::uint64_t vblank) {
+std::uint32_t scripted_buttons(const nx::vector<ScriptedPress>& presses, std::uint64_t vblank) {
     constexpr std::uint64_t kHold = 6;
     std::uint32_t buttons = 0;
     for (const auto& p : presses)
@@ -417,8 +417,8 @@ int main(int argc, char** argv) {
         fs::path record_path, replay_path, saves_dir, mods_dir;
         std::int64_t clock_base = static_cast<std::int64_t>(std::time(nullptr));
         bool clock_given = false;
-        std::vector<ScriptedPress> presses;
-        std::vector<ScriptedUi> ui_script;
+        nx::vector<ScriptedPress> presses;
+        nx::vector<ScriptedUi> ui_script;
         std::uint64_t window_shot_vblank = 0;
         std::string window_shot_path;
         for (int i = first_option; i < argc; ++i) {
@@ -580,10 +580,10 @@ int main(int argc, char** argv) {
 
         // Window + presentation + input, unless running headless.
         std::unique_ptr<platform::Display> display;
-        std::vector<std::uint32_t> frame;
+        nx::vector<std::uint32_t> frame;
         bool screenshot_pending = false;  // GPU renderer: capture at the next flip
         std::uint64_t screenshot_at = 0;
-        const auto screenshot = [&](const std::vector<std::uint32_t>& rgba, int w, int h) {
+        const auto screenshot = [&](const nx::vector<std::uint32_t>& rgba, int w, int h) {
             const std::uint64_t n = screenshot_pending ? screenshot_at : kernel.vblank_count();
             if (screenshot_every && n % screenshot_every == 0) {
                 char name[32];
@@ -598,9 +598,9 @@ int main(int argc, char** argv) {
             rt::ge::State state;
             float morph[8];
             std::uint32_t count = 0;
-            std::vector<std::uint8_t> bytes;
+            nx::vector<std::uint8_t> bytes;
         };
-        std::vector<BenchDraw> bench_draws;
+        nx::vector<BenchDraw> bench_draws;
         std::unique_ptr<platform::SamplingProfiler> profiler;
         const auto bench_tick = [&] {
             if (profile_vblank && kernel.vblank_count() == profile_vblank) profiler = std::make_unique<platform::SamplingProfiler>();
@@ -624,7 +624,7 @@ int main(int argc, char** argv) {
             rt::set_ge_draw_listener({});
             std::size_t vertices = 0;
             for (const auto& b : bench_draws) vertices += b.count;
-            std::vector<std::vector<rt::ge::Vertex>> decoded(bench_draws.size());
+            nx::vector<nx::vector<rt::ge::Vertex>> decoded(bench_draws.size());
             rt::gpu::VertexPipeline vp;
             double checksum = 0;
             constexpr int kRounds = 200;
@@ -645,7 +645,7 @@ int main(int argc, char** argv) {
             const auto t2 = std::chrono::steady_clock::now();
             const double n = static_cast<double>(vertices) * kRounds;
             {  // per format and lighting: where the transform time goes
-                std::map<std::pair<std::uint32_t, bool>, std::pair<double, std::size_t>> by_format;
+                nx::map<std::pair<std::uint32_t, bool>, std::pair<double, std::size_t>> by_format;
                 for (std::size_t i = 0; i < bench_draws.size(); ++i) {
                     const auto& b = bench_draws[i];
                     const auto s0 = std::chrono::steady_clock::now();
@@ -799,7 +799,7 @@ int main(int argc, char** argv) {
                     const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
                     if (out.image) display->present_image(out.image, out.width, out.height);
                     if (capture && renderer == "compare") {
-                        std::vector<std::uint32_t> ref;
+                        nx::vector<std::uint32_t> ref;
                         int w = 0, h = 0;
                         if (rt::read_framebuffer(ref, w, h) && w * vulkan_renderer->scale() == out.width) {
                             double mean = 0, bad = 0;

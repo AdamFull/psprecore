@@ -10,11 +10,9 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
-#include <map>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
 
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/memory.hpp"
@@ -23,6 +21,9 @@
 #include "gpu/hash.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
+#include "core/foundation/containers/hash_map.h"
 
 namespace ff7cc::platform {
 
@@ -115,8 +116,8 @@ struct Frame {
     VkDescriptorPool descriptors = VK_NULL_HANDLE;
     Buffer vertices, staging;
     VkDeviceSize vertex_used = 0, staging_used = 0;
-    std::vector<Image> garbage;
-    std::map<std::pair<VkImageView, VkSampler>, VkDescriptorSet> sets;
+    nx::vector<Image> garbage;
+    nx::map<std::pair<VkImageView, VkSampler>, VkDescriptorSet> sets;
 };
 
 VkCompareOp compare_op(std::uint32_t f) {
@@ -151,20 +152,22 @@ struct VulkanGeRenderer::Impl {
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
-    std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
+    nx::hash_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
     std::filesystem::path cache_path;
     VkPipelineCache cache = VK_NULL_HANDLE;
     std::uint64_t cache_dirty_frame = 0;  // frame of the last pipeline created since the cache was saved (0: saved)
-    std::map<std::uint32_t, VkSampler> samplers;
+    nx::map<std::uint32_t, VkSampler> samplers;
     std::array<Frame, kFrames> frames;
     int current = 0;
     bool recording = false;
     std::uint64_t frame_number = 1;
     VulkanGeRenderer::Stats stats;
 
-    std::map<std::uint32_t, Target> targets;   // by VRAM address
-    std::map<std::uint64_t, Image> depths;     // by (address, width)
-    std::unordered_map<std::uint64_t, Texture> textures;
+    // Targets and depth buffers stay where they are (bound_target/bound_depth and returned references point at them;
+    // nx::map moves its elements on insert).
+    nx::map<std::uint32_t, std::unique_ptr<Target>> targets;  // by VRAM address
+    nx::map<std::uint64_t, std::unique_ptr<Image>> depths;    // by (address, width)
+    nx::hash_map<std::uint64_t, Texture> textures;
     Image white;  // bound when texturing is off (the descriptor is always declared)
     Buffer readback;
     VkDeviceSize readback_size = 0;
@@ -176,8 +179,8 @@ struct VulkanGeRenderer::Impl {
     VkPipeline bound_pipeline = VK_NULL_HANDLE;
 
     rt::gpu::VertexPipeline vp;
-    std::vector<ClipVertex> clip;
-    std::vector<GpuVertex> out;
+    nx::vector<ClipVertex> clip;
+    nx::vector<GpuVertex> out;
 
     Impl(const VulkanContext& context, rt::GuestMemory& mem, int s, std::filesystem::path cache_file)
         : vk(context), memory(mem), scale(std::max(1, s)), pending_scale(scale), cache_path(std::move(cache_file)) {}
@@ -326,7 +329,7 @@ struct VulkanGeRenderer::Impl {
         transition(frame().draw, white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
-    static std::vector<char> read_file(const std::filesystem::path& path) {
+    static nx::vector<char> read_file(const std::filesystem::path& path) {
         std::ifstream in(path, std::ios::binary);
         return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     }
@@ -355,7 +358,7 @@ struct VulkanGeRenderer::Impl {
             check(vkCreatePipelineCache(vk.device, &ci, nullptr, &cache), "pipeline cache");
             return;
         }
-        const std::vector<char> data = read_file(cache_path);
+        const nx::vector<char> data = read_file(cache_path);
         VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
         ci.initialDataSize = data.size();
         ci.pInitialData = data.empty() ? nullptr : data.data();
@@ -364,7 +367,7 @@ struct VulkanGeRenderer::Impl {
             ci.pInitialData = nullptr;
             check(vkCreatePipelineCache(vk.device, &ci, nullptr, &cache), "pipeline cache");
         }
-        const std::vector<char> keys = read_file(keys_path());
+        const nx::vector<char> keys = read_file(keys_path());
         constexpr std::size_t header = sizeof kPipelineKeysMagic + 4;
         std::uint32_t key_size = 0;
         if (keys.size() >= header) std::memcpy(&key_size, keys.data() + sizeof kPipelineKeysMagic, 4);
@@ -389,10 +392,10 @@ struct VulkanGeRenderer::Impl {
         if (cache_path.empty()) return;
         std::size_t size = 0;
         if (vkGetPipelineCacheData(vk.device, cache, &size, nullptr) != VK_SUCCESS || !size) return;
-        std::vector<char> data(size);
+        nx::vector<char> data(size);
         if (vkGetPipelineCacheData(vk.device, cache, &size, data.data()) != VK_SUCCESS) return;
         write_file(cache_path, data.data(), size);
-        std::vector<char> keys(kPipelineKeysMagic, kPipelineKeysMagic + sizeof kPipelineKeysMagic);
+        nx::vector<char> keys(kPipelineKeysMagic, kPipelineKeysMagic + sizeof kPipelineKeysMagic);
         const std::uint32_t key_size = sizeof(PipelineKey);
         keys.insert(keys.end(), reinterpret_cast<const char*>(&key_size), reinterpret_cast<const char*>(&key_size) + 4);
         for (const auto& [k, _] : pipelines)
@@ -412,8 +415,8 @@ struct VulkanGeRenderer::Impl {
             vkDestroyFence(vk.device, f.fence, nullptr);
             vkDestroyCommandPool(vk.device, f.pool, nullptr);
         }
-        for (auto& [_, t] : targets) destroy(t.color);
-        for (auto& [_, d] : depths) destroy(d);
+        for (auto& [_, t] : targets) destroy(t->color);
+        for (auto& [_, d] : depths) destroy(*d);
         for (auto& [_, t] : textures) destroy(t.image);
         destroy(white);
         if (readback.buffer) vmaDestroyBuffer(vk.allocator, readback.buffer, readback.memory);
@@ -432,8 +435,8 @@ struct VulkanGeRenderer::Impl {
         if (pending_scale != scale) {
             // Render targets are rebuilt at the new size and re-seeded from guest VRAM on first use.
             vkDeviceWaitIdle(vk.device);
-            for (auto& [_, t] : targets) destroy(t.color);
-            for (auto& [_, d] : depths) destroy(d);
+            for (auto& [_, t] : targets) destroy(t->color);
+            for (auto& [_, d] : depths) destroy(*d);
             targets.clear();
             depths.clear();
             scale = pending_scale;
@@ -537,16 +540,16 @@ struct VulkanGeRenderer::Impl {
         address = 0x04000000 | (address & 0x1FFFF0);
         stride = std::clamp<std::uint32_t>(stride, 64, 1024);
         auto it = targets.find(address);
-        if (it != targets.end() && it->second.stride == stride) {
-            it->second.format = format;
-            return it->second;
+        if (it != targets.end() && it->second->stride == stride) {
+            it->second->format = format;
+            return *it->second;
         }
         if (it != targets.end()) {
-            if (bound_target == &it->second) end_rendering();
-            frame().garbage.push_back(it->second.color);
+            if (bound_target == it->second.get()) end_rendering();
+            frame().garbage.push_back(it->second->color);
             targets.erase(it);
         }
-        Target& t = targets[address];
+        Target& t = *(targets[address] = std::make_unique<Target>());
         t.address = address;
         t.stride = stride;
         t.format = format;
@@ -562,8 +565,8 @@ struct VulkanGeRenderer::Impl {
     Image& depth(std::uint32_t address, const Target& t) {
         const std::uint64_t key = (std::uint64_t{0x04000000u | (address & 0x1FFFF0)} << 16) | t.stride;
         auto it = depths.find(key);
-        if (it != depths.end()) return it->second;
-        Image& d = depths[key];
+        if (it != depths.end()) return *it->second;
+        Image& d = *(depths[key] = std::make_unique<Image>());
         const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         d = make_image(t.color.width, t.color.height, vk.depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT, aspect);
@@ -721,8 +724,8 @@ struct VulkanGeRenderer::Impl {
     Target* target_containing(std::uint32_t address) {
         address = rt::ge::vram_canonical(address);
         for (auto& [base, t] : targets) {
-            const std::uint32_t size = t.stride * static_cast<std::uint32_t>(t.used_height * bytes_per_pixel(t.format));
-            if (address >= base && address < base + size) return &t;
+            const std::uint32_t size = t->stride * static_cast<std::uint32_t>(t->used_height * bytes_per_pixel(t->format));
+            if (address >= base && address < base + size) return t.get();
         }
         return nullptr;
     }
@@ -962,7 +965,7 @@ struct VulkanGeRenderer::Impl {
 
     // ---- draw --------------------------------------------------------------------------------------------
 
-    void draw(const ge::State& s, ge::Prim prim, const std::vector<ge::Vertex>& vertices) {
+    void draw(const ge::State& s, ge::Prim prim, const nx::vector<ge::Vertex>& vertices) {
         begin_frame();
         const std::uint32_t clear_bits = s.param(ge::CLEARMODE);
         const bool clear = clear_bits & 1;
@@ -1221,7 +1224,7 @@ struct VulkanGeRenderer::Impl {
     }
 
     VulkanGeRenderer::Output finish_frame(std::uint32_t address, std::uint32_t stride, int format,
-                                          std::vector<std::uint32_t>* capture) {
+                                          nx::vector<std::uint32_t>* capture) {
         // Saved once no new pipeline has appeared for ~10 s (the app may be killed rather than closed on Android).
         if (cache_dirty_frame && frame_number - cache_dirty_frame > 300) save_pipeline_cache();
         begin_frame();
@@ -1267,7 +1270,7 @@ VulkanGeRenderer::VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& mem
 
 VulkanGeRenderer::~VulkanGeRenderer() { impl_->shutdown(); }
 
-void VulkanGeRenderer::draw(const rt::ge::State& state, rt::ge::Prim prim, const std::vector<rt::ge::Vertex>& vertices) {
+void VulkanGeRenderer::draw(const rt::ge::State& state, rt::ge::Prim prim, const nx::vector<rt::ge::Vertex>& vertices) {
     impl_->draw(state, prim, vertices);
 }
 
@@ -1282,7 +1285,7 @@ int VulkanGeRenderer::scale() const { return impl_->scale; }
 void VulkanGeRenderer::set_guest_copies(bool on) { impl_->guest_copies = on; }
 
 VulkanGeRenderer::Output VulkanGeRenderer::finish_frame(std::uint32_t address, std::uint32_t stride, int format,
-                                                       std::vector<std::uint32_t>* capture) {
+                                                       nx::vector<std::uint32_t>* capture) {
     return impl_->finish_frame(address, stride, format, capture);
 }
 

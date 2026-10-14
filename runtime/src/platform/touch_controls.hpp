@@ -5,7 +5,8 @@
 // height. Fingers keep the control they started on; the D-pad and face buttons follow a sliding finger.
 
 #include <cstdint>
-#include <map>
+
+#include "core/foundation/containers/map.h"
 
 struct ImDrawList;
 
@@ -50,7 +51,7 @@ private:
     std::uint32_t face_bits(const Finger& f) const;
 
     float width_ = 1280, height_ = 720;
-    std::map<std::uint64_t, Finger> fingers_;
+    nx::map<std::uint64_t, Finger> fingers_;
     // A tap shorter than one input poll would never reach the game, which samples the pad once per frame:
     // buttons touched recently stay pressed for a few polls.
     static constexpr int kMinHoldPolls = 3;

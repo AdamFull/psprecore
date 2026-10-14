@@ -3,14 +3,15 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
-#include <map>
 #include <memory>
-#include <vector>
 
 #include "ff7cc/runtime/ge.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
 #include "gpu/soft_renderer.hpp"
+#include "core/foundation/containers/map.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -28,7 +29,7 @@ struct DisplayState {
     struct Callback {
         std::uint32_t signal_func, signal_arg, finish_func, finish_arg;
     };
-    std::map<int, Callback> callbacks;  // sceGeSetCallback
+    nx::map<int, Callback> callbacks;  // sceGeSetCallback
 } g_display;
 
 std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> g_renderer_factory;
@@ -36,6 +37,14 @@ std::function<void(std::uint32_t, std::uint32_t, std::uint32_t)> g_flip_handler;
 
 std::uint32_t g_pad_buttons = 0;
 std::uint8_t g_pad_lx = 128, g_pad_ly = 128;
+
+using Callback = decltype(g_display.callbacks)::mapped_type;
+
+nx::small_vector<Callback, 4> registered_callbacks() {
+    nx::small_vector<Callback, 4> out;
+    for (const auto& [_, cb] : g_display.callbacks) out.push_back(cb);
+    return out;
+}
 
 ge::Processor& gpu() {
     if (!g_display.ge) {
@@ -45,13 +54,16 @@ ge::Processor& gpu() {
             if (g_display.dump && g_display.frames == g_display.dump_frame)
                 std::fprintf(g_display.dump, "%08X: %08X  %s\n", pc, word, ge::describe(word).c_str());
         };
-        // GE interrupts: the handlers run as guest calls inside the sceGe call that is executing the list.
+        // GE interrupts: the handlers run as guest calls inside the sceGe call that is executing the list. They are
+        // copied first, since a handler may (un)register callbacks, which invalidates iterators into the map.
         g_display.ge->on_signal = [](std::uint32_t id) {
-            for (const auto& [_, cb] : g_display.callbacks)
+            const nx::small_vector<Callback, 4> handlers = registered_callbacks();
+            for (const Callback& cb : handlers)
                 if (cb.signal_func) kernel().call_guest(cb.signal_func, {id, cb.signal_arg});
         };
         g_display.ge->on_finish = [](std::uint32_t id) {
-            for (const auto& [_, cb] : g_display.callbacks)
+            const nx::small_vector<Callback, 4> handlers = registered_callbacks();
+            for (const Callback& cb : handlers)
                 if (cb.finish_func) kernel().call_guest(cb.finish_func, {id, cb.finish_arg});
         };
     }
@@ -188,7 +200,7 @@ void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly) {
     g_pad_ly = ly;
 }
 
-bool read_framebuffer(std::vector<std::uint32_t>& rgba, int& width, int& height) {
+bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height) {
     if (!g_display.framebuffer) return false;
     width = 480;
     height = 272;

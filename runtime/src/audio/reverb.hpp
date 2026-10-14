@@ -10,7 +10,8 @@
 
 #include <array>
 #include <cstdint>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt::audio {
 
@@ -38,7 +39,7 @@ private:
 
     int type_ = 0;
     const Preset* preset_ = nullptr;
-    std::vector<std::int16_t> buffer_;
+    nx::vector<std::int16_t> buffer_;
     std::size_t position_ = 0;
     // 44100 <-> 22050 Hz
     bool odd_ = false;

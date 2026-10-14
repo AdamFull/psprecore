@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "ff7cc/runtime/memory.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt::ge {
 
@@ -242,7 +243,7 @@ DecodeFn select_decoder(const VertexFormat& f) {
 }  // namespace
 
 void decode_vertices(const VertexFormat& f, const float* morph_weights, const std::uint8_t* data, std::uint32_t count,
-                     std::vector<Vertex>& out) {
+                     nx::vector<Vertex>& out) {
     const DecodeFn decode = select_decoder(f);
     out.resize(count);
     for (std::uint32_t i = 0; i < count; ++i)
@@ -303,7 +304,7 @@ void Processor::draw(std::uint32_t p) {
 
 int Processor::enqueue(std::uint32_t list, std::uint32_t stall, bool) {
     const int id = next_id_++;
-    auto& l = lists_[id];
+    List& l = *(lists_[id] = std::make_unique<List>());
     l.pc = list & 0x0FFFFFFF;
     l.stall = stall & 0x0FFFFFFF;
     ++stats_.lists;
@@ -312,22 +313,23 @@ int Processor::enqueue(std::uint32_t list, std::uint32_t stall, bool) {
     stats_.run_ns += now_ns() - start;
     // Keep only unfinished lists (plus a little history for list_done()).
     for (auto it = lists_.begin(); it != lists_.end() && lists_.size() > 64;)
-        it = it->second.done ? lists_.erase(it) : std::next(it);
+        it = it->second->done ? lists_.erase(it) : std::next(it);
     return id;
 }
 
 void Processor::update_stall(int id, std::uint32_t stall) {
     const auto it = lists_.find(id);
-    if (it == lists_.end() || it->second.done) return;
-    it->second.stall = stall & 0x0FFFFFFF;
+    if (it == lists_.end() || it->second->done) return;
+    List& l = *it->second;
+    l.stall = stall & 0x0FFFFFFF;
     const std::uint64_t start = now_ns();
-    run(it->second);
+    run(l);
     stats_.run_ns += now_ns() - start;
 }
 
 bool Processor::list_done(int id) const {
     const auto it = lists_.find(id);
-    return it == lists_.end() || it->second.done;
+    return it == lists_.end() || it->second->done;
 }
 
 void Processor::run(List& l) {

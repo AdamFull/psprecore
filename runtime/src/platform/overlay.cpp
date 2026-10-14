@@ -5,10 +5,10 @@
 #include <algorithm>
 #include <ctime>
 #include <string_view>
-#include <vector>
 
 #include "ff7cc/platform/display.hpp"
 #include "ff7cc/runtime/hle.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::platform {
 
@@ -150,7 +150,7 @@ void Overlay::draw_menu() {
 
 std::uint64_t Overlay::icon(const std::string& path) {
     if (const auto it = icons_.find(path); it != icons_.end()) return it->second;
-    std::vector<std::uint32_t> rgba;
+    nx::vector<std::uint32_t> rgba;
     int w = 0, h = 0;
     const std::uint64_t texture = rt::read_png(path, rgba, w, h) ? display_.create_texture(rgba.data(), w, h) : 0;
     icons_.emplace(path, texture);

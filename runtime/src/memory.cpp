@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
-#include <vector>
 
 #include "ff7cc/recomp/recomp.h"
 #include "ff7cc/runtime/memory.hpp"
@@ -10,6 +9,8 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+
+#include "core/foundation/core/foundation.h"
 #endif
 
 uint8_t* g_membase = nullptr;
@@ -101,7 +102,7 @@ std::uint32_t GuestHeap::alloc(std::uint32_t size, std::uint32_t align, bool hig
     size = (size + 15) & ~15u;
     if (align < 16) align = 16;
     // Walk the gaps between used blocks.
-    std::vector<std::pair<std::uint32_t, std::uint32_t>> gaps;  // [begin, end)
+    nx::vector<std::pair<std::uint32_t, std::uint32_t>> gaps;  // [begin, end)
     std::uint32_t cursor = begin_;
     for (const auto& b : used_) {
         if (b.addr > cursor) gaps.emplace_back(cursor, b.addr);

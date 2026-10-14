@@ -2,6 +2,9 @@
 // GPU image (the Vulkan GE renderer's render target) and blitted, scaled and aspect-preserving, into the
 // swapchain; the Dear ImGui overlay is drawn on top. One frame in flight keeps this simple.
 
+// Before the SDL/Vulkan headers, which pull in <windows.h>: its TRANSPARENT macro collides with a name in nx::map.
+#include "core/foundation/containers/map.h"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <imgui.h>
@@ -21,14 +24,14 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
-#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "ff7cc/platform/display.hpp"
 #include "platform/touch_controls.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::platform {
 
@@ -54,15 +57,15 @@ struct Display::Impl {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_UNORM;
     VkExtent2D extent{};
-    std::vector<VkImage> images;
-    std::vector<VkImageView> views;
+    nx::vector<VkImage> images;
+    nx::vector<VkImageView> views;
     bool swapchain_dirty = false;
     bool background = false;  // Android: the window surface is gone until the app returns
 
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkSemaphore acquired = VK_NULL_HANDLE;
-    std::vector<VkSemaphore> rendered;  // one per swapchain image
+    nx::vector<VkSemaphore> rendered;  // one per swapchain image
     VkFence fence = VK_NULL_HANDLE;
 
     VkImage frame = VK_NULL_HANDLE;
@@ -84,7 +87,7 @@ struct Display::Impl {
         SDL_FingerID id;
         int polls;
     };
-    std::vector<InjectedFinger> injected;
+    nx::vector<InjectedFinger> injected;
 
     bool imgui = false;
     float ui_dpi = 1.0f, ui_scale = 0.0f;  // the font is rasterised at the DPI scale; ui_scale follows the window
@@ -98,7 +101,7 @@ struct Display::Impl {
         VmaAllocation memory;
         VkImageView view;
     };
-    std::map<std::uint64_t, UiTexture> ui_textures;  // by descriptor set
+    nx::map<std::uint64_t, UiTexture> ui_textures;  // by descriptor set
     bool can_capture = false;  // swapchain images support TRANSFER_SRC
     std::function<void(const std::uint32_t*, int, int)> capture;
 
@@ -117,8 +120,8 @@ void Display::Impl::create_device() {
     check(volkInitialize(), "volkInitialize");
     Uint32 ext_count = 0;
     const char* const* sdl_exts = SDL_Vulkan_GetInstanceExtensions(&ext_count);
-    std::vector<const char*> exts(sdl_exts, sdl_exts + ext_count);
-    std::vector<const char*> layers;
+    nx::vector<const char*> exts(sdl_exts, sdl_exts + ext_count);
+    nx::vector<const char*> layers;
     if (std::getenv("FF7CC_VULKAN_VALIDATION")) layers.push_back("VK_LAYER_KHRONOS_validation");
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -137,13 +140,13 @@ void Display::Impl::create_device() {
 
     std::uint32_t count = 0;
     vkEnumeratePhysicalDevices(instance, &count, nullptr);
-    std::vector<VkPhysicalDevice> gpus(count);
+    nx::vector<VkPhysicalDevice> gpus(count);
     vkEnumeratePhysicalDevices(instance, &count, gpus.data());
     int best_score = -1;
     for (VkPhysicalDevice g : gpus) {
         std::uint32_t qcount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(g, &qcount, nullptr);
-        std::vector<VkQueueFamilyProperties> qprops(qcount);
+        nx::vector<VkQueueFamilyProperties> qprops(qcount);
         vkGetPhysicalDeviceQueueFamilyProperties(g, &qcount, qprops.data());
         for (std::uint32_t i = 0; i < qcount; ++i) {
             VkBool32 present = VK_FALSE;
@@ -169,12 +172,12 @@ void Display::Impl::create_device() {
     const std::uint32_t api = std::min<std::uint32_t>(props.apiVersion, VK_API_VERSION_1_3);
     std::uint32_t ext_total = 0;
     vkEnumerateDeviceExtensionProperties(gpu, nullptr, &ext_total, nullptr);
-    std::vector<VkExtensionProperties> available(ext_total);
+    nx::vector<VkExtensionProperties> available(ext_total);
     vkEnumerateDeviceExtensionProperties(gpu, nullptr, &ext_total, available.data());
     const auto has_ext = [&](const char* name) {
         return std::any_of(available.begin(), available.end(), [&](const auto& e) { return std::strcmp(e.extensionName, name) == 0; });
     };
-    std::vector<const char*> device_exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    nx::vector<const char*> device_exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     const bool core13 = api >= VK_API_VERSION_1_3;
     if (!core13) {
         if (!has_ext(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) throw std::runtime_error("Vulkan dynamic rendering is not supported");
@@ -272,7 +275,7 @@ void Display::Impl::create_swapchain() {
 
     std::uint32_t count = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &count, nullptr);
-    std::vector<VkSurfaceFormatKHR> formats(count);
+    nx::vector<VkSurfaceFormatKHR> formats(count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &count, formats.data());
     VkSurfaceFormatKHR chosen = formats[0];
     for (const auto& f : formats)
@@ -383,7 +386,7 @@ void Display::Impl::init_imgui() {
     const float dpi = std::max(1.0f, SDL_GetWindowDisplayScale(window));
     ui_dpi = dpi;
     const float size = std::round(18.0f * dpi);
-    std::vector<std::filesystem::path> fonts;
+    nx::vector<std::filesystem::path> fonts;
     if (const char* windir = std::getenv("WINDIR")) fonts.push_back(std::filesystem::path(windir) / "Fonts" / "segoeui.ttf");
     fonts.push_back("/system/fonts/Roboto-Regular.ttf");
     fonts.push_back("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
@@ -825,7 +828,7 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
     if (readback) {
         vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
         vmaInvalidateAllocation(allocator, readback_mem, 0, VK_WHOLE_SIZE);
-        std::vector<std::uint32_t> rgba(static_cast<std::size_t>(extent.width) * extent.height);
+        nx::vector<std::uint32_t> rgba(static_cast<std::size_t>(extent.width) * extent.height);
         std::memcpy(rgba.data(), readback_ptr, rgba.size() * 4);
         const bool bgra = swapchain_format == VK_FORMAT_B8G8R8A8_UNORM || swapchain_format == VK_FORMAT_B8G8R8A8_SRGB;
         for (auto& px : rgba) {

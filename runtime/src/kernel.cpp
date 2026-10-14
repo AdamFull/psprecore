@@ -6,6 +6,9 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/foundation.h"
+
 namespace ff7cc::rt {
 
 namespace {
@@ -221,8 +224,8 @@ void Kernel::rotate_ready_queue() {
     schedule_from(tl_current);
 }
 
-std::vector<Thread*> Kernel::waiters(WaitType type, int object) {
-    std::vector<Thread*> out;
+nx::vector<Thread*> Kernel::waiters(WaitType type, int object) {
+    nx::vector<Thread*> out;
     for (auto& [_, t] : threads_)
         if (t->state == Thread::State::Waiting && t->wait == type && t->wait_object == object) out.push_back(t.get());
     // Wake order: priority, then the order they started waiting.
@@ -256,7 +259,9 @@ void Kernel::notify_callback(int id, std::uint32_t arg) {
 void Kernel::check_callbacks() {
     if (!tl_current) return;
     Thread& t = *tl_current;
+    // Stepped by id: the guest callback may create or delete callbacks, which invalidates iterators.
     for (auto it = callbacks_.begin(); it != callbacks_.end();) {
+        const int id = it->first;
         Callback& cb = *it->second;
         if (cb.owner != t.id || cb.notify_count == 0) {
             ++it;
@@ -271,7 +276,8 @@ void Kernel::check_callbacks() {
         if (const RecompFunc f = recomp_lookup(cb.entry)) f(&t.ctx);
         const bool remove = t.ctx.r[2] != 0;
         t.ctx = saved;
-        it = remove ? callbacks_.erase(it) : std::next(it);
+        if (remove) callbacks_.erase(id);
+        it = callbacks_.upper_bound(id);
     }
 }
 
@@ -315,13 +321,20 @@ void Kernel::fire_vblank() {
     ++vblanks_;
     next_vblank_us_ += kVblankPeriodUs;
     for (Thread* w : waiters(WaitType::Vblank, 0)) wake(*w, 0);
-    for (auto& [key, s] : subintrs_) {
-        if (key.first != kVblankInterrupt || !s.enabled || !s.handler) continue;
-        const RecompFunc f = recomp_lookup(s.handler);
+    // Collected first: a handler may register another one, which invalidates iterators into subintrs_.
+    struct Due {
+        int sub;
+        std::uint32_t handler, arg;
+    };
+    nx::small_vector<Due, 8> due;
+    for (const auto& [key, s] : subintrs_)
+        if (key.first == kVblankInterrupt && s.enabled && s.handler) due.push_back({key.second, s.handler, s.arg});
+    for (const Due& d : due) {
+        const RecompFunc f = recomp_lookup(d.handler);
         if (!f) continue;
         recomp_context_init(&interrupt_ctx_);
-        interrupt_ctx_.r[4] = static_cast<std::uint32_t>(key.second);
-        interrupt_ctx_.r[5] = s.arg;
+        interrupt_ctx_.r[4] = static_cast<std::uint32_t>(d.sub);
+        interrupt_ctx_.r[5] = d.arg;
         interrupt_ctx_.r[29] = interrupt_stack_ + 0x4000 - 0x40;
         f(&interrupt_ctx_);
     }

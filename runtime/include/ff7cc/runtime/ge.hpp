@@ -9,11 +9,12 @@
 #include <bit>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::rt {
 
@@ -101,7 +102,7 @@ struct State {
 class Renderer {
 public:
     virtual ~Renderer() = default;
-    virtual void draw(const State& state, Prim prim, const std::vector<Vertex>& vertices) = 0;
+    virtual void draw(const State& state, Prim prim, const nx::vector<Vertex>& vertices) = 0;
     virtual void transfer(const State& state) = 0;  // TRANSFERSTART block copy
 };
 
@@ -115,7 +116,7 @@ std::string_view command_name(std::uint8_t cmd);
 
 // Decodes `count` consecutive vertices of format `f` at `data`, as draws do (benchmarks, tools).
 void decode_vertices(const VertexFormat& f, const float* morph_weights, const std::uint8_t* data, std::uint32_t count,
-                     std::vector<Vertex>& out);
+                     nx::vector<Vertex>& out);
 
 struct Draw {
     std::uint32_t list_pc = 0;  // address of the PRIM command
@@ -159,7 +160,7 @@ private:
     struct List {
         std::uint32_t pc = 0, stall = 0;
         bool done = false;
-        std::vector<std::uint32_t> call_stack;
+        nx::vector<std::uint32_t> call_stack;
         std::uint32_t signal = 0;  // parameter of a SIGNAL awaiting its END
         bool signal_pending = false;
         std::uint32_t finish = 0;
@@ -172,13 +173,14 @@ private:
     GuestMemory& memory_;
     State state_;
     std::unique_ptr<Renderer> renderer_;
-    std::vector<Vertex> vertices_;
+    nx::vector<Vertex> vertices_;
     std::uint32_t base_ = 0, offset_ = 0, vaddr_ = 0, iaddr_ = 0;
     std::uint32_t world_index_ = 0, view_index_ = 0, proj_index_ = 0, tgen_index_ = 0, bone_index_ = 0;
     bool bbox_visible_ = true;
     bool warned_patches_ = false;
     std::uint32_t warned_signals_ = 0;  // bit per unsupported signal behaviour already reported
-    std::map<int, List> lists_;
+    // Lists stay where they are while running: a signal handler may enqueue more (nx::map moves its elements).
+    nx::map<int, std::unique_ptr<List>> lists_;
     int next_id_ = 1;
     Stats stats_;
 };

@@ -5,6 +5,8 @@
 
 #include <dav1d/dav1d.h>
 
+#include "core/foundation/core/foundation.h"
+
 namespace ff7cc::rt::media {
 
 namespace {
@@ -14,7 +16,7 @@ std::uint32_t le32(const std::uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] <<
 int clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
 // BT.601 YUV -> RGB in 16.16 fixed point, limited or full range.
-void convert(const Dav1dPicture& pic, std::vector<std::uint32_t>& rgba) {
+void convert(const Dav1dPicture& pic, nx::vector<std::uint32_t>& rgba) {
     const int w = pic.p.w, h = pic.p.h;
     rgba.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
     const bool full = pic.seq_hdr && pic.seq_hdr->color_range;
@@ -77,14 +79,14 @@ Av1Video::~Av1Video() {
     if (file_) std::fclose(file_);
 }
 
-bool Av1Video::read_packet(std::vector<std::uint8_t>& out) {
+bool Av1Video::read_packet(nx::vector<std::uint8_t>& out) {
     std::uint8_t frame_header[12];
     if (std::fread(frame_header, 1, 12, file_) != 12) return false;
     out.resize(le32(frame_header));
     return std::fread(out.data(), 1, out.size(), file_) == out.size();
 }
 
-bool Av1Video::next(std::vector<std::uint32_t>& rgba) {
+bool Av1Video::next(nx::vector<std::uint32_t>& rgba) {
     Dav1dPicture pic{};
     for (;;) {
         const int got = dav1d_get_picture(decoder_, &pic);

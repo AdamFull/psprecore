@@ -10,13 +10,13 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
-#include <vector>
 
 #include "audio/vorbis.hpp"
 #include "ff7cc/formats/atrac.hpp"
 #include "ff7cc/formats/cooked.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::rt {
 
@@ -42,7 +42,7 @@ struct Slot {
     bool has_loop = false;
     std::uint32_t loop_start = 0, loop_end = 0;  // game timeline, inclusive end
     std::uint32_t end_sample = 0;                // last playable sample
-    std::vector<std::int16_t> scratch;
+    nx::vector<std::int16_t> scratch;
 };
 Slot g_slots[6];
 

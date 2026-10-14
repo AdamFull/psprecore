@@ -2,6 +2,11 @@
 
 #ifdef _WIN32
 
+// Before <windows.h>: its TRANSPARENT macro (wingdi.h) collides with a name in nx::map.
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/containers/map.h"
+#include "core/foundation/core/foundation.h"
+
 #include <windows.h>
 #include <dbghelp.h>
 #include <tlhelp32.h>
@@ -9,11 +14,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <map>
 #include <string>
 #include <thread>
-#include <unordered_map>
-#include <vector>
+
 
 namespace ff7cc::platform {
 
@@ -21,12 +24,12 @@ struct SamplingProfiler::Impl {
     std::atomic<bool> stop{false};
     std::thread sampler;
     DWORD sampler_id = 0;
-    std::vector<std::uint64_t> samples;  // instruction pointers
+    nx::vector<std::uint64_t> samples;  // instruction pointers
 
     void run() {
         sampler_id = GetCurrentThreadId();
-        std::unordered_map<DWORD, HANDLE> threads;
-        std::vector<std::uint64_t> batch;
+        nx::hash_map<DWORD, HANDLE> threads;
+        nx::vector<std::uint64_t> batch;
         batch.reserve(256);
         for (int tick = 0; !stop.load(std::memory_order_relaxed); ++tick) {
             if (tick % 200 == 0) refresh(threads);
@@ -46,7 +49,7 @@ struct SamplingProfiler::Impl {
         for (const auto& [_, handle] : threads) CloseHandle(handle);
     }
 
-    void refresh(std::unordered_map<DWORD, HANDLE>& threads) const {
+    void refresh(nx::hash_map<DWORD, HANDLE>& threads) const {
         const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if (snap == INVALID_HANDLE_VALUE) return;
         THREADENTRY32 te{};
@@ -78,9 +81,9 @@ void SamplingProfiler::report(std::FILE* out, int top) {
     const HANDLE process = GetCurrentProcess();
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
     SymInitialize(process, nullptr, TRUE);
-    std::unordered_map<std::uint64_t, std::uint64_t> by_address;
+    nx::hash_map<std::uint64_t, std::uint64_t> by_address;
     for (const std::uint64_t ip : impl_->samples) ++by_address[ip];
-    std::map<std::string, std::uint64_t> by_function;
+    nx::map<std::string, std::uint64_t> by_function;
     std::uint64_t counted = 0;
     alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512];
     for (const auto& [ip, n] : by_address) {
@@ -98,7 +101,7 @@ void SamplingProfiler::report(std::FILE* out, int top) {
         counted += n;
     }
     SymCleanup(process);
-    std::vector<std::pair<std::uint64_t, std::string>> sorted;
+    nx::vector<std::pair<std::uint64_t, std::string>> sorted;
     for (const auto& [name, n] : by_function) sorted.emplace_back(n, name);
     std::sort(sorted.rbegin(), sorted.rend());
     std::fprintf(out, "profile: %llu samples outside waits\n", static_cast<unsigned long long>(counted));
