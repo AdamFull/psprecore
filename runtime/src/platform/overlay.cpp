@@ -82,6 +82,8 @@ void Overlay::draw() {
 }
 
 bool Overlay::pad_glyphs() const {
+    // Not for the keyboard: the overlay is driven with arrows, Enter and Escape, not the game's keys.
+    if (display_.button_glyphs() == ButtonGlyphs::Keyboard) return false;
     return display_.gamepad_connected() || settings_.button_glyphs != ButtonGlyphs::Auto;
 }
 
@@ -146,7 +148,7 @@ void Overlay::draw_menu() {
 #endif
         ImGui::SeparatorText("Controls");
         int glyphs = static_cast<int>(s.button_glyphs);
-        if (ImGui::Combo("Button glyphs", &glyphs, "Auto (gamepad)\0PlayStation\0Xbox\0Nintendo\0"))
+        if (ImGui::Combo("Button glyphs", &glyphs, "Auto (last device used)\0PlayStation\0Xbox\0Nintendo\0Keyboard\0"))
             s.button_glyphs = static_cast<ButtonGlyphs>(glyphs);
         ImGui::PopItemWidth();
         if (s != settings_) {

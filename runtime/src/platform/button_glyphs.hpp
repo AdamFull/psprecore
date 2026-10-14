@@ -2,7 +2,8 @@
 
 // Button glyphs for what the port draws itself (touch controls, pause menu, save dialog), in the style of the
 // gamepad in use: PlayStation symbols, or Xbox / Nintendo letters for the buttons at the same positions (SDL maps
-// pads by position, so Cross is the bottom face button: A on an Xbox pad, B on a Nintendo one).
+// pads by position, so Cross is the bottom face button: A on an Xbox pad, B on a Nintendo one), or the keyboard keys
+// that press the buttons.
 
 #include <imgui.h>
 

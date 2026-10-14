@@ -22,6 +22,7 @@ constexpr ImU32 kXboxColors[4] = {IM_COL32(110, 200, 60, 240), IM_COL32(240, 75,
                                   IM_COL32(250, 200, 40, 240)};
 constexpr const char* kXboxLetters[4] = {"A", "B", "X", "Y"};
 constexpr const char* kNintendoLetters[4] = {"B", "A", "Y", "X"};
+constexpr const char* kKeyboardLetters[4] = {"K", "L", "J", "I"};  // the keys mapped in display_vulkan.cpp
 constexpr ImU32 kNintendoColor = IM_COL32(240, 240, 240, 240);
 
 void draw_letter(ImDrawList* dl, ImVec2 center, float size, const char* letter, ImU32 color) {
@@ -38,6 +39,7 @@ void draw_face_symbol(ImDrawList* dl, ImVec2 c, float s, std::uint32_t button, B
     switch (glyphs) {
         case ButtonGlyphs::Xbox: draw_letter(dl, c, s, kXboxLetters[i], kXboxColors[i]); return;
         case ButtonGlyphs::Nintendo: draw_letter(dl, c, s, kNintendoLetters[i], kNintendoColor); return;
+        case ButtonGlyphs::Keyboard: draw_letter(dl, c, s, kKeyboardLetters[i], kNintendoColor); return;
         default: break;
     }
     const ImU32 color = kPlayStationColors[i];
@@ -64,11 +66,12 @@ void draw_face_glyph(ImDrawList* dl, ImVec2 center, float radius, std::uint32_t 
 
 const char* button_name(std::uint32_t button, ButtonGlyphs glyphs) {
     const bool xbox = glyphs == ButtonGlyphs::Xbox, nintendo = glyphs == ButtonGlyphs::Nintendo;
+    const bool keyboard = glyphs == ButtonGlyphs::Keyboard;
     switch (button) {
-        case kLTrigger: return xbox ? "LB" : "L";
-        case kRTrigger: return xbox ? "RB" : "R";
-        case kSelect: return xbox ? "BACK" : nintendo ? "-" : "SELECT";
-        case kStart: return nintendo ? "+" : "START";
+        case kLTrigger: return xbox ? "LB" : keyboard ? "Q" : "L";
+        case kRTrigger: return xbox ? "RB" : keyboard ? "E" : "R";
+        case kSelect: return xbox ? "BACK" : nintendo ? "-" : keyboard ? "BKSP" : "SELECT";
+        case kStart: return nintendo ? "+" : keyboard ? "ENTER" : "START";
         default: return "?";
     }
 }
@@ -77,6 +80,7 @@ const char* guide_name(ButtonGlyphs glyphs) {
     switch (glyphs) {
         case ButtonGlyphs::Xbox: return "Xbox button";
         case ButtonGlyphs::Nintendo: return "HOME button";
+        case ButtonGlyphs::Keyboard: return "Guide button";
         default: return "PS button";
     }
 }

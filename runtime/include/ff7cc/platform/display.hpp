@@ -21,8 +21,9 @@ enum PspButton : std::uint32_t {
     kLTrigger = 0x0100, kRTrigger = 0x0200, kTriangle = 0x1000, kCircle = 0x2000, kCross = 0x4000, kSquare = 0x8000,
 };
 
-// Whose button names and symbols the port's own UI shows (touch controls, pause menu, save dialog).
-enum class ButtonGlyphs : std::uint8_t { Auto, PlayStation, Xbox, Nintendo };
+// Whose button names and symbols are shown (the game's icons, touch controls, pause menu, save dialog). Keyboard:
+// the keys that press the buttons.
+enum class ButtonGlyphs : std::uint8_t { Auto, PlayStation, Xbox, Nintendo, Keyboard };
 
 class Display {
 public:
@@ -63,7 +64,8 @@ public:
     void set_touch_controls(bool visible);
     bool touch_controls() const;
     bool gamepad_connected() const;
-    // Auto: those of the connected gamepad, PlayStation without one (like the game's own prompts).
+    // Auto: those of the last device used (the gamepad's kind, the keyboard's keys, PlayStation for touch); before
+    // any input the connected gamepad's, else the keyboard's (PlayStation on Android).
     void set_button_glyphs(ButtonGlyphs glyphs);
     ButtonGlyphs button_glyphs() const;  // resolved (never Auto)
 

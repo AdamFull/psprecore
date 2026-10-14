@@ -39,9 +39,14 @@ constexpr std::uint8_t kLetterA[5] = {0b01110, 0b10001, 0b11111, 0b10001, 0b1000
 constexpr std::uint8_t kLetterB[5] = {0b11110, 0b10001, 0b11110, 0b10001, 0b11110};
 constexpr std::uint8_t kLetterX[5] = {0b10001, 0b01010, 0b00100, 0b01010, 0b10001};
 constexpr std::uint8_t kLetterY[5] = {0b10001, 0b01010, 0b00100, 0b00100, 0b00100};
+constexpr std::uint8_t kLetterK[5] = {0b10001, 0b10010, 0b11100, 0b10010, 0b10001};
+constexpr std::uint8_t kLetterL[5] = {0b10000, 0b10000, 0b10000, 0b10000, 0b11111};
+constexpr std::uint8_t kLetterJ[5] = {0b00111, 0b00010, 0b00010, 0b10010, 0b01100};
+constexpr std::uint8_t kLetterI[5] = {0b01110, 0b00100, 0b00100, 0b00100, 0b01110};
 // By face (Cross, Circle, Square, Triangle): the button at the same position.
 constexpr const std::uint8_t* kXboxLetters[4] = {kLetterA, kLetterB, kLetterX, kLetterY};
 constexpr const std::uint8_t* kNintendoLetters[4] = {kLetterB, kLetterA, kLetterY, kLetterX};
+constexpr const std::uint8_t* kKeyboardLetters[4] = {kLetterK, kLetterL, kLetterJ, kLetterI};  // display_vulkan.cpp keys
 // Xbox button colours (RGB, R in the low byte), light enough to read on the dark discs.
 constexpr std::uint32_t kXboxColors[4] = {0x46D26E, 0x4650F0, 0xFFA05A, 0x28D2FA};
 
@@ -83,7 +88,9 @@ void draw_button_icons(const IconAtlas& atlas, std::uint32_t* rgba, int width, I
         for (int y = cy - 2; y <= cy + 2; ++y)
             for (int x = cx - 2; x <= cx + 2; ++x)
                 if (luminance(at(x, y)) > luminance(ink)) ink = at(x, y);
-        const std::uint8_t* letter = style == IconStyle::Xbox ? kXboxLetters[icon.face] : kNintendoLetters[icon.face];
+        const std::uint8_t* letter = style == IconStyle::Xbox       ? kXboxLetters[icon.face]
+                                     : style == IconStyle::Nintendo ? kNintendoLetters[icon.face]
+                                                                    : kKeyboardLetters[icon.face];
         if (style == IconStyle::Xbox) ink = (ink & 0xFF000000u) | kXboxColors[icon.face];
         for (int y = 0; y < 5; ++y)
             for (int x = 0; x < 5; ++x) at(cx - 2 + x, cy - 2 + y) = (letter[y] >> (4 - x)) & 1 ? ink : disc;

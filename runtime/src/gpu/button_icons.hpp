@@ -3,7 +3,8 @@
 // The game's PlayStation button icons redrawn for other gamepads. The icons are small pictures inside UI textures
 // (the battle HUD atlas, the text font sheet): a dark disc with a ring and a 5x5 symbol. Known textures are listed
 // by their size, format and a hash of their texels; when one is decoded, each icon's symbol is replaced by the
-// letter of the button at the same position (A/B/X/Y on Xbox pads, B/A/Y/X on Nintendo ones), keeping the disc.
+// letter of the button at the same position (A/B/X/Y on Xbox pads, B/A/Y/X on Nintendo ones) or of the keyboard key
+// that presses it, keeping the disc.
 // Only positions and hashes are listed here, no game data.
 
 #include <cstddef>
@@ -11,7 +12,7 @@
 
 namespace ff7cc::rt::gpu {
 
-enum class IconStyle : std::uint8_t { PlayStation, Xbox, Nintendo };
+enum class IconStyle : std::uint8_t { PlayStation, Xbox, Nintendo, Keyboard };
 
 struct IconAtlas;
 

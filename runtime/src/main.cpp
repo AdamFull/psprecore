@@ -928,6 +928,7 @@ int main(int argc, char** argv) {
                     const platform::ButtonGlyphs g = display->button_glyphs();
                     vulkan_renderer->set_button_icons(g == platform::ButtonGlyphs::Xbox       ? rt::gpu::IconStyle::Xbox
                                                       : g == platform::ButtonGlyphs::Nintendo ? rt::gpu::IconStyle::Nintendo
+                                                      : g == platform::ButtonGlyphs::Keyboard ? rt::gpu::IconStyle::Keyboard
                                                                                               : rt::gpu::IconStyle::PlayStation);
                 }
                 if (display->in_background()) {  // Android: hold the game until the app returns

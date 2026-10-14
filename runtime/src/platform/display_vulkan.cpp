@@ -88,7 +88,21 @@ struct Display::Impl {
     SDL_Gamepad* gamepad = nullptr;
     ButtonGlyphs glyphs = ButtonGlyphs::Auto;             // the setting
     ButtonGlyphs pad_glyphs = ButtonGlyphs::PlayStation;  // the connected gamepad's
-    ButtonGlyphs resolved_glyphs() const { return glyphs != ButtonGlyphs::Auto ? glyphs : pad_glyphs; }
+    enum class Device : std::uint8_t { None, Keyboard, Gamepad, Touch } last_device = Device::None;
+    ButtonGlyphs resolved_glyphs() const {
+        if (glyphs != ButtonGlyphs::Auto) return glyphs;
+        switch (last_device) {
+            case Device::Keyboard: return ButtonGlyphs::Keyboard;
+            case Device::Gamepad: return pad_glyphs;
+            case Device::Touch: return ButtonGlyphs::PlayStation;
+            default: break;
+        }
+#ifdef __ANDROID__
+        return gamepad ? pad_glyphs : ButtonGlyphs::PlayStation;
+#else
+        return gamepad ? pad_glyphs : ButtonGlyphs::Keyboard;
+#endif
+    }
     bool menu_request = false;
     bool stick_l = false, stick_r = false;
     TouchControls touch;
@@ -609,13 +623,17 @@ bool Display::poll_events() {
         switch (e.type) {
             case SDL_EVENT_FINGER_DOWN:
                 d.touch_mode = true;
+                d.last_device = Impl::Device::Touch;
                 d.touch.finger_down(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y);
                 break;
             case SDL_EVENT_FINGER_MOTION: d.touch.finger_motion(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y); break;
             case SDL_EVENT_FINGER_UP:
             case SDL_EVENT_FINGER_CANCELED: d.touch.finger_up(e.tfinger.fingerID); break;
             case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-                if (std::abs(e.gaxis.value) > 16000) d.touch_mode = false;
+                if (std::abs(e.gaxis.value) > 16000) {
+                    d.touch_mode = false;
+                    d.last_device = Impl::Device::Gamepad;
+                }
                 break;
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_WILL_ENTER_BACKGROUND:
@@ -650,7 +668,10 @@ bool Display::poll_events() {
                         break;  // Alt+Enter is not Start
                     }
                 }
-                if (const auto bit = key_bit(e.key.key)) d.keyboard_buttons = down ? d.keyboard_buttons | bit : d.keyboard_buttons & ~bit;
+                if (const auto bit = key_bit(e.key.key)) {
+                    d.keyboard_buttons = down ? d.keyboard_buttons | bit : d.keyboard_buttons & ~bit;
+                    if (down) d.last_device = Impl::Device::Keyboard;
+                }
                 const float v = down ? 1.0f : 0.0f;
                 if (e.key.key == SDLK_A) d.key_x = -v;
                 if (e.key.key == SDLK_D) d.key_x = v;
@@ -667,6 +688,7 @@ bool Display::poll_events() {
                     d.gamepad = nullptr;
                     d.gamepad_buttons = 0;
                     d.pad_glyphs = ButtonGlyphs::PlayStation;
+                    if (d.last_device == Impl::Device::Gamepad) d.last_device = Impl::Device::None;
                 }
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -951,7 +973,10 @@ bool Display::take_menu_request() {
     return std::exchange(impl_->menu_request, false) || touch;
 }
 
-void Display::set_touch_controls(bool visible) { impl_->touch_mode = visible; }
+void Display::set_touch_controls(bool visible) {
+    impl_->touch_mode = visible;
+    if (visible) impl_->last_device = Impl::Device::Touch;
+}
 
 bool Display::touch_controls() const { return impl_->touch_mode; }
 

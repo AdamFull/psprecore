@@ -17,10 +17,10 @@ int to_int(nx::string_view v, int fallback) {
     return out;
 }
 
-constexpr const char* kGlyphNames[] = {"auto", "playstation", "xbox", "nintendo"};
+constexpr const char* kGlyphNames[] = {"auto", "playstation", "xbox", "nintendo", "keyboard"};
 
 ButtonGlyphs to_glyphs(nx::string_view v) {
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 5; ++i)
         if (v == kGlyphNames[i]) return static_cast<ButtonGlyphs>(i);
     return ButtonGlyphs::Auto;
 }
