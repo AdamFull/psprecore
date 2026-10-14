@@ -19,7 +19,7 @@ copy; everything derived from it is generated locally and never committed.
 | `libs/analysis` | Function discovery, control flow, jump tables |
 | `libs/recomp` | The C code generator |
 | `libs/formats` | ELF/PRX, ATRAC3, PSMF, cooked media; file and text helpers |
-| `libs/nx` | [nx-foundation](https://github.com/AdamFull/nx-foundation) (submodule in `libs/nx/core/foundation`) and its build glue |
+| `libs/nx-foundation` | [nx-foundation](https://github.com/AdamFull/nx-foundation) (submodule): containers, strings, threads, files, command line |
 | `runtime` | The runtime (`psprecore::rt`), the GE renderers, the front end (`psprecore::platform`), shaders |
 | `tools` | `psprecomp` (recompiler), `psprx` (PRX inspector, NIDs, disassembly); Python analysis scripts |
 | `tests` | Unit tests (no game data needed); `tests/allegrex` for `scripts/check_allegrex.ps1` |
@@ -31,7 +31,7 @@ Requirements: CMake ≥ 3.25, Ninja, LLVM/Clang, the Vulkan SDK (slangc). On Win
 the Windows SDK and CRT used by `clang-cl`); `scripts\build.ps1` sets up that environment itself.
 
 ```
-git submodule update --init
+git submodule update --init --recursive
 scripts\build.ps1                     # Windows: configure, build, run tests (-Preset, -NoTest, -Target)
 cmake --preset linux-x64-debug && cmake --build --preset linux-x64-debug && ctest --preset linux-x64-debug
 ```

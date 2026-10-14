@@ -36,10 +36,18 @@ if(PSPRECORE_BUILD_GAME)
     include(PsprecoreGame)
 endif()
 
-# nx-foundation (github.com/AdamFull/nx-foundation, submodule in libs/nx/core/foundation), unless the including
-# project provides it.
+# nx-foundation (github.com/AdamFull/nx-foundation, submodule in libs/nx-foundation), unless the including project
+# provides it. Its own third-party code is in submodules too (git submodule update --init --recursive); Tracy is not
+# needed (the profiler stays off).
 if(NOT TARGET nx::foundation)
-    add_subdirectory(libs/nx)
+    set(NX_FOUNDATION_TRACY OFF CACHE BOOL "" FORCE)
+    set(NX_FOUNDATION_TESTS OFF CACHE BOOL "" FORCE)
+    # Games are shared libraries on Android (libmain.so, loaded by the Java activity with dlopen), where mimalloc's
+    # default initial-exec thread-local storage fails to load ("TLS symbol ... using IE access model").
+    if(ANDROID)
+        set(MI_LOCAL_DYNAMIC_TLS ON CACHE BOOL "" FORCE)
+    endif()
+    add_subdirectory(libs/nx-foundation EXCLUDE_FROM_ALL)
 endif()
 add_subdirectory(libs/formats)
 add_subdirectory(libs/mips)
