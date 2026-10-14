@@ -264,6 +264,7 @@ void AvcDecodeMode(Context& c) {
 // sceMpegAvcDecode(mpeg, au, frame_width, buffer*, init*): the next frame of the cooked movie, in display order
 // (black without cooked media). Writes 480x272 pixels in the pixel mode chosen by sceMpegAvcDecodeMode.
 void AvcDecode(Context& c) {
+    mark_guest_written_all();  // the decoded frame lands in the game's buffer
     const std::uint32_t width = arg(c, 2), buffer = arg(c, 3) ? mem().read32(arg(c, 3)) : 0;
     if (g_mpeg.video && g_mpeg.video->next(g_mpeg.frame)) g_mpeg.frame_width = g_mpeg.video->width();
     if (buffer && width) {

@@ -169,8 +169,12 @@ void CloseAsync(Context& c) {
     g_files[fd].async_pending = true;  // closed after the result is collected
     ret(c, 0);
 }
-void Read(Context& c) { ret(c, static_cast<std::uint32_t>(do_read(static_cast<int>(arg(c, 0)), arg(c, 1), arg(c, 2)))); }
+void Read(Context& c) {
+    mark_guest_written(arg(c, 1), arg(c, 2));
+    ret(c, static_cast<std::uint32_t>(do_read(static_cast<int>(arg(c, 0)), arg(c, 1), arg(c, 2))));
+}
 void ReadAsync(Context& c) {
+    mark_guest_written(arg(c, 1), arg(c, 2));
     const int fd = static_cast<int>(arg(c, 0));
     if (!g_files.contains(fd)) return ret(c, kErrorBadFile);
     g_files[fd].async_result = do_read(fd, arg(c, 1), arg(c, 2));

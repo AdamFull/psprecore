@@ -47,6 +47,16 @@ void install_crash_handler();
 void set_ge_dump(std::uint64_t frame, const char* path);
 std::uint64_t display_frame_count();  // framebuffer flips so far (the frame numbering set_ge_dump uses)
 
+// Write tracking for renderers that cache guest memory (textures). The PSP's GE only sees CPU writes after a data
+// cache writeback, so writebacks, DMA-style writes by HLE functions (file reads, movie frames, sceDmacMemcpy) and
+// GE block transfers mark what may have changed; frame flips mark everything (writes through uncached addresses
+// cannot be seen). A cache entry checked at write_counter() is still valid while written_since(range) is not
+// newer. Tracking is per 64 KiB page.
+void mark_guest_written(std::uint32_t address, std::uint32_t size);
+void mark_guest_written_all();
+std::uint64_t guest_write_counter();
+std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size);  // newest mark covering the range
+
 // GE renderer used for display lists (call before the game starts; default: the software renderer).
 void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory);
 // Called on every framebuffer flip (sceDisplaySetFrameBuf) with the address, stride and pixel format.

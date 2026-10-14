@@ -114,10 +114,6 @@ public:
         a_->transfer(s);
         b_->transfer(s);
     }
-    void begin_batch() override {
-        a_->begin_batch();
-        b_->begin_batch();
-    }
 
 private:
     std::unique_ptr<Renderer> a_, b_;
@@ -362,6 +358,7 @@ int main(int argc, char** argv) {
                 rt::write_png(screenshot_path, rgba.data(), w, h);
             }
         };
+        platform::VulkanGeRenderer* vulkan_renderer = nullptr;
         auto perf_start = std::chrono::steady_clock::now();
         std::uint64_t perf_frames = 0;
         const auto perf_tick = [&] {
@@ -372,6 +369,12 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "perf vblank %llu: %.1f ms per vblank (%.2fx real time), %llu frames\n",
                          static_cast<unsigned long long>(kernel.vblank_count()), ms / 300.0, 300.0 * 16.683 / ms,
                          static_cast<unsigned long long>(frames - perf_frames));
+            if (vulkan_renderer) {
+                const auto st = vulkan_renderer->take_stats();
+                std::fprintf(stderr, "    vulkan: %.1f MB texture hashing, %llu uploads (%.2f Mtexels)\n",
+                             static_cast<double>(st.hashed_bytes) / 1e6,
+                             static_cast<unsigned long long>(st.uploads), static_cast<double>(st.uploaded_texels) / 1e6);
+            }
             perf_start = now;
             perf_frames = frames;
         };
@@ -384,7 +387,6 @@ int main(int argc, char** argv) {
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             };
-        platform::VulkanGeRenderer* vulkan_renderer = nullptr;
         platform::Settings settings = platform::Settings::load(settings_path);
         if (scale) settings.scale = scale;
         std::unique_ptr<platform::Overlay> overlay;

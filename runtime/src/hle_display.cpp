@@ -62,6 +62,7 @@ ge::Processor& gpu() {
 
 void SetMode(Context& c) { ret(c, 0); }
 void SetFrameBuf(Context& c) {
+    mark_guest_written_all();  // once per frame: catches CPU writes through uncached addresses
     if (g_display.dump && g_display.frames == g_display.dump_frame) {
         const auto& st = gpu().stats();
         std::fprintf(g_display.dump, "--- end of frame %llu (totals: %llu lists, %llu draws, %llu vertices)\n",

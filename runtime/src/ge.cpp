@@ -253,7 +253,6 @@ bool Processor::list_done(int id) const {
 }
 
 void Processor::run(List& l) {
-    if (renderer_) renderer_->begin_batch();
     for (int guard = 0; guard < 10'000'000; ++guard) {
         if (l.done || (l.stall && l.pc == l.stall)) return;
         const std::uint32_t pc = l.pc;

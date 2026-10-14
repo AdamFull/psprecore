@@ -46,6 +46,15 @@ void KernelPrintf(Context& c) {
     ret(c, 0);
 }
 void ReturnZero(Context& c) { ret(c, 0); }
+// Guest memory is always coherent here, but a writeback is when the game expects the GE to see its CPU writes.
+void DcacheWritebackAll(Context& c) {
+    mark_guest_written_all();
+    ret(c, 0);
+}
+void DcacheWritebackRange(Context& c) {  // (address, size)
+    mark_guest_written(arg(c, 0), arg(c, 1));
+    ret(c, 0);
+}
 
 // ---- UtilsForUser ------------------------------------------------------------------------------
 
@@ -99,6 +108,7 @@ void PllFrequencyFloat(Context& c) {
 }
 void PowerRegisterCallback(Context& c) { ret(c, 0); }
 void DmacMemcpy(Context& c) {
+    mark_guest_written(arg(c, 0), arg(c, 2));
     std::memmove(mem().ptr(arg(c, 0)), mem().ptr(arg(c, 1)), arg(c, 2));
     ret(c, 0);
 }
@@ -113,11 +123,11 @@ constexpr HleBinding kBindings[] = {
     {"sceKernelLibcTime", LibcTime},
     {"sceKernelLibcClock", LibcClock},
     {"sceKernelLibcGettimeofday", LibcGettimeofday},
-    {"sceKernelDcacheWritebackAll", ReturnZero},
-    {"sceKernelDcacheWritebackInvalidateAll", ReturnZero},
+    {"sceKernelDcacheWritebackAll", DcacheWritebackAll},
+    {"sceKernelDcacheWritebackInvalidateAll", DcacheWritebackAll},
     {"sceKernelDcacheInvalidateRange", ReturnZero},
-    {"sceKernelDcacheWritebackInvalidateRange", ReturnZero},
-    {"sceKernelDcacheWritebackRange", ReturnZero},
+    {"sceKernelDcacheWritebackInvalidateRange", DcacheWritebackRange},
+    {"sceKernelDcacheWritebackRange", DcacheWritebackRange},
     {"sceKernelSetGPO", ReturnZero},
     {"sceKernelStdin", Stdin},
     {"sceKernelStdout", Stdout},

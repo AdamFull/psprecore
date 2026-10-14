@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/memory.hpp"
 #include "ge_frag.h"
 #include "ge_vert.h"
@@ -35,17 +36,30 @@ void check(VkResult r, const char* what) {
     if (r != VK_SUCCESS) throw std::runtime_error(std::string("Vulkan GE renderer: ") + what + " failed (" + std::to_string(r) + ")");
 }
 
+// Fast non-cryptographic hash. Four independent lanes keep the multipliers busy (several bytes per cycle).
 std::uint64_t hash_bytes(const void* data, std::size_t size, std::uint64_t h = 0x9E3779B97F4A7C15ull) {
     const auto* b = static_cast<const std::uint8_t*>(data);
+    constexpr std::uint64_t kMul = 0xFF51AFD7ED558CCDull;
     std::size_t i = 0;
+    if (size >= 32) {
+        std::uint64_t lane[4] = {h, h ^ 0x2545F4914F6CDD1Dull, h ^ 0x94D049BB133111EBull, h ^ 0xBF58476D1CE4E5B9ull};
+        for (; i + 32 <= size; i += 32)
+            for (int k = 0; k < 4; ++k) {
+                std::uint64_t w;
+                std::memcpy(&w, b + i + k * 8, 8);
+                lane[k] = (lane[k] ^ w) * kMul;
+                lane[k] ^= lane[k] >> 29;
+            }
+        h = lane[0] ^ (lane[1] * 3) ^ (lane[2] * 5) ^ (lane[3] * 7);
+    }
     for (; i + 8 <= size; i += 8) {
         std::uint64_t w;
         std::memcpy(&w, b + i, 8);
-        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+        h = (h ^ w) * kMul;
         h ^= h >> 32;
     }
     for (; i < size; ++i) h = (h ^ b[i]) * 0x100000001B3ull;
-    return h;
+    return (h ^ (h >> 31)) * kMul;
 }
 
 struct GpuVertex {
@@ -83,8 +97,7 @@ struct Texture {
     Image image;
     std::uint64_t content = 0;
     std::uint64_t last_frame = 0;
-    std::uint64_t checked_batch = 0;  // content verified during this batch (see Renderer::begin_batch)
-    std::uint64_t checked_clut = 0;   // CLUT hash at that check
+    std::uint64_t checked = 0;  // rt::guest_write_counter() when the data was last verified
 };
 
 // Everything that selects a VkPipeline. All fields are bytes so the struct hashes and compares as memory.
@@ -161,7 +174,7 @@ struct VulkanGeRenderer::Impl {
     int current = 0;
     bool recording = false;
     std::uint64_t frame_number = 1;
-    std::uint64_t batch = 1;  // display list runs; guest memory is stable within one
+    VulkanGeRenderer::Stats stats;
 
     std::map<std::uint32_t, Target> targets;   // by VRAM address
     std::map<std::uint64_t, Image> depths;     // by (address, width)
@@ -570,14 +583,28 @@ struct VulkanGeRenderer::Impl {
             const std::uint32_t clut_format = s.param(ge::CLUTFORMAT);
             clut = hash_bytes(&clut_format, 4, clut);
         }
+        // Each palette gets its own cache entry: games draw the same texels with different CLUTs (palette swaps,
+        // colour cycling), which would otherwise re-decode the texture on every switch.
+        key = hash_bytes(&clut, sizeof clut, key);
         Texture& t = textures[key];
         t.last_frame = frame_number;
-        if (t.image.image && t.checked_batch == batch && t.checked_clut == clut) return &t.image;
+        // Re-hash the texels only when guest memory under them may have changed since the last check.
+        std::uint64_t written = 0;
+        for (int l = 0; l < ts.levels(); ++l) {
+            const std::uint32_t level_address = ((s.param(static_cast<std::uint8_t>(ge::TEXBUFWIDTH0 + l)) & 0x0F0000) << 8) |
+                                                (s.param(static_cast<std::uint8_t>(ge::TEXADDR0 + l)) & 0xFFFFF0);
+            written = std::max(written, rt::guest_written_since(level_address, static_cast<std::uint32_t>(ts.level_size(l))));
+        }
+        if (t.image.image && written <= t.checked) return &t.image;
         std::uint64_t content = clut;
-        for (int l = 0; l < ts.levels(); ++l) content = hash_bytes(ts.level_data(l), ts.level_size(l), content);
-        t.checked_batch = batch;
-        t.checked_clut = clut;
+        for (int l = 0; l < ts.levels(); ++l) {
+            content = hash_bytes(ts.level_data(l), ts.level_size(l), content);
+            stats.hashed_bytes += ts.level_size(l);
+        }
+        t.checked = rt::guest_write_counter();
         if (t.image.image && t.content == content) return &t.image;
+        ++stats.uploads;
+        stats.uploaded_texels += static_cast<std::uint64_t>(ts.width(0)) * static_cast<std::uint64_t>(ts.height(0));
         if (t.image.image) frame().garbage.push_back(t.image);
         t.content = content;
 
@@ -1107,7 +1134,7 @@ struct VulkanGeRenderer::Impl {
         const std::uint32_t sx = sp & 0x3FF, sy = (sp >> 10) & 0x3FF, dx = dp & 0x3FF, dy = (dp >> 10) & 0x3FF;
         const std::uint32_t w = (sz & 0x3FF) + 1, h = ((sz >> 10) & 0x3FF) + 1;
         const std::uint32_t bpp = (s.param(ge::TRANSFERSTART) & 1) ? 4 : 2;
-        ++batch;  // the copy can change texture memory within the batch
+        rt::mark_guest_written(dst + (dy * dst_stride + dx) * bpp, ((h - 1) * dst_stride + w) * bpp);
         if (guest_copies)
             for (std::uint32_t y = 0; y < h; ++y)
                 std::memmove(memory.ptr(dst + ((dy + y) * dst_stride + dx) * bpp), memory.ptr(src + ((sy + y) * src_stride + sx) * bpp), w * bpp);
@@ -1167,7 +1194,7 @@ void VulkanGeRenderer::draw(const rt::ge::State& state, rt::ge::Prim prim, const
 
 void VulkanGeRenderer::transfer(const rt::ge::State& state) { impl_->transfer(state); }
 
-void VulkanGeRenderer::begin_batch() { ++impl_->batch; }
+VulkanGeRenderer::Stats VulkanGeRenderer::take_stats() { return std::exchange(impl_->stats, Stats{}); }
 
 void VulkanGeRenderer::set_scale(int scale) { impl_->pending_scale = std::max(1, scale); }
 

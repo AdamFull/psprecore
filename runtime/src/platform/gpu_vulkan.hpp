@@ -29,7 +29,11 @@ public:
 
     void draw(const rt::ge::State& state, rt::ge::Prim prim, const std::vector<rt::ge::Vertex>& vertices) override;
     void transfer(const rt::ge::State& state) override;
-    void begin_batch() override;
+    // Counters since the last call (performance diagnostics, --perf).
+    struct Stats {
+        std::uint64_t hashed_bytes = 0, uploads = 0, uploaded_texels = 0;
+    };
+    Stats take_stats();
 
     // Changes the internal resolution scale from the next frame on (render targets are recreated).
     void set_scale(int scale);

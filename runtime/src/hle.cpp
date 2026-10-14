@@ -1,5 +1,7 @@
 #include "ff7cc/runtime/hle.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -9,6 +11,40 @@
 #include "ff7cc/runtime/kernel.hpp"
 
 namespace ff7cc::rt {
+
+namespace {
+
+// Guest code runs one thread at a time (and renderers run inside sceGe calls), so no locking is needed.
+constexpr int kPageBits = 16;
+std::array<std::uint64_t, (0x20000000u >> kPageBits)> g_page_marks{};
+std::uint64_t g_write_counter = 1, g_all_marked = 1;
+
+std::uint32_t physical(std::uint32_t address) {
+    address &= 0x1FFFFFFF;  // cached / uncached / kernel mirrors
+    if ((address & 0x1F000000) == 0x04000000) address = 0x04000000 | (address & 0x1FFFFF);  // VRAM mirrors
+    return address;
+}
+
+}  // namespace
+
+void mark_guest_written(std::uint32_t address, std::uint32_t size) {
+    if (!size) return;
+    const std::uint32_t first = physical(address), last = std::min<std::uint32_t>(first + size - 1, 0x1FFFFFFF);
+    ++g_write_counter;
+    for (std::uint32_t p = first >> kPageBits; p <= (last >> kPageBits); ++p) g_page_marks[p] = g_write_counter;
+}
+
+void mark_guest_written_all() { g_all_marked = ++g_write_counter; }
+
+std::uint64_t guest_write_counter() { return g_write_counter; }
+
+std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size) {
+    std::uint64_t newest = g_all_marked;
+    if (!size) return newest;
+    const std::uint32_t first = physical(address), last = std::min<std::uint32_t>(first + size - 1, 0x1FFFFFFF);
+    for (std::uint32_t p = first >> kPageBits; p <= (last >> kPageBits); ++p) newest = std::max(newest, g_page_marks[p]);
+    return newest;
+}
 
 namespace {
 
