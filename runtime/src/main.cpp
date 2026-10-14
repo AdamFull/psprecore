@@ -749,7 +749,10 @@ int main(int argc, char** argv) {
             bool gpu = renderer != "soft";
             bool switch_renderer = false;
             const auto apply = [&](const platform::Settings& s) {
-                if (vulkan_renderer) vulkan_renderer->set_scale(s.scale);
+                if (vulkan_renderer) {
+                    vulkan_renderer->set_scale(s.scale);
+                    vulkan_renderer->set_msaa(s.msaa);
+                }
                 if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
                 if (audio) audio->set_volume(mute ? 0.0f : static_cast<float>(s.volume) / 100.0f);
                 kernel.realtime = s.frame_limit && !unthrottled;
@@ -791,6 +794,7 @@ int main(int argc, char** argv) {
                     if (!gpu) return rt::gpu::make_soft_renderer(mem);
                     auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale,
                                                                           path_join(data_dir, "vulkan_pipelines.bin"));
+                    r->set_msaa(settings.msaa);
                     vulkan_renderer = r.get();
                     if (renderer != "compare") return std::unique_ptr<rt::ge::Renderer>(std::move(r));
                     r->set_guest_copies(false);  // the software renderer already copies in guest memory

@@ -114,6 +114,8 @@ void Overlay::draw_menu() {
             ImGui::SliderInt("Resolution", &s.scale, 1, 8, "%dx");
             ImGui::SameLine();
             ImGui::TextDisabled("%dx%d", 480 * s.scale, 272 * s.scale);
+            int aa = s.msaa >= 8 ? 3 : s.msaa >= 4 ? 2 : s.msaa >= 2 ? 1 : 0;
+            if (ImGui::Combo("Anti-aliasing", &aa, "Off\0MSAA 2x\0MSAA 4x\0MSAA 8x\0")) s.msaa = 1 << aa;
         }
 #ifndef __ANDROID__
         ImGui::Checkbox("Fullscreen (F11)", &s.fullscreen);

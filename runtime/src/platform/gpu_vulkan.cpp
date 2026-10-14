@@ -15,6 +15,8 @@
 
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/memory.hpp"
+#include "copy_frag.h"
+#include "copy_vert.h"
 #include "ge_frag.h"
 #include "ge_vert.h"
 #include "gpu/hash.hpp"
@@ -73,7 +75,11 @@ struct Target {
     std::uint32_t address = 0, stride = 0;
     int format = 3;
     int used_height = 272;  // lines the game has drawn to (scissor extent); textures past it are not ours
-    Image color;
+    Image color;  // single-sample: what textures, the display and readbacks use
+    // With MSAA: drawing goes to the multisampled image, resolved into `color` when a rendering pass ends. After
+    // the CPU writes into `color` (uploads), the samples are refreshed from it before the next drawing.
+    Image msaa;
+    bool msaa_stale = false;
 };
 
 struct Texture {
@@ -94,6 +100,7 @@ struct PipelineKey {
     // Fragment specialization constants (shaders/ge.slang).
     std::uint8_t texture = 0, tex_func = 0, tex_alpha = 0, color_double = 0, fog = 0, alpha_test = 1, color_test = 1,
                  clear = 0, src_factor = 0, double_alpha = 0;
+    std::uint8_t samples = 1;  // VkSampleCountFlagBits
     bool operator==(const PipelineKey& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
 };
 static_assert(std::is_trivially_copyable_v<PipelineKey>);
@@ -148,6 +155,9 @@ struct VulkanGeRenderer::Impl {
     rt::GuestMemory& memory;
     int scale;
     int pending_scale;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, pending_samples = VK_SAMPLE_COUNT_1_BIT;
+    VkShaderModule copy_vs = VK_NULL_HANDLE, copy_fs = VK_NULL_HANDLE;
+    std::array<VkPipeline, 4> copy_pipelines{};  // by log2(samples) - 1
     bool guest_copies = true;
 
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
@@ -205,7 +215,8 @@ struct VulkanGeRenderer::Impl {
         return b;
     }
 
-    Image make_image(int w, int h, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, std::uint32_t mips = 1) {
+    Image make_image(int w, int h, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, std::uint32_t mips = 1,
+                     VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT) {
         Image img;
         img.width = w;
         img.height = h;
@@ -217,7 +228,7 @@ struct VulkanGeRenderer::Impl {
         ici.extent = {static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h), 1};
         ici.mipLevels = mips;
         ici.arrayLayers = 1;
-        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.samples = sample_count;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
         ici.usage = usage;
         VmaAllocationCreateInfo aci{};
@@ -294,6 +305,8 @@ struct VulkanGeRenderer::Impl {
         };
         vert = module(ge_vert, sizeof ge_vert);
         frag = module(ge_frag, sizeof ge_frag);
+        copy_vs = module(copy_vert, sizeof copy_vert);
+        copy_fs = module(copy_frag, sizeof copy_frag);
         load_pipeline_cache();
 
         for (Frame& f : frames) {
@@ -408,15 +421,22 @@ struct VulkanGeRenderer::Impl {
             vkDestroyFence(vk.device, f.fence, nullptr);
             vkDestroyCommandPool(vk.device, f.pool, nullptr);
         }
-        for (auto& [_, t] : targets) destroy(t->color);
+        for (auto& [_, t] : targets) {
+                destroy(t->color);
+                destroy(t->msaa);
+            }
         for (auto& [_, d] : depths) destroy(*d);
         for (auto& [_, t] : textures) destroy(t.image);
         destroy(white);
         if (readback.buffer) vmaDestroyBuffer(vk.allocator, readback.buffer, readback.memory);
         for (auto& [_, p] : pipelines) vkDestroyPipeline(vk.device, p, nullptr);
         for (auto& [_, s] : samplers) vkDestroySampler(vk.device, s, nullptr);
+        for (VkPipeline p : copy_pipelines)
+            if (p) vkDestroyPipeline(vk.device, p, nullptr);
         vkDestroyShaderModule(vk.device, vert, nullptr);
         vkDestroyShaderModule(vk.device, frag, nullptr);
+        vkDestroyShaderModule(vk.device, copy_vs, nullptr);
+        vkDestroyShaderModule(vk.device, copy_fs, nullptr);
         vkDestroyPipelineLayout(vk.device, layout, nullptr);
         vkDestroyDescriptorSetLayout(vk.device, set_layout, nullptr);
     }
@@ -425,14 +445,18 @@ struct VulkanGeRenderer::Impl {
 
     void begin_frame() {
         if (recording) return;
-        if (pending_scale != scale) {
+        if (pending_scale != scale || pending_samples != samples) {
             // Render targets are rebuilt at the new size and re-seeded from guest VRAM on first use.
             vkDeviceWaitIdle(vk.device);
-            for (auto& [_, t] : targets) destroy(t->color);
+            for (auto& [_, t] : targets) {
+                destroy(t->color);
+                destroy(t->msaa);
+            }
             for (auto& [_, d] : depths) destroy(*d);
             targets.clear();
             depths.clear();
             scale = pending_scale;
+            samples = pending_samples;
         }
         Frame& f = frame();
         vkWaitForFences(vk.device, 1, &f.fence, VK_TRUE, UINT64_MAX);
@@ -527,6 +551,7 @@ struct VulkanGeRenderer::Impl {
         vkCmdBlitImage(cmd, tmp.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t.color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &blit, VK_FILTER_NEAREST);
         frame().garbage.push_back(tmp);
+        t.msaa_stale = t.msaa.image != VK_NULL_HANDLE;
     }
 
     Target& target(std::uint32_t address, std::uint32_t stride, int format) {
@@ -540,6 +565,7 @@ struct VulkanGeRenderer::Impl {
         if (it != targets.end()) {
             if (bound_target == it->second.get()) end_rendering();
             frame().garbage.push_back(it->second->color);
+            if (it->second->msaa.image) frame().garbage.push_back(it->second->msaa);
             targets.erase(it);
         }
         Target& t = *(targets[address] = std::make_unique<Target>());
@@ -550,6 +576,9 @@ struct VulkanGeRenderer::Impl {
                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                              VK_IMAGE_ASPECT_COLOR_BIT);
+        if (samples != VK_SAMPLE_COUNT_1_BIT)
+            t.msaa = make_image(t.color.width, t.color.height, kColorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT, 1, samples);
         // Start from what the CPU left in VRAM.
         upload_region(t, 0, 0, static_cast<int>(stride), 272);
         return t;
@@ -562,7 +591,7 @@ struct VulkanGeRenderer::Impl {
         Image& d = *(depths[key] = std::make_unique<Image>());
         const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         d = make_image(t.color.width, t.color.height, vk.depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT, aspect);
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT, aspect, 1, samples);
         const VkCommandBuffer cmd = frame().draw;
         end_rendering();
         transition(cmd, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -575,6 +604,7 @@ struct VulkanGeRenderer::Impl {
     void begin_rendering(Target& t, Image& d) {
         if (rendering && bound_target == &t && bound_depth == &d) return;
         end_rendering();
+        if (t.msaa_stale) refresh_msaa(t);
         const VkCommandBuffer cmd = frame().draw;
         transition(cmd, t.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         transition(cmd, d, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -583,6 +613,13 @@ struct VulkanGeRenderer::Impl {
         color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        if (t.msaa.image) {  // draw the samples, resolve into `color` when the pass ends
+            transition(cmd, t.msaa, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            color.imageView = t.msaa.view;
+            color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+            color.resolveImageView = t.color.view;
+            color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
         VkRenderingAttachmentInfo ds{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         ds.imageView = d.view;
         ds.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -608,6 +645,88 @@ struct VulkanGeRenderer::Impl {
         if (!rendering) return;
         vk.end_rendering(frame().draw);
         rendering = false;
+    }
+
+    // Every sample of the multisampled image gets the texel of `color` (after the CPU wrote into `color`).
+    void refresh_msaa(Target& t) {
+        t.msaa_stale = false;
+        const VkCommandBuffer cmd = frame().draw;
+        transition(cmd, t.color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transition(cmd, t.msaa, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        const VkDescriptorSet set = descriptor(t.color.view, sampler(false, false, true, true, false, 1));
+        if (!set) return;
+        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        color.imageView = t.msaa.view;
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        const VkExtent2D extent{static_cast<std::uint32_t>(t.msaa.width), static_cast<std::uint32_t>(t.msaa.height)};
+        ri.renderArea = {{0, 0}, extent};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &color;
+        vk.begin_rendering(cmd, &ri);
+        const VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0, 1};
+        const VkRect2D scissor{{0, 0}, extent};
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, copy_pipeline());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, nullptr);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vk.end_rendering(cmd);
+        bound_pipeline = VK_NULL_HANDLE;
+    }
+
+    VkPipeline copy_pipeline() {
+        int index = 0;
+        while ((1 << (index + 1)) < static_cast<int>(samples)) ++index;
+        VkPipeline& p = copy_pipelines[static_cast<std::size_t>(index)];
+        if (p) return p;
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, copy_vs, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, copy_fs, "main", nullptr};
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp_state{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vp_state.viewportCount = 1;
+        vp_state.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode = VK_CULL_MODE_NONE;
+        rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = samples;
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.colorWriteMask = 0xF;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1;
+        cb.pAttachments = &blend;
+        const VkDynamicState dynamic[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dyn.dynamicStateCount = 2;
+        dyn.pDynamicStates = dynamic;
+        VkPipelineRenderingCreateInfo rendering_info{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        const VkFormat color_format = kColorFormat;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachmentFormats = &color_format;
+        VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pci.pNext = &rendering_info;
+        pci.stageCount = 2;
+        pci.pStages = stages;
+        pci.pVertexInputState = &vi;
+        pci.pInputAssemblyState = &ia;
+        pci.pViewportState = &vp_state;
+        pci.pRasterizationState = &rs;
+        pci.pMultisampleState = &ms;
+        pci.pDepthStencilState = &ds;
+        pci.pColorBlendState = &cb;
+        pci.pDynamicState = &dyn;
+        pci.layout = layout;
+        check(vkCreateGraphicsPipelines(vk.device, cache, 1, &pci, nullptr, &p), "copy pipeline");
+        return p;
     }
 
     // ---- textures ----------------------------------------------------------------------------------------
@@ -781,7 +900,7 @@ struct VulkanGeRenderer::Impl {
         rs.cullMode = VK_CULL_MODE_NONE;  // culled on the CPU with the PSP's screen-space rule
         rs.lineWidth = 1.0f;
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        ms.rasterizationSamples = static_cast<VkSampleCountFlagBits>(k.samples);
         VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         ds.depthTestEnable = k.depth_test;
         ds.depthWriteEnable = k.depth_write;
@@ -1168,6 +1287,7 @@ struct VulkanGeRenderer::Impl {
         if (f.vertex_used + bytes > kVertexBytes) return;  // out of vertex space this frame
         std::memcpy(f.vertices.ptr + f.vertex_used, out.data(), bytes);
         const VkCommandBuffer cmd = f.draw;
+        key.samples = static_cast<std::uint8_t>(samples);
         const VkPipeline p = pipeline(key);
         if (p != bound_pipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
@@ -1272,6 +1392,18 @@ void VulkanGeRenderer::transfer(const rt::ge::State& state) { impl_->transfer(st
 VulkanGeRenderer::Stats VulkanGeRenderer::take_stats() { return std::exchange(impl_->stats, Stats{}); }
 
 void VulkanGeRenderer::set_scale(int scale) { impl_->pending_scale = std::max(1, scale); }
+
+void VulkanGeRenderer::set_msaa(int samples) {
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(impl_->vk.gpu, &props);
+    const VkSampleCountFlags supported = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts &
+                                         props.limits.framebufferStencilSampleCounts;
+    int n = 1;
+    while (n * 2 <= std::min(samples, 8) && (supported & static_cast<VkSampleCountFlags>(n * 2))) n *= 2;
+    impl_->pending_samples = static_cast<VkSampleCountFlagBits>(n);
+}
+
+int VulkanGeRenderer::msaa() const { return static_cast<int>(impl_->samples); }
 
 int VulkanGeRenderer::scale() const { return impl_->scale; }
 

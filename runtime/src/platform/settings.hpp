@@ -10,6 +10,7 @@ namespace ff7cc::platform {
 struct Settings {
     bool software_renderer = false;  // the software (reference) renderer instead of Vulkan
     int scale = 2;            // Vulkan renderer internal resolution (multiples of 480x272)
+    int msaa = 1;             // Vulkan renderer samples per pixel: 1 (off), 2, 4, 8
     bool fullscreen = false;
     int volume = 100;         // master volume, percent
     bool frame_limit = true;  // run at the PSP's speed (off: as fast as possible)

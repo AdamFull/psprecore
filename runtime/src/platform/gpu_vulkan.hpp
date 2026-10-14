@@ -45,6 +45,10 @@ public:
     // Changes the internal resolution scale from the next frame on (render targets are recreated).
     void set_scale(int scale);
     int scale() const;
+    // Multisample anti-aliasing: 1 (off), 2, 4 or 8 samples per pixel, from the next frame on (clamped to what the
+    // GPU supports; render targets are recreated).
+    void set_msaa(int samples);
+    int msaa() const;
     // Whether transfer() also performs the block copy in guest memory (off when another renderer already did).
     void set_guest_copies(bool on);
 

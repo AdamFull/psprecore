@@ -34,6 +34,7 @@ Settings Settings::load(nx::fs::path_view path) {
         const nx::string_view key = line.substr(0, eq), value = line.substr(eq + 1);
         if (key == "renderer") s.software_renderer = value == "software";
         else if (key == "scale") s.scale = std::clamp(to_int(value, s.scale), 1, 8);
+        else if (key == "msaa") s.msaa = std::clamp(to_int(value, s.msaa), 1, 8);
         else if (key == "fullscreen") s.fullscreen = to_int(value, 0) != 0;
         else if (key == "volume") s.volume = std::clamp(to_int(value, s.volume), 0, 100);
         else if (key == "frame_limit") s.frame_limit = to_int(value, 1) != 0;
@@ -43,9 +44,9 @@ Settings Settings::load(nx::fs::path_view path) {
 }
 
 bool Settings::save(nx::fs::path_view path) const {
-    const nx::string text = nx::format("# FF7CCRECOMP settings\nrenderer={}\nscale={}\nfullscreen={}\nvolume={}\nframe_limit={}\n"
-                                       "show_fps={}\n",
-                                       software_renderer ? "software" : "vulkan", scale, int{fullscreen}, volume,
+    const nx::string text = nx::format("# FF7CCRECOMP settings\nrenderer={}\nscale={}\nmsaa={}\nfullscreen={}\nvolume={}\n"
+                                       "frame_limit={}\nshow_fps={}\n",
+                                       software_renderer ? "software" : "vulkan", scale, msaa, int{fullscreen}, volume,
                                        int{frame_limit}, int{show_fps});
     return nx::fs::file_write_text(path, text).has_value();
 }
