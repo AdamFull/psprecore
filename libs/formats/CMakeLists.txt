@@ -1,14 +1,9 @@
+# File formats of PSP software (ELF/PRX, ATRAC3, PSMF), the cooked media container, and file and text helpers.
 add_library(ff7cc_formats STATIC
     src/io/file.cpp
-    src/formats/pkg.cpp
-    src/formats/atel.cpp
-    src/formats/atel_vm.cpp
-    src/formats/atel_disasm.cpp
-    src/formats/atel_asm.cpp
     src/formats/elf.cpp
     src/formats/prx.cpp
     src/formats/atrac.cpp
-    src/formats/mbd.cpp
     src/formats/psmf.cpp
 )
 add_library(ff7cc::formats ALIAS ff7cc_formats)

@@ -641,7 +641,7 @@ int ff7cc::platform::run_game(const GameInfo& game, int argc, char** argv) {
             const std::uint64_t vblank = kernel.vblank_count();
             if (vblank == tex_dump_vblank + 2) rt::set_ge_draw_listener({});  // two vblanks: 30 fps scenes draw every other one
             if (vblank != tex_dump_vblank) return;
-            nx::fs::create_directories(tex_dump_dir);
+            (void)nx::fs::create_directories(tex_dump_dir);
             rt::set_ge_draw_listener([&](const rt::ge::Draw& d) {
                 const rt::ge::State& s = *d.state;
                 if (!s.on(rt::ge::TEXTUREMAPENABLE) || !d.count) return;
