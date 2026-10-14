@@ -5,6 +5,12 @@
 //       [--renderer vulkan|soft|compare] [--scale N]   (window only; headless always uses the software renderer;
 //                                        compare runs both and screenshots show reference | Vulkan | difference)
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
+//       [--record FILE] [--replay FILE]  (controller input and save picker answers per vblank; a replay
+//                                        reproduces the run, then live input takes over)
+//       [--state-hash N]                (prints a hash of user RAM every N vblanks: determinism checks)
+//       [--clock UNIX]                  (guest wall clock at boot; default: now, or the recording's)
+//       [--saves DIR]                   (save data folder; default: saves/ next to the settings; recordings
+//                                        snapshot it to <file>.saves and replays run on a copy of that)
 //       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
 //       [--touch]                       (show the on-screen touch controls from the start; default on Android)
 //       [--perf]                        (prints host time per 300 vblanks and display frames)
@@ -22,6 +28,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <memory>
@@ -156,6 +163,112 @@ std::vector<std::uint32_t> compare_frames(const std::vector<std::uint32_t>& ref,
     return out;
 }
 
+// Input recordings (--record / --replay), a text file with one line per change:
+//     ff7cc-input 1 <wall clock base>
+//     <vblank> pad <buttons, hex> <lx> <ly>
+//     <vblank> dialog <slot>            (save picker answer; -1 = cancel)
+// With the same game data, saves and clock base the run is reproduced exactly (virtual time is deterministic).
+class InputRecorder {
+public:
+    InputRecorder(const fs::path& path, std::int64_t clock_base) : f_(std::fopen(path.string().c_str(), "w")) {
+        if (!f_) throw std::runtime_error("cannot write " + path.string());
+        std::fprintf(f_, "ff7cc-input 1 %lld\n", static_cast<long long>(clock_base));
+    }
+    ~InputRecorder() {
+        if (f_) std::fclose(f_);
+    }
+    InputRecorder(const InputRecorder&) = delete;
+    InputRecorder& operator=(const InputRecorder&) = delete;
+
+    void pad(std::uint64_t vblank, std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly) {
+        if (buttons == buttons_ && lx == lx_ && ly == ly_) return;
+        buttons_ = buttons;
+        lx_ = lx;
+        ly_ = ly;
+        std::fprintf(f_, "%llu pad %X %u %u\n", static_cast<unsigned long long>(vblank), buttons, lx, ly);
+    }
+    void dialog(std::uint64_t vblank, int slot) {
+        std::fprintf(f_, "%llu dialog %d\n", static_cast<unsigned long long>(vblank), slot);
+        std::fflush(f_);
+    }
+    void flush() { std::fflush(f_); }
+
+private:
+    std::FILE* f_;
+    std::uint32_t buttons_ = 0;
+    std::uint8_t lx_ = 128, ly_ = 128;
+};
+
+class InputReplay {
+public:
+    explicit InputReplay(const fs::path& path) {
+        std::FILE* f = std::fopen(path.string().c_str(), "r");
+        if (!f) throw std::runtime_error("cannot read " + path.string());
+        long long base = 0;
+        if (std::fscanf(f, "ff7cc-input 1 %lld", &base) != 1) {
+            std::fclose(f);
+            throw std::runtime_error(path.string() + " is not an ff7cc input recording");
+        }
+        clock_base_ = base;
+        char kind[16];
+        unsigned long long vblank = 0;
+        while (std::fscanf(f, "%llu %15s", &vblank, kind) == 2) {
+            Event e{vblank};
+            if (std::string_view(kind) == "pad") {
+                unsigned b = 0, lx = 128, ly = 128;
+                if (std::fscanf(f, "%x %u %u", &b, &lx, &ly) != 3) break;
+                e.buttons = b;
+                e.lx = static_cast<std::uint8_t>(lx);
+                e.ly = static_cast<std::uint8_t>(ly);
+            } else if (std::string_view(kind) == "dialog") {
+                if (std::fscanf(f, "%d", &e.dialog) != 1) break;
+                e.is_dialog = true;
+            } else {
+                break;
+            }
+            events_.push_back(e);
+        }
+        std::fclose(f);
+    }
+
+    std::int64_t clock_base() const { return clock_base_; }
+    bool finished() const { return next_ >= events_.size(); }
+    std::uint64_t last_vblank() const { return events_.empty() ? 0 : events_.back().vblank; }
+
+    // Advances to `vblank`: updates the pad state and returns save picker answers due now (-2: none).
+    int advance(std::uint64_t vblank) {
+        int dialog = -2;
+        for (; next_ < events_.size() && events_[next_].vblank <= vblank; ++next_) {
+            const Event& e = events_[next_];
+            if (e.is_dialog) {
+                dialog = e.dialog;
+            } else {
+                buttons_ = e.buttons;
+                lx_ = e.lx;
+                ly_ = e.ly;
+            }
+        }
+        return dialog;
+    }
+    std::uint32_t buttons() const { return buttons_; }
+    std::uint8_t lx() const { return lx_; }
+    std::uint8_t ly() const { return ly_; }
+
+private:
+    struct Event {
+        std::uint64_t vblank;
+        std::uint32_t buttons = 0;
+        std::uint8_t lx = 128, ly = 128;
+        bool is_dialog = false;
+        int dialog = -1;
+    };
+    std::vector<Event> events_;
+    std::size_t next_ = 0;
+    std::int64_t clock_base_ = 0;
+    std::uint32_t buttons_ = 0;
+    std::uint8_t lx_ = 128, ly_ = 128;
+};
+
 struct ScriptedPress {
     std::uint64_t vblank;
     std::uint32_t buttons;
@@ -268,6 +381,10 @@ int main(int argc, char** argv) {
 #endif
         std::uint64_t max_vblanks = 0;
         std::uint64_t ge_dump_vblank = 0;
+        std::uint64_t state_hash_every = 0;
+        fs::path record_path, replay_path, saves_dir;
+        std::int64_t clock_base = static_cast<std::int64_t>(std::time(nullptr));
+        bool clock_given = false;
         std::vector<ScriptedPress> presses;
         std::vector<ScriptedUi> ui_script;
         std::uint64_t window_shot_vblank = 0;
@@ -315,6 +432,14 @@ int main(int argc, char** argv) {
             else if (a == "--vblanks" && i + 1 < argc) max_vblanks = std::stoull(argv[++i]);
             else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
             else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = std::stoull(argv[++i]);
+            else if (a == "--state-hash" && i + 1 < argc) state_hash_every = std::stoull(argv[++i]);
+            else if (a == "--record" && i + 1 < argc) record_path = argv[++i];
+            else if (a == "--replay" && i + 1 < argc) replay_path = argv[++i];
+            else if (a == "--saves" && i + 1 < argc) saves_dir = argv[++i];
+            else if (a == "--clock" && i + 1 < argc) {
+                clock_base = std::stoll(argv[++i]);
+                clock_given = true;
+            }
         }
 
         rt::install_crash_handler();
@@ -330,7 +455,68 @@ int main(int argc, char** argv) {
         kernel.trace_hle = trace;
         kernel.max_vblanks = max_vblanks;
         kernel.user_heap().alloc_at(kLoadBase, static_cast<std::uint32_t>(image.size()));
-        rt::set_storage(game_dir, data_dir / "saves");
+        // Recordings are self-contained: --record snapshots the save folder next to the recording (<file>.saves),
+        // and --replay runs on a fresh copy of that snapshot (<file>.saves-run), so the game can save freely.
+        fs::path saves = saves_dir.empty() ? data_dir / "saves" : saves_dir;
+        if (!replay_path.empty() && saves_dir.empty()) {
+            const fs::path snapshot = fs::path(replay_path).concat(".saves"), run = fs::path(replay_path).concat(".saves-run");
+            std::error_code ec;
+            fs::remove_all(run, ec);
+            fs::create_directories(run);
+            if (fs::exists(snapshot)) fs::copy(snapshot, run, fs::copy_options::recursive);
+            saves = run;
+        }
+        if (!record_path.empty()) {
+            const fs::path snapshot = fs::path(record_path).concat(".saves");
+            std::error_code ec;
+            fs::remove_all(snapshot, ec);
+            fs::create_directories(snapshot);
+            if (fs::exists(saves)) fs::copy(saves, snapshot, fs::copy_options::recursive);
+        }
+        rt::set_storage(game_dir, saves);
+
+        // Input recording / replay. A replay also fixes the guest clock to the recording's.
+        std::unique_ptr<InputReplay> replay;
+        std::unique_ptr<InputRecorder> recorder_in;
+        if (!replay_path.empty()) {
+            replay = std::make_unique<InputReplay>(replay_path);
+            if (!clock_given) clock_base = replay->clock_base();
+            std::fprintf(stderr, "replaying %s (until vblank %llu)\n", replay_path.string().c_str(),
+                         static_cast<unsigned long long>(replay->last_vblank()));
+        }
+        rt::set_wall_clock_base(clock_base);
+        if (!record_path.empty()) recorder_in = std::make_unique<InputRecorder>(record_path, clock_base);
+        const bool deterministic_dialogs = replay || recorder_in;
+        if (deterministic_dialogs) {
+            rt::set_savedata_ui(true);
+            rt::set_save_dialog_deferred(true);  // answers apply at the next vblank (same as in recordings)  // list dialogs wait for recorded / picked answers
+            rt::set_save_dialog_deferred(true);
+        }
+        // Per vblank: applies due save picker answers and replayed input; records what the game sees.
+        const auto input_step = [&](std::uint32_t& buttons, std::uint8_t& lx, std::uint8_t& ly) {
+            const std::uint64_t vblank = kernel.vblank_count();
+            if (state_hash_every && vblank % state_hash_every == 0) {  // determinism checks: user RAM (24 MiB)
+                std::uint64_t h = 0xCBF29CE484222325ull;
+                const auto* p = reinterpret_cast<const std::uint64_t*>(memory.ptr(0x08800000));
+                for (std::size_t i = 0; i < 0x01800000 / 8; ++i) h = (h ^ p[i]) * 0x100000001B3ull;
+                std::fprintf(stderr, "state vblank %llu: %016llx\n", static_cast<unsigned long long>(vblank),
+                             static_cast<unsigned long long>(h));
+            }
+            if (replay && !replay->finished()) {
+                const int dialog = replay->advance(vblank);
+                if (dialog != -2) rt::answer_save_dialog(dialog);
+                buttons = replay->buttons();
+                lx = replay->lx();
+                ly = replay->ly();
+                if (replay->finished()) std::fprintf(stderr, "replay finished at vblank %llu\n", static_cast<unsigned long long>(vblank));
+            }
+            // Headless runs have no picker: answer with the slot the PSP dialog would focus (recorded like a pick).
+            if (headless && !(replay && !replay->finished()))
+                if (const rt::SaveDialog* d = rt::pending_save_dialog()) rt::answer_save_dialog(d->slots.empty() ? -1 : d->focus);
+            int slot = 0;
+            if (rt::apply_save_dialog_answer(slot) && recorder_in) recorder_in->dialog(vblank, slot);
+            if (recorder_in) recorder_in->pad(vblank, buttons, lx, ly);
+        };
         if (cooked_dir.empty()) {
             cooked_dir = data_dir / "cooked";
             if (!fs::exists(cooked_dir)) cooked_dir = fs::path(argv[0]).parent_path() / "cooked";
@@ -383,7 +569,10 @@ int main(int argc, char** argv) {
                 perf_tick();
                 if (ge_dump_vblank && kernel.vblank_count() == ge_dump_vblank)
                     rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
-                rt::set_pad(scripted_buttons(presses, kernel.vblank_count()), 128, 128);
+                std::uint32_t buttons = scripted_buttons(presses, kernel.vblank_count());
+                std::uint8_t lx = 128, ly = 128;
+                input_step(buttons, lx, ly);
+                rt::set_pad(buttons, lx, ly);
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             };
@@ -497,7 +686,10 @@ int main(int argc, char** argv) {
                 if (overlay->menu_open()) pause();
                 if (window_shot_armed) arm_window_shot();
                 const auto pad = overlay->wants_input() ? platform::PadState{} : display->pad();
-                rt::set_pad(pad.buttons | scripted_buttons(presses, kernel.vblank_count()), pad.lx, pad.ly);
+                std::uint32_t buttons = pad.buttons | scripted_buttons(presses, kernel.vblank_count());
+                std::uint8_t lx = pad.lx, ly = pad.ly;
+                input_step(buttons, lx, ly);
+                rt::set_pad(buttons, lx, ly);
                 if (gpu && !screenshot_path.empty()) {  // captured at the next flip
                     const std::uint64_t n = kernel.vblank_count();
                     if ((screenshot_every && n % screenshot_every == 0) || (!screenshot_every && n == screenshot_vblank)) {
@@ -519,6 +711,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "stopped after %.3f s of guest time (%llu vblanks)\n",
                      static_cast<double>(kernel.now()) / 1e6, static_cast<unsigned long long>(kernel.vblank_count()));
         if (recorder) recorder->flush();
+        if (recorder_in) recorder_in->flush();
         if (trace || headless) kernel.dump_threads(stderr);
         std::fflush(stderr);
         std::_Exit(code);  // guest threads may still be parked on their batons

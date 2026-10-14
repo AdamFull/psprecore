@@ -58,15 +58,19 @@ void DcacheWritebackRange(Context& c) {  // (address, size)
 
 // ---- UtilsForUser ------------------------------------------------------------------------------
 
+std::int64_t g_wall_clock_base = static_cast<std::int64_t>(std::time(nullptr));
+
+// Wall clock in microseconds: the configured base plus virtual time (see set_wall_clock_base).
+std::int64_t wall_clock_us() { return g_wall_clock_base * 1000000 + static_cast<std::int64_t>(kernel().now()); }
+
 void LibcTime(Context& c) {
-    const auto t = static_cast<std::uint32_t>(std::time(nullptr));
+    const auto t = static_cast<std::uint32_t>(wall_clock_us() / 1000000);
     if (arg(c, 0)) mem().write32(arg(c, 0), t);
     ret(c, t);
 }
 void LibcClock(Context& c) { ret(c, static_cast<std::uint32_t>(kernel().now())); }
 void LibcGettimeofday(Context& c) {
-    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::int64_t us = wall_clock_us();
     if (const std::uint32_t tv = arg(c, 0)) {
         mem().write32(tv, static_cast<std::uint32_t>(us / 1000000));
         mem().write32(tv + 4, static_cast<std::uint32_t>(us % 1000000));
@@ -155,6 +159,9 @@ constexpr HleBinding kBindings[] = {
 };
 
 }  // namespace
+
+void set_wall_clock_base(std::int64_t unix_seconds) { g_wall_clock_base = unix_seconds; }
+std::int64_t wall_clock_base() { return g_wall_clock_base; }
 
 void hle_install_sysmem() { hle_bind(kBindings); }
 

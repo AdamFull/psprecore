@@ -61,6 +61,10 @@ struct Pending {
     SaveDialog dialog;
 };
 std::optional<Pending> g_pending;
+bool g_deferred = false;
+std::optional<int> g_queued_answer;
+
+void apply_answer(int slot);
 
 std::string guest_string(std::uint32_t addr, std::size_t max) {
     std::string s = mem().string(addr, max);
@@ -318,9 +322,30 @@ void hle_install_savedata() { hle_bind(kBindings); }
 
 void set_savedata_ui(bool enabled) { g_ui = enabled; }
 
-const SaveDialog* pending_save_dialog() { return g_pending ? &g_pending->dialog : nullptr; }
+const SaveDialog* pending_save_dialog() { return g_pending && !g_queued_answer ? &g_pending->dialog : nullptr; }
 
 void answer_save_dialog(int slot) {
+    if (!g_pending) return;
+    if (g_deferred) {
+        g_queued_answer = slot;
+        return;
+    }
+    apply_answer(slot);
+}
+
+void set_save_dialog_deferred(bool deferred) { g_deferred = deferred; }
+
+bool apply_save_dialog_answer(int& slot) {
+    if (!g_queued_answer) return false;
+    slot = *g_queued_answer;
+    g_queued_answer.reset();
+    apply_answer(slot);
+    return true;
+}
+
+namespace {
+
+void apply_answer(int slot) {
     if (!g_pending) return;
     const Pending p = std::move(*g_pending);
     g_pending.reset();
@@ -337,5 +362,7 @@ void answer_save_dialog(int slot) {
     mem().write32(p.param + kResult, result);
     g_status = kStatusFinished;
 }
+
+}  // namespace
 
 }  // namespace ff7cc::rt

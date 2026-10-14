@@ -85,8 +85,17 @@ struct SaveDialog {
     int focus = 0;      // slot the PSP dialog would highlight first
 };
 void set_savedata_ui(bool enabled);
-const SaveDialog* pending_save_dialog();  // nullptr when no dialog is open
+const SaveDialog* pending_save_dialog();  // nullptr when no dialog is open (or its answer is queued)
 void answer_save_dialog(int slot);        // index into SaveDialog::slots, or -1 to cancel
+// Deferred mode queues answers until apply_save_dialog_answer() (called once per vblank), so recordings and
+// replays apply them at the same point of game time. Returns true and the slot when an answer was applied.
+void set_save_dialog_deferred(bool deferred);
+bool apply_save_dialog_answer(int& slot);
+
+// The guest's wall clock (sceKernelLibcTime, gettimeofday) is this Unix time plus elapsed virtual time, so runs
+// are reproducible: a recording stores the base it was made with. Default: the host time at startup.
+void set_wall_clock_base(std::int64_t unix_seconds);
+std::int64_t wall_clock_base();
 
 // Directory with cooked media (cccook output); sceAtrac/sceMpeg look up replacements there.
 void set_cooked_root(const std::filesystem::path& root);
