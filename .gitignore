@@ -1,5 +1,4 @@
 # --- Copyrighted / third-party inputs: never commit ---
-/Crisis Core - Final Fantasy VII EU/
 /PSP SDK/
 *.iso
 *.cso
@@ -7,20 +6,9 @@
 *.prx
 BOOT.BIN
 EBOOT.BIN
-discimg.fse
-discimg.pkg
 PARAM.SFO
 *.at3
 *.pmf
-
-# --- Data derived from the user's game copy (generated locally) ---
-/game/
-/extracted/
-/cooked/
-/generated/
-/saves/
-/ff7cc.ini
-/vulkan_pipelines.bin*
 
 # --- Build output ---
 /build/
@@ -33,8 +21,6 @@ PARAM.SFO
 *.dll
 *.exe
 *.pdb
-*.apk
-*.aab
 
 # --- Tooling / editors ---
 __pycache__/
@@ -44,18 +30,5 @@ __pycache__/
 .vscode/
 .idea/
 *.user
-*.gpr
-*.rep/
 .DS_Store
 Thumbs.db
-
-# --- Android build output ---
-/android/.gradle/
-/android/build/
-/android/app/build/
-/android/local.properties
-
-# --- Local only ---
-/PORT_PLAN.md
-# nx-foundation: a git submodule later (github.com/AdamFull/nx-foundation); a local copy until then
-/libs/foundation/

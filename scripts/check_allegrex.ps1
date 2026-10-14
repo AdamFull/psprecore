@@ -1,28 +1,42 @@
 # Cross-checks the psprecore::mips decoder against the PSP SDK's binutils (psp-as / psp-objdump).
 #
 #   1. tests/allegrex/all_ops.S (every instruction form) is assembled with psp-as and disassembled by both tools.
-#   2. BOOT.BIN's .text (≈423k instructions) is disassembled by both tools, if the game is present.
+#   2. A game's BOOT.BIN .text (-Boot) is disassembled by both tools, if given.
 #
-# Requires a debug build (scripts\build.ps1) and the local "PSP SDK\pspsdk-MINPSPW" folder.
+#   scripts\check_allegrex.ps1 [-Sdk <pspsdk folder>] [-Psprx <psprx.exe>] [-Boot <BOOT.BIN>]
+#
+# Needs a debug build of psprx (scripts\build.ps1) and a PSP SDK with binutils (default: "PSP SDK\pspsdk-MINPSPW"
+# in this repository's root; it is never part of the repository).
+param(
+    [string]$Sdk,
+    [string]$Psprx,
+    [string]$Boot
+)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$sdk = Join-Path $root 'PSP SDK\pspsdk-MINPSPW\bin'
-$psprx = Join-Path $root 'build\windows-x64-debug\tools\psprx\psprx.exe'
+if (-not $Sdk) { $Sdk = Join-Path $root 'PSP SDK\pspsdk-MINPSPW' }
+$bin = Join-Path $Sdk 'bin'
+if (-not $Psprx) {
+    # Built on its own, or as a game's psprecore/ subdirectory.
+    $Psprx = @((Join-Path $root 'build\windows-x64-debug\tools\psprx\psprx.exe'),
+               (Join-Path (Split-Path -Parent $root) 'build\windows-x64-debug\psprecore\tools\psprx\psprx.exe')) |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $Psprx) { throw 'psprx.exe not found: build the windows-x64-debug preset first or pass -Psprx' }
+}
 $compare = Join-Path $root 'tools\analysis\compare_objdump.py'
 $out = Join-Path $root 'build\allegrex_check'
 New-Item -ItemType Directory -Force $out | Out-Null
 
-& "$sdk\psp-as.exe" -march=allegrex -o "$out\all_ops.o" (Join-Path $root 'tests\allegrex\all_ops.S')
+& "$bin\psp-as.exe" -march=allegrex -o "$out\all_ops.o" (Join-Path $root 'tests\allegrex\all_ops.S')
 if ($LASTEXITCODE) { throw 'psp-as failed' }
-& "$sdk\psp-objdump.exe" -d "$out\all_ops.o" > "$out\all_ops_ref.dis"
-& $psprx disasm "$out\all_ops.o" > "$out\all_ops_ours.dis"
+& "$bin\psp-objdump.exe" -d "$out\all_ops.o" > "$out\all_ops_ref.dis"
+& $Psprx disasm "$out\all_ops.o" > "$out\all_ops_ours.dis"
 python -I $compare "$out\all_ops_ref.dis" "$out\all_ops_ours.dis"
 $failed = $LASTEXITCODE
 
-$boot = Join-Path $root 'Crisis Core - Final Fantasy VII EU\PSP_GAME\SYSDIR\BOOT.BIN'
-if (Test-Path $boot) {
-    & "$sdk\psp-objdump.exe" -d -j .text $boot > "$out\boot_ref.dis"
-    & $psprx disasm $boot > "$out\boot_ours.dis"
+if ($Boot) {
+    & "$bin\psp-objdump.exe" -d -j .text $Boot > "$out\boot_ref.dis"
+    & $Psprx disasm $Boot > "$out\boot_ours.dis"
     python -I $compare "$out\boot_ref.dis" "$out\boot_ours.dis"
     if ($LASTEXITCODE) { $failed = 1 }
 }
