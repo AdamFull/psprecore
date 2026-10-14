@@ -46,11 +46,16 @@ public:
     bool take_menu_request();
     void set_fullscreen(bool on);
     bool fullscreen() const;
+    // On-screen touch controls. They appear on touch input and hide when a key or gamepad button is used.
+    void set_touch_controls(bool visible);
+    bool touch_controls() const;
 
     // Testing: reads back the next presented window image (overlay included) as RGBA8.
     void capture_next_present(std::function<void(const std::uint32_t* rgba, int width, int height)> done);
     // Testing: queues a key press and release as if typed (SDL keycode), e.g. to drive the overlay.
     void inject_key(std::uint32_t keycode);
+    // Testing: a finger touching window-normalised (x, y), lifted after `polls` calls to poll_events().
+    void inject_finger(float x, float y, int polls);
 
     // Small RGBA8 textures for the overlay (e.g. save icons); the result is an ImTextureID.
     std::uint64_t create_texture(const std::uint32_t* rgba, int width, int height);

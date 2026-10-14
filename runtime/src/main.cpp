@@ -6,13 +6,15 @@
 //                                        compare runs both and screenshots show reference | Vulkan | difference)
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
 //       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
+//       [--touch]                       (show the on-screen touch controls from the start; default on Android)
 //       [--perf]                        (prints host time per 300 vblanks and display frames)
 //       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
 //       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
 //       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
 //       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
 //                                        up/down/left/right/l/r for 6 vblanks; for automated testing)
-//       [--ui VBLANK ACTION]...         (scripted overlay input: menu, enter, escape, up, down, space)
+//       [--ui VBLANK ACTION]...         (scripted overlay input: menu, enter, escape, up, down, space,
+//                                        tap:X,Y for a touch at window-normalised coordinates)
 //       [--window-shot VBLANK out.png]  (captures the window, overlay included; a pause menu opened by --ui
 //                                        closes itself after this capture so the run can continue)
 
@@ -31,6 +33,13 @@
 #include <vector>
 
 #include <SDL3/SDL_keycode.h>
+#ifdef __ANDROID__
+#include <SDL3/SDL_main.h>  // main() becomes SDL_main, called by SDLActivity
+#include <SDL3/SDL_messagebox.h>
+#include <SDL3/SDL_system.h>
+#include <android/log.h>
+#include <unistd.h>
+#endif
 
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
@@ -188,15 +197,53 @@ namespace {
 
 constexpr std::uint32_t kLoadBase = 0x08804000;  // must match the base ccrecomp translated for
 
+#ifdef __ANDROID__
+// The runtime logs to stderr; on Android forward it line by line to logcat (tag "ff7cc").
+void redirect_stderr_to_logcat() {
+    static int fds[2];
+    if (pipe(fds) != 0) return;
+    dup2(fds[1], STDERR_FILENO);
+    std::setvbuf(stderr, nullptr, _IOLBF, 0);
+    std::thread([] {
+        char buf[1024];
+        std::string line;
+        for (ssize_t n; (n = read(fds[0], buf, sizeof buf)) > 0;)
+            for (ssize_t i = 0; i < n; ++i) {
+                if (buf[i] != '\n') {
+                    line += buf[i];
+                    continue;
+                }
+                __android_log_write(ANDROID_LOG_INFO, "ff7cc", line.c_str());
+                line.clear();
+            }
+    }).detach();
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Saves, settings and cooked media live in the working directory on desktop and in the app's external
+    // files directory (Android/data/<package>/files) on Android, next to the extracted game folder.
+    fs::path data_dir = fs::current_path();
+#ifdef __ANDROID__
+    redirect_stderr_to_logcat();
+    if (const char* ext = SDL_GetAndroidExternalStoragePath()) data_dir = ext;
+    const fs::path game_dir = argc >= 2 ? fs::path(argv[1]) : data_dir / "Crisis Core - Final Fantasy VII EU";
+    if (!fs::exists(game_dir / "PSP_GAME" / "SYSDIR" / "BOOT.BIN")) {
+        const std::string message = "Copy your extracted game folder (with PSP_GAME inside) and the cooked folder to:\n\n" +
+                                    data_dir.string() + "\n\nExpected: " + game_dir.string();
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Game files not found", message.c_str(), nullptr);
+        return 1;
+    }
+#else
     if (argc < 2) {
         std::fputs("usage: ff7cc <extracted disc folder> [--trace] [--vblanks N]\n", stderr);
         return 2;
     }
+    const fs::path game_dir = argv[1];
+#endif
     try {
-        const fs::path game_dir = argv[1];
         bool trace = false, headless = false;
         std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
         std::string screenshot_path;
@@ -204,8 +251,13 @@ int main(int argc, char** argv) {
         fs::path cooked_dir;
         std::string renderer = "vulkan";
         int scale = 0;  // 0: from the settings file
-        fs::path settings_path = fs::current_path() / "ff7cc.ini";
+        fs::path settings_path = data_dir / "ff7cc.ini";
         bool no_audio = false, unthrottled = false, perf = false;
+#ifdef __ANDROID__
+        bool touch = true;  // shown until a gamepad is used
+#else
+        bool touch = false;
+#endif
         std::uint64_t max_vblanks = 0;
         std::uint64_t ge_dump_vblank = 0;
         std::vector<ScriptedPress> presses;
@@ -224,6 +276,8 @@ int main(int argc, char** argv) {
                 screenshot_path = argv[++i];
             } else if (a == "--unthrottled") {
                 unthrottled = true;
+            } else if (a == "--touch") {
+                touch = true;
             } else if (a == "--perf") {
                 perf = true;
             } else if (a == "--no-audio") {
@@ -268,9 +322,9 @@ int main(int argc, char** argv) {
         kernel.trace_hle = trace;
         kernel.max_vblanks = max_vblanks;
         kernel.user_heap().alloc_at(kLoadBase, static_cast<std::uint32_t>(image.size()));
-        rt::set_storage(game_dir, fs::current_path() / "saves");
+        rt::set_storage(game_dir, data_dir / "saves");
         if (cooked_dir.empty()) {
-            cooked_dir = fs::current_path() / "cooked";
+            cooked_dir = data_dir / "cooked";
             if (!fs::exists(cooked_dir)) cooked_dir = fs::path(argv[0]).parent_path() / "cooked";
         }
         rt::set_cooked_root(cooked_dir);
@@ -329,6 +383,7 @@ int main(int argc, char** argv) {
         rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
         if (!headless) {
             display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
+            display->set_touch_controls(touch);
             const bool gpu = renderer != "soft";
             const auto apply = [&](const platform::Settings& s) {
                 if (vulkan_renderer) vulkan_renderer->set_scale(s.scale);
@@ -408,6 +463,11 @@ int main(int argc, char** argv) {
                     else if (u.action == "up") display->inject_key(SDLK_UP);
                     else if (u.action == "down") display->inject_key(SDLK_DOWN);
                     else if (u.action == "space") display->inject_key(SDLK_SPACE);
+                    else if (u.action.starts_with("tap:")) {  // tap:X,Y in window-normalised coordinates
+                        const auto comma = u.action.find(',');
+                        if (comma != std::string::npos)
+                            display->inject_finger(std::stof(u.action.substr(4, comma - 4)), std::stof(u.action.substr(comma + 1)), 8);
+                    }
                 }
                 if (!window_shot_path.empty() && vblank == window_shot_vblank) window_shot_armed = true;
                 if (!display->poll_events()) kernel.request_quit();

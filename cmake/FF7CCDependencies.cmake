@@ -29,14 +29,30 @@ FetchContent_Declare(miniaudio
 FetchContent_MakeAvailable(SDL3 imgui miniaudio)
 
 # ---- Vulkan (headers + volk loader + VMA allocator from the Vulkan SDK) ----
-find_package(Vulkan REQUIRED)
-set(_ff7cc_vulkan_include "${Vulkan_INCLUDE_DIRS}")
+if(ANDROID)
+    # The NDK ships Vulkan headers but not volk or VMA; both are portable, so take them (and matching headers)
+    # from the host Vulkan SDK. The loader is libvulkan.so on the device, opened by volk at run time.
+    if(NOT DEFINED ENV{VULKAN_SDK})
+        message(FATAL_ERROR "Android builds need the VULKAN_SDK environment variable (volk and VMA sources)")
+    endif()
+    file(TO_CMAKE_PATH "$ENV{VULKAN_SDK}" _ff7cc_vulkan_sdk)
+    set(_ff7cc_vulkan_include "${_ff7cc_vulkan_sdk}/Include")
+    if(NOT EXISTS "${_ff7cc_vulkan_include}/Volk/volk.c")
+        set(_ff7cc_vulkan_include "${_ff7cc_vulkan_sdk}/include")
+    endif()
+else()
+    find_package(Vulkan REQUIRED)
+    set(_ff7cc_vulkan_include "${Vulkan_INCLUDE_DIRS}")
+endif()
 add_library(ff7cc_vulkan STATIC "${_ff7cc_vulkan_include}/Volk/volk.c")
 target_include_directories(ff7cc_vulkan SYSTEM PUBLIC "${_ff7cc_vulkan_include}" "${_ff7cc_vulkan_include}/Volk"
                                                   "${_ff7cc_vulkan_include}/vma")
 target_compile_definitions(ff7cc_vulkan PUBLIC VK_NO_PROTOTYPES)
 if(WIN32)
     target_compile_definitions(ff7cc_vulkan PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+elseif(ANDROID)
+    target_compile_definitions(ff7cc_vulkan PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
+    target_link_libraries(ff7cc_vulkan PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
 # ---- Dear ImGui with the SDL3 + Vulkan backends ----

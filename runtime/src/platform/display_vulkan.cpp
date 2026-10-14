@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "ff7cc/platform/display.hpp"
+#include "platform/touch_controls.hpp"
 
 namespace ff7cc::platform {
 
@@ -76,6 +77,13 @@ struct Display::Impl {
     SDL_Gamepad* gamepad = nullptr;
     bool menu_request = false;
     bool stick_l = false, stick_r = false;
+    TouchControls touch;
+    bool touch_mode = false;  // the last input came from the touchscreen
+    struct InjectedFinger {
+        SDL_FingerID id;
+        int polls;
+    };
+    std::vector<InjectedFinger> injected;
 
     bool imgui = false;
     float ui_dpi = 1.0f, ui_scale = 0.0f;  // the font is rasterised at the DPI scale; ui_scale follows the window
@@ -257,6 +265,10 @@ void Display::Impl::create_swapchain() {
                  ? caps.currentExtent
                  : VkExtent2D{std::clamp<std::uint32_t>(static_cast<std::uint32_t>(w), caps.minImageExtent.width, caps.maxImageExtent.width),
                               std::clamp<std::uint32_t>(static_cast<std::uint32_t>(h), caps.minImageExtent.height, caps.maxImageExtent.height)};
+    // Android reports the surface in the display's native orientation. We do not pre-rotate: the swapchain uses
+    // the identity transform at the displayed (rotated) size and the compositor rotates it.
+    const bool rotated = caps.currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR);
+    if (rotated) std::swap(extent.width, extent.height);
     if (extent.width == 0 || extent.height == 0) return;  // minimised
 
     std::uint32_t count = 0;
@@ -283,8 +295,15 @@ void Display::Impl::create_swapchain() {
     can_capture = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     if (can_capture) sci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    sci.preTransform = caps.currentTransform;
+    sci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                                                                                     : caps.currentTransform;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    for (const auto mode : {VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+                            VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR})
+        if (caps.supportedCompositeAlpha & mode) {
+            sci.compositeAlpha = mode;
+            break;
+        }
     sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     sci.clipped = VK_TRUE;
     check(vkCreateSwapchainKHR(device, &sci, nullptr, &swapchain), "vkCreateSwapchainKHR");
@@ -437,6 +456,14 @@ void Display::Impl::update_pad() {
             y = gy;
         }
     }
+    if (touch_mode) {
+        buttons |= touch.buttons();
+        float tx = 0, ty = 0;
+        if (touch.stick(tx, ty)) {
+            x = tx;
+            y = ty;
+        }
+    }
     pad.buttons = buttons;
     pad.lx = static_cast<std::uint8_t>(std::clamp(128.0f + x * 127.0f, 0.0f, 255.0f));
     pad.ly = static_cast<std::uint8_t>(std::clamp(128.0f + y * 127.0f, 0.0f, 255.0f));
@@ -512,16 +539,45 @@ bool Display::poll_events() {
             default: return 0;
         }
     };
+    for (auto it = d.injected.begin(); it != d.injected.end();) {  // scripted test touches
+        if (--it->polls > 0) {
+            ++it;
+            continue;
+        }
+        SDL_Event up{};
+        up.type = SDL_EVENT_FINGER_UP;
+        up.tfinger.fingerID = it->id;
+        up.tfinger.windowID = SDL_GetWindowID(d.window);
+        SDL_PushEvent(&up);
+        it = d.injected.erase(it);
+    }
+    int win_w = 0, win_h = 0;
+    SDL_GetWindowSize(d.window, &win_w, &win_h);
+    d.touch.set_size(static_cast<float>(win_w), static_cast<float>(win_h));
     while (SDL_PollEvent(&e)) {
         if (d.imgui) ImGui_ImplSDL3_ProcessEvent(&e);
         switch (e.type) {
+            case SDL_EVENT_FINGER_DOWN:
+                d.touch_mode = true;
+                d.touch.finger_down(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y);
+                break;
+            case SDL_EVENT_FINGER_MOTION: d.touch.finger_motion(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y); break;
+            case SDL_EVENT_FINGER_UP:
+            case SDL_EVENT_FINGER_CANCELED: d.touch.finger_up(e.tfinger.fingerID); break;
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+                if (std::abs(e.gaxis.value) > 16000) d.touch_mode = false;
+                break;
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: d.swapchain_dirty = true; break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
                 const bool down = e.type == SDL_EVENT_KEY_DOWN;
                 if (down && !e.key.repeat) {
-                    if (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_F1) d.menu_request = true;
+                    if (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_F1 || e.key.key == SDLK_AC_BACK) d.menu_request = true;
+                    if (e.key.key != SDLK_AC_BACK) {  // Android's back button is not a keyboard
+                        d.touch_mode = false;
+                        d.touch.release_all();
+                    }
                     if (e.key.key == SDLK_F11 || (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT))) {
                         set_fullscreen(!fullscreen());
                         break;  // Alt+Enter is not Start
@@ -548,6 +604,10 @@ bool Display::poll_events() {
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
             case SDL_EVENT_GAMEPAD_BUTTON_UP: {
                 const bool down = e.gbutton.down;
+                if (down) {
+                    d.touch_mode = false;
+                    d.touch.release_all();
+                }
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE && down) d.menu_request = true;
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_STICK) d.stick_l = down;
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) d.stick_r = down;
@@ -602,6 +662,7 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         if (ui) ui();
+        if (touch_mode) touch.draw(ImGui::GetForegroundDrawList());
         ImGui::Render();
         overlay = ImGui::GetDrawData();
         if (overlay->TotalVtxCount == 0) overlay = nullptr;
@@ -805,7 +866,26 @@ void Display::inject_key(std::uint32_t keycode) {
 
 void Display::set_ui(std::function<void()> ui) { impl_->ui = std::move(ui); }
 
-bool Display::take_menu_request() { return std::exchange(impl_->menu_request, false); }
+bool Display::take_menu_request() {
+    const bool touch = impl_->touch.take_menu_request();
+    return std::exchange(impl_->menu_request, false) || touch;
+}
+
+void Display::set_touch_controls(bool visible) { impl_->touch_mode = visible; }
+
+bool Display::touch_controls() const { return impl_->touch_mode; }
+
+void Display::inject_finger(float x, float y, int polls) {
+    static SDL_FingerID next = 0x7F000000;
+    SDL_Event e{};
+    e.type = SDL_EVENT_FINGER_DOWN;
+    e.tfinger.fingerID = ++next;
+    e.tfinger.windowID = SDL_GetWindowID(impl_->window);
+    e.tfinger.x = x;
+    e.tfinger.y = y;
+    SDL_PushEvent(&e);
+    impl_->injected.push_back({next, std::max(1, polls)});
+}
 
 void Display::set_fullscreen(bool on) { SDL_SetWindowFullscreen(impl_->window, on); }
 
