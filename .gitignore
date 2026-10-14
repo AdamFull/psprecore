@@ -54,3 +54,8 @@ Thumbs.db
 /android/build/
 /android/app/build/
 /android/local.properties
+
+# --- Local only ---
+/PORT_PLAN.md
+# nx-foundation: a git submodule later (github.com/AdamFull/nx-foundation); a local copy until then
+/libs/foundation/
