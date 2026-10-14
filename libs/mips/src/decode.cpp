@@ -1,17 +1,17 @@
-#include "ff7cc/mips/allegrex.hpp"
+#include "psprecore/mips/allegrex.hpp"
 
 #include <array>
 
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::mips {
+namespace psprecore::mips {
 
 namespace {
 
 constexpr std::array kOpNames{
-#define FF7CC_X(name) nx::string_view(#name),
-    FF7CC_ALLEGREX_OPS(FF7CC_X)
-#undef FF7CC_X
+#define PSPRECORE_X(name) nx::string_view(#name),
+    PSPRECORE_ALLEGREX_OPS(PSPRECORE_X)
+#undef PSPRECORE_X
 };
 
 Op special(std::uint32_t w) {
@@ -354,4 +354,4 @@ bool Instruction::is_likely() const {
 
 bool Instruction::is_jump() const { return op == Op::J || op == Op::Jal || op == Op::Jr || op == Op::Jalr; }
 
-}  // namespace ff7cc::mips
+}  // namespace psprecore::mips

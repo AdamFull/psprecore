@@ -1,6 +1,6 @@
-# Compares `ccprx disasm` output with `psp-objdump -d` output line by line (same section, same addresses).
+# Compares `psprx disasm` output with `psp-objdump -d` output line by line (same section, same addresses).
 #
-#   python -I compare_objdump.py <objdump.txt> <ccprx.txt> [examples per mnemonic]
+#   python -I compare_objdump.py <objdump.txt> <psprx.txt> [examples per mnemonic]
 import collections
 import re
 import sys

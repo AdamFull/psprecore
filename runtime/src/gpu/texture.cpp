@@ -4,9 +4,9 @@
 #include <cmath>
 #include <cstring>
 
-#include "ff7cc/runtime/memory.hpp"
+#include "psprecore/runtime/memory.hpp"
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 namespace {
 
@@ -255,4 +255,4 @@ std::uint32_t TextureSampler::sample_generic(const TextureSampler& t, float u, f
     return filter(u, v, l.width, l.height, t.clamp_u_, t.clamp_v_, linear, [&](int x, int y) { return t.texel(l, x, y); });
 }
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

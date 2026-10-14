@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 // Fast non-cryptographic hash. Four independent lanes keep the multipliers busy (several bytes per cycle).
 inline std::uint64_t hash_bytes(const void* data, std::size_t size, std::uint64_t h = 0x9E3779B97F4A7C15ull) {
@@ -34,4 +34,4 @@ inline std::uint64_t hash_bytes(const void* data, std::size_t size, std::uint64_
     return (h ^ (h >> 31)) * kMul;
 }
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

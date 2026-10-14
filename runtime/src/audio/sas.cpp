@@ -2,9 +2,9 @@
 
 #include <algorithm>
 
-#include "ff7cc/runtime/memory.hpp"
+#include "psprecore/runtime/memory.hpp"
 
-namespace ff7cc::rt::audio {
+namespace psprecore::rt::audio {
 
 namespace {
 
@@ -225,4 +225,4 @@ void Sas::mix(const GuestMemory& memory, std::int16_t* out, const std::int16_t* 
     }
 }
 
-}  // namespace ff7cc::rt::audio
+}  // namespace psprecore::rt::audio

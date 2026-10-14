@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "ff7cc/recomp/recomp.h"
+#include "psprecore/recomp/recomp.h"
 
 void recomp_call(Context* ctx, uint32_t target) {
     const RecompFunc f = recomp_lookup(target);

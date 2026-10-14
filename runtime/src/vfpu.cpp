@@ -20,12 +20,12 @@
 #include <limits>
 #include <numbers>
 
-#include "ff7cc/mips/allegrex.hpp"
-#include "ff7cc/recomp/recomp.h"
+#include "psprecore/mips/allegrex.hpp"
+#include "psprecore/recomp/recomp.h"
 
 namespace {
 
-using ff7cc::mips::Op;
+using psprecore::mips::Op;
 using Vec = std::array<float, 4>;
 
 constexpr std::uint32_t kPfxIdentity = 0xE4;  // x,y,z,w
@@ -169,7 +169,7 @@ std::uint32_t random_next(Context* c) {  // xorshift32 kept in the random contro
 
 [[noreturn]] void unsupported(std::uint32_t word) {
     std::fprintf(stderr, "VFPU: unsupported instruction %08X (%s)\n", word,
-                 ff7cc::mips::format(ff7cc::mips::decode(word, 0)).c_str());
+                 psprecore::mips::format(psprecore::mips::decode(word, 0)).c_str());
     std::abort();
 }
 
@@ -197,7 +197,7 @@ bool compare(int cond, float a, float b) {
 }  // namespace
 
 extern "C" void vfpu_op(Context* c, uint32_t w) {
-    const auto in = ff7cc::mips::decode(w, 0);
+    const auto in = psprecore::mips::decode(w, 0);
     const int n = in.vsize();
     const std::uint32_t vd = in.vd(), vs = in.vs(), vt = in.vt();
     Vec d{};
@@ -573,7 +573,7 @@ extern "C" void vfpu_op(Context* c, uint32_t w) {
 
 // lv.s / lv.q / lvl.q / lvr.q
 extern "C" void vfpu_load(Context* c, uint32_t w, uint32_t address) {
-    const auto in = ff7cc::mips::decode(w, 0);
+    const auto in = psprecore::mips::decode(w, 0);
     switch (in.op) {
         case Op::LvS: {
             const std::uint32_t reg = ((w >> 16) & 31) | ((w & 3) << 5);
@@ -604,7 +604,7 @@ extern "C" void vfpu_load(Context* c, uint32_t w, uint32_t address) {
 
 // sv.s / sv.q / svl.q / svr.q
 extern "C" void vfpu_store(Context* c, uint32_t w, uint32_t address) {
-    const auto in = ff7cc::mips::decode(w, 0);
+    const auto in = psprecore::mips::decode(w, 0);
     switch (in.op) {
         case Op::SvS: {
             const std::uint32_t reg = ((w >> 16) & 31) | ((w & 3) << 5);

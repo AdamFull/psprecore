@@ -6,7 +6,7 @@
 #include "test_main.hpp"
 #include "core/foundation/core/foundation.h"
 
-using ff7cc::rt::audio::Reverb;
+using psprecore::rt::audio::Reverb;
 
 namespace {
 

@@ -11,14 +11,14 @@
 #include <memory>
 
 #include "audio/vorbis.hpp"
-#include "ff7cc/formats/cooked.hpp"
-#include "ff7cc/formats/psmf.hpp"
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/formats/cooked.hpp"
+#include "psprecore/formats/psmf.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/kernel.hpp"
 #include "media/av1_video.hpp"
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -48,7 +48,7 @@ struct Mpeg {
     int next_stream_id = 1;
     int stream_type[16] = {};
     std::uint32_t pixel_mode = 3;
-    // Cooked media for the current movie (ff7cc/formats/cooked.hpp).
+    // Cooked media for the current movie (psprecore/formats/cooked.hpp).
     std::unique_ptr<media::Av1Video> video;
     std::unique_ptr<audio::VorbisStream> audio;
     nx::vector<std::uint32_t> frame;
@@ -350,4 +350,4 @@ constexpr HleBinding kBindings[] = {
 
 void hle_install_mpeg() { hle_bind(kBindings); }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

@@ -5,15 +5,15 @@
 #include <functional>
 #include <memory>
 
-#include "ff7cc/runtime/ge.hpp"
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/runtime/ge.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/kernel.hpp"
 #include "gpu/soft_renderer.hpp"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -250,4 +250,4 @@ void set_ge_dump(std::uint64_t frame, const char* path) {
 
 std::uint64_t display_frame_count() { return g_display.frames; }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

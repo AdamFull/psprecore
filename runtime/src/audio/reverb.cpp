@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace ff7cc::rt::audio {
+namespace psprecore::rt::audio {
 
 namespace {
 
@@ -147,4 +147,4 @@ void Reverb::process(const std::int32_t* send, std::int32_t* out, int frames, in
     }
 }
 
-}  // namespace ff7cc::rt::audio
+}  // namespace psprecore::rt::audio

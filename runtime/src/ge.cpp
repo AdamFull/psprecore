@@ -1,15 +1,15 @@
-#include "ff7cc/runtime/ge.hpp"
+#include "psprecore/runtime/ge.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 
-#include "ff7cc/runtime/memory.hpp"
+#include "psprecore/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::rt::ge {
+namespace psprecore::rt::ge {
 
 namespace {
 
@@ -450,4 +450,4 @@ void Processor::run(List& l) {
     l.done = true;
 }
 
-}  // namespace ff7cc::rt::ge
+}  // namespace psprecore::rt::ge

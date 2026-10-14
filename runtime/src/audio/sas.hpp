@@ -9,11 +9,11 @@
 
 #include "audio/reverb.hpp"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 class GuestMemory;
 }
 
-namespace ff7cc::rt::audio {
+namespace psprecore::rt::audio {
 
 inline constexpr std::int64_t kEnvelopeMax = 0x40000000;
 
@@ -92,4 +92,4 @@ private:
     std::array<Voice, 32> voices_{};
 };
 
-}  // namespace ff7cc::rt::audio
+}  // namespace psprecore::rt::audio

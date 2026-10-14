@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 using ge::State;
 using ge::Vertex;
@@ -233,4 +233,4 @@ ClipVertex VertexPipeline::transform(const State& s, const Vertex& v) const {
     return out;
 }
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

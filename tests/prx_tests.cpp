@@ -1,14 +1,14 @@
 #include <cstring>
 
-#include "ff7cc/error.hpp"
-#include "ff7cc/formats/elf.hpp"
-#include "ff7cc/formats/prx.hpp"
+#include "psprecore/error.hpp"
+#include "psprecore/formats/elf.hpp"
+#include "psprecore/formats/prx.hpp"
 #include "test_main.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
 
-using namespace ff7cc;
+using namespace psprecore;
 
 namespace {
 

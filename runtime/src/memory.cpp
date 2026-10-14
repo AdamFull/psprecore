@@ -2,8 +2,8 @@
 #include <cstring>
 #include <stdexcept>
 
-#include "ff7cc/recomp/recomp.h"
-#include "ff7cc/runtime/memory.hpp"
+#include "psprecore/recomp/recomp.h"
+#include "psprecore/runtime/memory.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -16,7 +16,7 @@
 
 uint8_t* g_membase = nullptr;
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -159,4 +159,4 @@ std::uint32_t GuestHeap::free_bytes() const {
     return (end_ - begin_) - used;
 }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

@@ -10,7 +10,7 @@
 
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 // The guest produces audio in virtual time (paced to the host clock) and the device consumes it on its own clock,
 // so each source keeps a cushion between them: a stream starts playing once `target` frames are queued (again after
@@ -127,4 +127,4 @@ struct AudioRing {
     }
 };
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

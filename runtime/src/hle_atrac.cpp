@@ -1,5 +1,5 @@
 // sceAtrac3plus: music and voice clips. The game hands over a whole RIFF ATRAC3/ATRAC3plus file; we decode
-// the matching cooked Ogg Vorbis stream (ff7cc/formats/cooked.hpp) instead of ATRAC. Without cooked media
+// the matching cooked Ogg Vorbis stream (psprecore/formats/cooked.hpp) instead of ATRAC. Without cooked media
 // the same calls produce silence of the right length, so game timing does not change.
 //
 // Timelines: the cooked stream holds the raw decoder output; game sample g is raw sample g + delay (fact).
@@ -12,13 +12,13 @@
 #include <memory>
 
 #include "audio/vorbis.hpp"
-#include "ff7cc/formats/atrac.hpp"
-#include "ff7cc/formats/cooked.hpp"
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/formats/atrac.hpp"
+#include "psprecore/formats/cooked.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/kernel.hpp"
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -183,4 +183,4 @@ void hle_install_atrac() { hle_bind(kBindings); }
 void set_cooked_root(nx::string_view root) { g_cooked_root = root; }
 const nx::string& cooked_root() { return g_cooked_root; }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

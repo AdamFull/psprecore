@@ -1,14 +1,14 @@
-#include "ff7cc/formats/elf.hpp"
+#include "psprecore/formats/elf.hpp"
 
 #include <algorithm>
 #include <charconv>
 #include <cstring>
 
-#include "ff7cc/error.hpp"
+#include "psprecore/error.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::elf {
+namespace psprecore::elf {
 
 namespace {
 
@@ -152,4 +152,4 @@ nx::vector<ArchiveMember> read_archive(std::span<const std::byte> data) {
     return out;
 }
 
-}  // namespace ff7cc::elf
+}  // namespace psprecore::elf

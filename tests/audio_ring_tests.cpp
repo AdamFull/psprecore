@@ -4,7 +4,7 @@
 #include "test_main.hpp"
 #include "core/foundation/core/foundation.h"
 
-using ff7cc::platform::AudioRing;
+using psprecore::platform::AudioRing;
 
 namespace {
 

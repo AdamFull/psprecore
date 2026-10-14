@@ -9,16 +9,16 @@
 
 #include <memory>
 
-#include "ff7cc/runtime/ge.hpp"
+#include "psprecore/runtime/ge.hpp"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 class GuestMemory;
 }
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 std::unique_ptr<ge::Renderer> make_soft_renderer(GuestMemory& memory);
 // Rasterizer threads for renderers made after the call (0: one per hardware thread, at most 8).
 void set_soft_renderer_threads(int threads);
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

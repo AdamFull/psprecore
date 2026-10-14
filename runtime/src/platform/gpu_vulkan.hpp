@@ -12,17 +12,17 @@
 #include <cstdint>
 #include <memory>
 
-#include "ff7cc/platform/vulkan_context.hpp"
-#include "ff7cc/runtime/ge.hpp"
-#include "ff7cc/gpu/button_icons.hpp"
+#include "psprecore/platform/vulkan_context.hpp"
+#include "psprecore/runtime/ge.hpp"
+#include "psprecore/gpu/button_icons.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 class GuestMemory;
 }
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 class VulkanGeRenderer final : public rt::ge::Renderer {
 public:
@@ -50,7 +50,7 @@ public:
     // GPU supports; render targets are recreated).
     void set_msaa(int samples);
     int msaa() const;
-    // The game's own button icons drawn as another controller's (ff7cc/gpu/button_icons.hpp); cached textures are rebuilt.
+    // The game's own button icons drawn as another controller's (psprecore/gpu/button_icons.hpp); cached textures are rebuilt.
     void set_button_icons(rt::gpu::IconStyle style);
     // Whether transfer() also performs the block copy in guest memory (off when another renderer already did).
     void set_guest_copies(bool on);
@@ -69,4 +69,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

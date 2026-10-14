@@ -1,4 +1,4 @@
-#include "ff7cc/platform/audio.hpp"
+#include "psprecore/platform/audio.hpp"
 
 #include "platform/audio_ring.hpp"
 
@@ -21,7 +21,7 @@
 
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 struct AudioDevice::Impl {
     ma_device device{};
@@ -105,4 +105,4 @@ void AudioDevice::submit(int source, const std::int16_t* frames, std::size_t cou
     if (impl_->ok && source >= 0 && source < kSources) impl_->rings[static_cast<std::size_t>(source)].push(frames, count);
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

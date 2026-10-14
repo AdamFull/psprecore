@@ -1,10 +1,10 @@
 # Adds NID names missing from a NID database using a PPSSPP debug log (--log=<file> -d) of the game booting.
 #
-# PPSSPP logs every resolved import as "Importing <name> : <stub address>". Combined with `ccprx imports`
+# PPSSPP logs every resolved import as "Importing <name> : <stub address>". Combined with `psprx imports`
 # (library, NID, module-relative stub address) this yields NID -> name for libraries the homebrew SDK lacks.
 # Only names are taken from the log (observed output); no emulator code is involved.
 #
-#   ccprx imports BOOT.BIN nids.tsv > imports.tsv
+#   psprx imports BOOT.BIN nids.tsv > imports.tsv
 #   python -I nids_from_ppsspp.py <ppsspp log> imports.tsv nids.tsv [load base, default 0x08804000]
 import re
 import sys

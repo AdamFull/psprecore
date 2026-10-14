@@ -6,13 +6,13 @@
 #include <memory>
 #include <thread>
 
-#include "ff7cc/runtime/memory.hpp"
+#include "psprecore/runtime/memory.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/threading/thread_pool.h"
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 namespace {
 
@@ -191,7 +191,7 @@ public:
         if (threads > 1) {
             nx::thread_pool::config config;
             config.thread_count = threads;
-            config.name = "ff7cc-raster";
+            config.name = "psprecore-raster";
             pool_ = std::make_unique<nx::thread_pool>(config);
         }
         threads_ = static_cast<int>(threads);
@@ -834,4 +834,4 @@ std::unique_ptr<ge::Renderer> make_soft_renderer(GuestMemory& memory) { return m
 
 void set_soft_renderer_threads(int threads) { g_threads = threads; }
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

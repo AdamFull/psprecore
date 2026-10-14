@@ -2,10 +2,10 @@
 
 #include <algorithm>
 
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/kernel.hpp"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -324,4 +324,4 @@ constexpr HleBinding kBindings[] = {
 
 void hle_install_threadman() { hle_bind(kBindings); }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

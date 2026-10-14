@@ -1,5 +1,5 @@
 # Runtime for recompiled code: guest memory, HLE kernel and system libraries.
-add_library(ff7cc_runtime STATIC
+add_library(psprecore_runtime STATIC
     src/recomp_runtime.c
     src/memory.cpp
     src/kernel.cpp
@@ -27,17 +27,17 @@ add_library(ff7cc_runtime STATIC
     src/media/av1_video.cpp
 )
 if(WIN32)
-    target_link_libraries(ff7cc_runtime PRIVATE dbghelp)
+    target_link_libraries(psprecore_runtime PRIVATE dbghelp)
 endif()
-add_library(ff7cc::runtime ALIAS ff7cc_runtime)
-target_include_directories(ff7cc_runtime PUBLIC include PRIVATE src)
-target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips ff7cc::formats nx::foundation PRIVATE ff7cc_stb ff7cc_dav1d)
-ff7cc_target_defaults(ff7cc_runtime)
+add_library(psprecore::runtime ALIAS psprecore_runtime)
+target_include_directories(psprecore_runtime PUBLIC include PRIVATE src)
+target_link_libraries(psprecore_runtime PUBLIC psprecore::mips psprecore::formats nx::foundation PRIVATE psprecore_stb psprecore_dav1d)
+psprecore_target_defaults(psprecore_runtime)
 
-# The front end (ff7cc/platform/frontend.hpp): window, audio, renderers, pause menu. A game's main() runs it;
-# games build their executable with ff7cc_add_game (cmake/FF7CCGame.cmake).
-if(FF7CC_BUILD_GAME)
-    add_library(ff7cc_frontend STATIC
+# The front end (psprecore/platform/frontend.hpp): window, audio, renderers, pause menu. A game's main() runs it;
+# games build their executable with psprecore_add_game (cmake/PsprecoreGame.cmake).
+if(PSPRECORE_BUILD_GAME)
+    add_library(psprecore_frontend STATIC
         src/frontend.cpp
         src/platform/display_vulkan.cpp
         src/platform/audio_miniaudio.cpp
@@ -48,18 +48,18 @@ if(FF7CC_BUILD_GAME)
         src/platform/touch_controls.cpp
         src/platform/button_glyphs.cpp
     )
-    add_library(ff7cc::frontend ALIAS ff7cc_frontend)
-    target_include_directories(ff7cc_frontend PRIVATE src)
-    ff7cc_add_shader(ff7cc_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ge.slang vertex_main vertex ge_vert)
-    ff7cc_add_shader(ff7cc_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ge.slang fragment_main fragment ge_frag)
-    ff7cc_add_shader(ff7cc_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/copy.slang vertex_main vertex copy_vert)
-    ff7cc_add_shader(ff7cc_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/copy.slang fragment_main fragment copy_frag)
-    target_link_libraries(ff7cc_frontend PUBLIC ff7cc::runtime ff7cc::formats SDL3::SDL3-static ff7cc_vulkan ff7cc_imgui
-                                               ff7cc_miniaudio)
+    add_library(psprecore::frontend ALIAS psprecore_frontend)
+    target_include_directories(psprecore_frontend PRIVATE src)
+    psprecore_add_shader(psprecore_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ge.slang vertex_main vertex ge_vert)
+    psprecore_add_shader(psprecore_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ge.slang fragment_main fragment ge_frag)
+    psprecore_add_shader(psprecore_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/copy.slang vertex_main vertex copy_vert)
+    psprecore_add_shader(psprecore_frontend ${CMAKE_CURRENT_SOURCE_DIR}/shaders/copy.slang fragment_main fragment copy_frag)
+    target_link_libraries(psprecore_frontend PUBLIC psprecore::runtime psprecore::formats SDL3::SDL3-static psprecore_vulkan psprecore_imgui
+                                               psprecore_miniaudio)
     if(ANDROID)
-        target_link_libraries(ff7cc_frontend PUBLIC android log)
+        target_link_libraries(psprecore_frontend PUBLIC android log)
     endif()
-    ff7cc_target_defaults(ff7cc_frontend)
+    psprecore_target_defaults(psprecore_frontend)
     # Global operator new/delete (mimalloc) belong in the executable itself, not in a library the linker may skip.
-    set(FF7CC_ALLOCATOR_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/allocator.cpp" CACHE INTERNAL "")
+    set(PSPRECORE_ALLOCATOR_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/allocator.cpp" CACHE INTERNAL "")
 endif()

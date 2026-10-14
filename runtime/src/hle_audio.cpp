@@ -7,12 +7,12 @@
 #include <cstdio>
 
 #include "audio/sas.hpp"
-#include "ff7cc/runtime/audio.hpp"
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/runtime/audio.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/kernel.hpp"
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -296,4 +296,4 @@ void hle_install_audio() { hle_bind(kBindings); }
 
 void set_audio_sink(AudioSink* sink) { g_sink = sink; }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

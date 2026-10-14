@@ -30,15 +30,15 @@
 #include <stdexcept>
 #include <utility>
 
-#include "ff7cc/platform/display.hpp"
-#include "ff7cc/io/path.hpp"
+#include "psprecore/platform/display.hpp"
+#include "psprecore/io/path.hpp"
 #include "platform/touch_controls.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 namespace {
 
@@ -151,10 +151,11 @@ void Display::Impl::create_device() {
     const char* const* sdl_exts = SDL_Vulkan_GetInstanceExtensions(&ext_count);
     nx::vector<const char*> exts(sdl_exts, sdl_exts + ext_count);
     nx::vector<const char*> layers;
-    if (std::getenv("FF7CC_VULKAN_VALIDATION")) layers.push_back("VK_LAYER_KHRONOS_validation");
+    if (std::getenv("PSPRECORE_VULKAN_VALIDATION")) layers.push_back("VK_LAYER_KHRONOS_validation");
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "FF7CCRECOMP";
+    app.pApplicationName = SDL_GetWindowTitle(window);
+    app.pEngineName = "psprecore";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
@@ -1176,4 +1177,4 @@ void Display::destroy_texture(std::uint64_t texture) {
     d.ui_textures.erase(it);
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

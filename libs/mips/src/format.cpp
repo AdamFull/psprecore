@@ -4,11 +4,11 @@
 #include <cstdio>
 #include <cstring>
 
-#include "ff7cc/mips/allegrex.hpp"
+#include "psprecore/mips/allegrex.hpp"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
 
-namespace ff7cc::mips {
+namespace psprecore::mips {
 
 namespace {
 
@@ -439,4 +439,4 @@ nx::string format(const Instruction& in) {
     return args.empty() ? m : m + "\t" + args;
 }
 
-}  // namespace ff7cc::mips
+}  // namespace psprecore::mips

@@ -11,7 +11,7 @@
 
 struct Dav1dContext;
 
-namespace ff7cc::rt::media {
+namespace psprecore::rt::media {
 
 class Av1Video {
 public:
@@ -38,4 +38,4 @@ private:
     std::size_t pending_offset_ = 0;
 };
 
-}  // namespace ff7cc::rt::media
+}  // namespace psprecore::rt::media

@@ -10,7 +10,7 @@
 
 struct stb_vorbis;
 
-namespace ff7cc::rt::audio {
+namespace psprecore::rt::audio {
 
 class VorbisStream {
 public:
@@ -36,4 +36,4 @@ private:
     std::uint64_t length_ = 0, cursor_ = 0;
 };
 
-}  // namespace ff7cc::rt::audio
+}  // namespace psprecore::rt::audio

@@ -1,15 +1,15 @@
-#include "ff7cc/analysis/program.hpp"
+#include "psprecore/analysis/program.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 
-#include "ff7cc/error.hpp"
+#include "psprecore/error.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::analysis {
+namespace psprecore::analysis {
 
 using mips::Op;
 
@@ -356,4 +356,4 @@ nx::vector<Registration> find_registrations(const Program& p, const nx::vector<F
     return out;
 }
 
-}  // namespace ff7cc::analysis
+}  // namespace psprecore::analysis

@@ -13,8 +13,8 @@
 #include <stdexcept>
 #include <type_traits>
 
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/memory.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/memory.hpp"
 #include "copy_frag.h"
 #include "copy_vert.h"
 #include "ge_frag.h"
@@ -28,7 +28,7 @@
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 namespace {
 
@@ -1425,4 +1425,4 @@ VulkanGeRenderer::Output VulkanGeRenderer::finish_frame(std::uint32_t address, s
     return impl_->finish_frame(address, stride, format, capture);
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

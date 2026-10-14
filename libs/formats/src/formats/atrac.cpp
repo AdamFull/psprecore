@@ -1,10 +1,10 @@
-#include "ff7cc/formats/atrac.hpp"
+#include "psprecore/formats/atrac.hpp"
 
 #include <cstring>
 
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::atrac {
+namespace psprecore::atrac {
 
 namespace {
 
@@ -105,4 +105,4 @@ nx::vector<std::byte> make_atrac3plus_riff(std::span<const std::byte> frames, st
     return out;
 }
 
-}  // namespace ff7cc::atrac
+}  // namespace psprecore::atrac

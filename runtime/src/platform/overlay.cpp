@@ -5,13 +5,13 @@
 #include <algorithm>
 #include <ctime>
 
-#include "ff7cc/platform/display.hpp"
-#include "ff7cc/runtime/hle.hpp"
+#include "psprecore/platform/display.hpp"
+#include "psprecore/runtime/hle.hpp"
 #include "platform/button_glyphs.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 namespace {
 
@@ -275,4 +275,4 @@ void Overlay::draw_save_dialog() {
     if (chosen != -2) rt::answer_save_dialog(chosen);  // invalidates `d`
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

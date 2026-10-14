@@ -6,11 +6,11 @@
 #include <cstring>
 #include <ctime>
 
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/kernel.hpp"
 #include "core/foundation/containers/map.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -165,4 +165,4 @@ std::int64_t wall_clock_base() { return g_wall_clock_base; }
 
 void hle_install_sysmem() { hle_bind(kBindings); }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

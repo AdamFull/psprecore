@@ -1,14 +1,14 @@
-#include "ff7cc/formats/prx.hpp"
+#include "psprecore/formats/prx.hpp"
 
 #include <algorithm>
 #include <cstring>
 
-#include "ff7cc/error.hpp"
+#include "psprecore/error.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
 
-namespace ff7cc::prx {
+namespace psprecore::prx {
 
 namespace {
 
@@ -204,4 +204,4 @@ nx::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive) {
     return out;
 }
 
-}  // namespace ff7cc::prx
+}  // namespace psprecore::prx

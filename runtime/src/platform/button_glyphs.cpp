@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 namespace {
 
@@ -108,4 +108,4 @@ bool glyph_button(const char* label, std::uint32_t button, ButtonGlyphs glyphs, 
     return pressed;
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

@@ -19,7 +19,7 @@
 #include "core/foundation/strings/utf8_string.h"
 
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 struct SamplingProfiler::Impl {
     std::atomic<bool> stop{false};
@@ -111,17 +111,17 @@ void SamplingProfiler::report(std::FILE* out, int top) {
                      sorted[i].second.c_str());
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform
 
 #else
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 struct SamplingProfiler::Impl {};
 SamplingProfiler::SamplingProfiler() = default;
 SamplingProfiler::~SamplingProfiler() = default;
 void SamplingProfiler::report(std::FILE* out, int) { std::fprintf(out, "profile: only available on Windows\n"); }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform
 
 #endif

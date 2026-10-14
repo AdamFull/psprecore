@@ -1,9 +1,9 @@
-// The 197 system functions BOOT.BIN imports (library, NID, name), from `ccprx imports`.
+// The 197 system functions BOOT.BIN imports (library, NID, name), from `psprx imports`.
 // Implementations are bound to these entries by name (see hle.hpp).
-#include "ff7cc/runtime/hle.hpp"
+#include "psprecore/runtime/hle.hpp"
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 const nx::vector<HleImport>& hle_imports() {
     static const nx::vector<HleImport> kImports = {
@@ -208,4 +208,4 @@ const nx::vector<HleImport>& hle_imports() {
     return kImports;
 }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

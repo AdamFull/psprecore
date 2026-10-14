@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <memory>
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 class SamplingProfiler {
 public:
@@ -25,4 +25,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

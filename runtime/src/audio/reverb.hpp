@@ -13,7 +13,7 @@
 
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::rt::audio {
+namespace psprecore::rt::audio {
 
 class Reverb {
 public:
@@ -48,4 +48,4 @@ private:
     std::int32_t prev_out_left_ = 0, prev_out_right_ = 0;   // the one before
 };
 
-}  // namespace ff7cc::rt::audio
+}  // namespace psprecore::rt::audio

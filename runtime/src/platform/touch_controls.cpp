@@ -7,7 +7,7 @@
 
 #include "platform/button_glyphs.hpp"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 namespace {
 
@@ -240,4 +240,4 @@ void TouchControls::draw(ImDrawList* dl, ButtonGlyphs glyphs) const {
     labelled({width_ * 0.5f + step, l.top_y}, l.top_w, l.top_h, button_name(kStart, glyphs), pressed & kStart);
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

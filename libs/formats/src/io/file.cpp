@@ -1,12 +1,12 @@
-#include "ff7cc/io/file.hpp"
+#include "psprecore/io/file.hpp"
 
 #include <algorithm>
 #include <array>
 
-#include "ff7cc/error.hpp"
+#include "psprecore/error.hpp"
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::io {
+namespace psprecore::io {
 
 std::FILE* open_c_file(nx::fs::path_view path, const char* mode);
 
@@ -153,4 +153,4 @@ void write_all(nx::fs::path_view path, std::span<const std::byte> data) {
     f.close();
 }
 
-}  // namespace ff7cc::io
+}  // namespace psprecore::io

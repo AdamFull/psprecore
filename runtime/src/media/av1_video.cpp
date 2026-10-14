@@ -7,7 +7,7 @@
 
 #include "core/foundation/core/foundation.h"
 
-namespace ff7cc::rt::media {
+namespace psprecore::rt::media {
 
 namespace {
 
@@ -112,4 +112,4 @@ bool Av1Video::next(nx::vector<std::uint32_t>& rgba) {
     }
 }
 
-}  // namespace ff7cc::rt::media
+}  // namespace psprecore::rt::media

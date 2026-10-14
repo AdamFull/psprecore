@@ -6,12 +6,12 @@
 
 #include <cstdint>
 
-#include "ff7cc/platform/display.hpp"
+#include "psprecore/platform/display.hpp"
 #include "core/foundation/containers/map.h"
 
 struct ImDrawList;
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 class TouchControls {
 public:
@@ -61,4 +61,4 @@ private:
     bool menu_request_ = false;
 };
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

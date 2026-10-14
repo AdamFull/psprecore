@@ -10,11 +10,11 @@
 #define STBI_ONLY_PNG
 #include <stb_image.h>
 
-#include "ff7cc/runtime/hle.hpp"
+#include "psprecore/runtime/hle.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 bool write_png(const nx::string& path, const std::uint32_t* rgba, int width, int height) {
     return stbi_write_png(path.c_str(), width, height, 4, rgba, width * 4) != 0;
@@ -30,4 +30,4 @@ bool read_png(const nx::string& path, nx::vector<std::uint32_t>& rgba, int& widt
     return true;
 }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

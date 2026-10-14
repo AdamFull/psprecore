@@ -1,4 +1,4 @@
-# Every Allegrex instruction form, assembled with psp-as to cross-check ff7cc::mips against psp-objdump.
+# Every Allegrex instruction form, assembled with psp-as to cross-check psprecore::mips against psp-objdump.
 # (scripts/check_allegrex.ps1 assembles this, disassembles it with both tools and compares.)
 # Not covered because this psp-as rejects them: vuc2i, vc2i, vmfvc, vmtvc.
         .set noreorder

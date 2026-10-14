@@ -7,7 +7,7 @@
 #include "core/foundation/strings/format.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 namespace {
 
@@ -55,7 +55,7 @@ Settings Settings::load(nx::fs::path_view path) {
 }
 
 bool Settings::save(nx::fs::path_view path) const {
-    const nx::string text = nx::format("# FF7CCRECOMP settings\nrenderer={}\nscale={}\nmsaa={}\nfullscreen={}\nvolume={}\n"
+    const nx::string text = nx::format("# Settings\nrenderer={}\nscale={}\nmsaa={}\nfullscreen={}\nvolume={}\n"
                                        "frame_limit={}\nvsync={}\nrefresh_60hz={}\nshow_fps={}\nbutton_glyphs={}\n",
                                        software_renderer ? "software" : "vulkan", scale, msaa, int{fullscreen}, volume,
                                        int{frame_limit}, int{vsync}, int{refresh_60hz}, int{show_fps},
@@ -63,4 +63,4 @@ bool Settings::save(nx::fs::path_view path) const {
     return nx::fs::file_write_text(path, text).has_value();
 }
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

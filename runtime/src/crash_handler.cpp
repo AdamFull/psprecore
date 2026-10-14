@@ -4,14 +4,14 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "ff7cc/recomp/recomp.h"
+#include "psprecore/recomp/recomp.h"
 
 #if defined(_WIN32)
 #include <windows.h>
 // windows.h must come first
 #include <dbghelp.h>
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -62,12 +62,12 @@ LONG WINAPI on_crash(EXCEPTION_POINTERS* info) {
 
 void install_crash_handler() { SetUnhandledExceptionFilter(on_crash); }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt
 
 #else
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 void install_crash_handler() {}
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt
 
 #endif

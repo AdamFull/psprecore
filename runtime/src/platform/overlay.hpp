@@ -10,7 +10,7 @@
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 class Display;
 
@@ -59,4 +59,4 @@ private:
     nx::map<nx::string, std::uint64_t> icons_;  // ICON0.PNG path -> texture (0: failed to load)
 };
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

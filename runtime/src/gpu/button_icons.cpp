@@ -1,6 +1,6 @@
-#include "ff7cc/gpu/button_icons.hpp"
+#include "psprecore/gpu/button_icons.hpp"
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 namespace {
 
@@ -71,4 +71,4 @@ void draw_button_icons(const IconAtlas& atlas, std::uint32_t* rgba, int width, I
     }
 }
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

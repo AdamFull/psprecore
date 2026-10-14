@@ -1,7 +1,7 @@
 # Static recompiler design
 
-`ccrecomp` translates every function of BOOT.BIN (found by `libs/analysis`) into C17 that compiles natively for
-x64 and ARM64. The generated code depends only on `runtime/include/ff7cc/recomp/recomp.h`.
+`psprecomp` translates every function of BOOT.BIN (found by `libs/analysis`) into C17 that compiles natively for
+x64 and ARM64. The generated code depends only on `runtime/include/psprecore/recomp/recomp.h`.
 
 ## Inputs and outputs
 

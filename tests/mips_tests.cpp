@@ -1,10 +1,10 @@
 // Decoder sanity checks that need no SDK. The exhaustive check against psp-objdump is scripts/check_allegrex.ps1.
 
-#include "ff7cc/mips/allegrex.hpp"
+#include "psprecore/mips/allegrex.hpp"
 #include "test_main.hpp"
 #include "core/foundation/strings/utf8_string.h"
 
-using namespace ff7cc::mips;
+using namespace psprecore::mips;
 
 namespace {
 

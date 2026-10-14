@@ -8,13 +8,13 @@
 #include <cstdint>
 
 #include "core/foundation/core/foundation.h"
-#include "ff7cc/runtime/ge.hpp"
+#include "psprecore/runtime/ge.hpp"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 class GuestMemory;
 }
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 // Packed colors are RGBA8 with R in the low byte (the PSP 8888 layout).
 inline std::uint32_t rgba(std::uint32_t r, std::uint32_t g, std::uint32_t b, std::uint32_t a) {
@@ -76,4 +76,4 @@ private:
     std::uint32_t palette_format_ = 0, palette_count_ = 0;
 };
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

@@ -1,4 +1,4 @@
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/runtime/kernel.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -10,7 +10,7 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -383,4 +383,4 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
     return exit_code_;
 }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

@@ -1,4 +1,4 @@
-// The front end (ff7cc/platform/frontend.hpp): runs the recompiled game in a window (or headless, for testing).
+// The front end (psprecore/platform/frontend.hpp): runs the recompiled game in a window (or headless, for testing).
 //
 //   <game> <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
@@ -55,27 +55,27 @@
 #include <unistd.h>
 #endif
 
-#include "ff7cc/formats/elf.hpp"
-#include "ff7cc/formats/prx.hpp"
-#include "ff7cc/io/file.hpp"
-#include "ff7cc/io/path.hpp"
-#include "ff7cc/text.hpp"
-#include "ff7cc/platform/audio.hpp"
-#include "ff7cc/platform/display.hpp"
-#include "ff7cc/platform/frontend.hpp"
+#include "psprecore/formats/elf.hpp"
+#include "psprecore/formats/prx.hpp"
+#include "psprecore/io/file.hpp"
+#include "psprecore/io/path.hpp"
+#include "psprecore/text.hpp"
+#include "psprecore/platform/audio.hpp"
+#include "psprecore/platform/display.hpp"
+#include "psprecore/platform/frontend.hpp"
 #include "platform/gpu_vulkan.hpp"
 #include "platform/overlay.hpp"
 #include "platform/settings.hpp"
-#include "ff7cc/gpu/button_icons.hpp"
+#include "psprecore/gpu/button_icons.hpp"
 #include "gpu/hash.hpp"
 #include "gpu/soft_renderer.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
 #include "platform/sampling_profiler.hpp"
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/io.hpp"
-#include "ff7cc/runtime/kernel.hpp"
-#include "ff7cc/runtime/memory.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/io.hpp"
+#include "psprecore/runtime/kernel.hpp"
+#include "psprecore/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/containers/map.h"
@@ -86,9 +86,9 @@
 namespace {
 
 // Records every audio source to <prefix>_<source>.wav (and forwards to the device, if any). For testing.
-class WavRecorder final : public ff7cc::rt::AudioSink {
+class WavRecorder final : public psprecore::rt::AudioSink {
 public:
-    WavRecorder(nx::string prefix, ff7cc::rt::AudioSink* next) : prefix_(std::move(prefix)), next_(next) {}
+    WavRecorder(nx::string prefix, psprecore::rt::AudioSink* next) : prefix_(std::move(prefix)), next_(next) {}
     ~WavRecorder() override { flush(); }
 
     void submit(int source, const std::int16_t* frames, std::size_t count) override {
@@ -100,7 +100,7 @@ public:
             const auto& pcm = samples_[s];
             if (pcm.empty()) continue;
             const nx::string path = prefix_ + "_" + nx::format("{}", s) + ".wav";
-            std::FILE* f = ff7cc::io::open_c_file(path, "wb");
+            std::FILE* f = psprecore::io::open_c_file(path, "wb");
             if (!f) continue;
             const auto put32 = [f](std::uint32_t v) { std::fwrite(&v, 4, 1, f); };
             const auto put16 = [f](std::uint16_t v) { std::fwrite(&v, 2, 1, f); };
@@ -124,19 +124,19 @@ public:
 
 private:
     nx::string prefix_;
-    ff7cc::rt::AudioSink* next_;
+    psprecore::rt::AudioSink* next_;
     nx::vector<std::int16_t> samples_[kSources];
 };
 
 // Sends every display list to two renderers (--renderer compare).
-class TeeRenderer final : public ff7cc::rt::ge::Renderer {
+class TeeRenderer final : public psprecore::rt::ge::Renderer {
 public:
     TeeRenderer(std::unique_ptr<Renderer> a, std::unique_ptr<Renderer> b) : a_(std::move(a)), b_(std::move(b)) {}
-    void draw(const ff7cc::rt::ge::State& s, ff7cc::rt::ge::Prim prim, const nx::vector<ff7cc::rt::ge::Vertex>& v) override {
+    void draw(const psprecore::rt::ge::State& s, psprecore::rt::ge::Prim prim, const nx::vector<psprecore::rt::ge::Vertex>& v) override {
         a_->draw(s, prim, v);
         b_->draw(s, prim, v);
     }
-    void transfer(const ff7cc::rt::ge::State& s) override {
+    void transfer(const psprecore::rt::ge::State& s) override {
         a_->transfer(s);
         b_->transfer(s);
     }
@@ -187,15 +187,15 @@ nx::vector<std::uint32_t> compare_frames(const nx::vector<std::uint32_t>& ref, c
 }
 
 // Input recordings (--record / --replay), a text file with one line per change:
-//     ff7cc-input 1 <wall clock base>
+//     psprecore-input 1 <wall clock base>    (older recordings: ff7cc-input)
 //     <vblank> pad <buttons, hex> <lx> <ly>
 //     <vblank> dialog <slot>            (save picker answer; -1 = cancel)
 // With the same game data, saves and clock base the run is reproduced exactly (virtual time is deterministic).
 class InputRecorder {
 public:
-    InputRecorder(nx::fs::path_view path, std::int64_t clock_base) : f_(ff7cc::io::open_c_file(path, "w")) {
-        if (!f_) throw ff7cc::Error(nx::string("cannot write ") + path.native());
-        std::fprintf(f_, "ff7cc-input 1 %lld\n", static_cast<long long>(clock_base));
+    InputRecorder(nx::fs::path_view path, std::int64_t clock_base) : f_(psprecore::io::open_c_file(path, "w")) {
+        if (!f_) throw psprecore::Error(nx::string("cannot write ") + path.native());
+        std::fprintf(f_, "psprecore-input 1 %lld\n", static_cast<long long>(clock_base));
     }
     ~InputRecorder() {
         if (f_) std::fclose(f_);
@@ -225,12 +225,15 @@ private:
 class InputReplay {
 public:
     explicit InputReplay(nx::fs::path_view path) {
-        std::FILE* f = ff7cc::io::open_c_file(path, "r");
-        if (!f) throw ff7cc::Error(nx::string("cannot read ") + path.native());
+        std::FILE* f = psprecore::io::open_c_file(path, "r");
+        if (!f) throw psprecore::Error(nx::string("cannot read ") + path.native());
         long long base = 0;
-        if (std::fscanf(f, "ff7cc-input 1 %lld", &base) != 1) {
-            std::fclose(f);
-            throw ff7cc::Error(nx::string(path.native()) + " is not an ff7cc input recording");
+        if (std::fscanf(f, "psprecore-input 1 %lld", &base) != 1) {
+            std::rewind(f);  // recordings made before the runtime was psprecore
+            if (std::fscanf(f, "ff7cc-input 1 %lld", &base) != 1) {
+                std::fclose(f);
+                throw psprecore::Error(nx::string(path.native()) + " is not an input recording");
+            }
         }
         clock_base_ = base;
         char kind[16];
@@ -303,7 +306,7 @@ struct ScriptedUi {
 };
 
 std::uint32_t button_from_name(nx::string_view name) {
-    using namespace ff7cc::platform;
+    using namespace psprecore::platform;
     static constexpr std::pair<nx::string_view, std::uint32_t> kNames[] = {
         {"select", kSelect}, {"start", kStart},   {"up", kUp},       {"right", kRight},
         {"down", kDown},     {"left", kLeft},     {"l", kLTrigger},  {"r", kRTrigger},
@@ -311,7 +314,7 @@ std::uint32_t button_from_name(nx::string_view name) {
     };
     for (const auto& [n, b] : kNames)
         if (n == name) return b;
-    throw ff7cc::Error("unknown button: " + nx::string(name));
+    throw psprecore::Error("unknown button: " + nx::string(name));
 }
 
 std::uint32_t scripted_buttons(const nx::vector<ScriptedPress>& presses, std::uint64_t vblank) {
@@ -323,14 +326,15 @@ std::uint32_t scripted_buttons(const nx::vector<ScriptedPress>& presses, std::ui
 }
 
 }  // namespace
-using namespace ff7cc;
+using namespace psprecore;
 
 namespace {
 
 
 #ifdef __ANDROID__
-// The runtime logs to stderr; on Android forward it line by line to logcat (tag "ff7cc") and to `log_path`
-// (logcat's ring buffer is small and shared with the whole system).
+// The runtime logs to stderr; on Android forward it line by line to logcat (tagged with the game's short name) and
+// to `log_path` (logcat's ring buffer is small and shared with the whole system).
+const char* g_log_tag = "psprecore";
 std::thread g_stderr_reader;
 int g_stderr_pipe = -1;  // write end
 
@@ -351,7 +355,7 @@ void redirect_stderr_to_logcat(nx::fs::path_view log_path) {
                     line += buf[i];
                     continue;
                 }
-                __android_log_write(ANDROID_LOG_INFO, "ff7cc", line.c_str());
+                __android_log_write(ANDROID_LOG_INFO, g_log_tag, line.c_str());
                 if (log) {
                     std::fputs(line.c_str(), log);
                     std::fputc('\n', log);
@@ -377,13 +381,14 @@ void finish_stderr() {
 
 }  // namespace
 
-int ff7cc::platform::run_game(const GameInfo& game, int argc, char** argv) {
-    const std::uint32_t kLoadBase = game.load_base;  // must match the base ccrecomp translated for
+int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
+    const std::uint32_t kLoadBase = game.load_base;  // must match the base psprecomp translated for
     // Saves, settings and cooked media live in the working directory on desktop and in the app's external
     // files directory (Android/data/<package>/files) on Android, next to the extracted game folder.
     nx::string data_dir = ".";
 #ifdef __ANDROID__
     if (const char* ext = SDL_GetAndroidExternalStoragePath()) data_dir = ext;
+    g_log_tag = game.name;
     redirect_stderr_to_logcat(path_join(data_dir, nx::format("{}.log", game.name)));
     if (argc > 1) {  // launch-intent options (testing)
         std::fprintf(stderr, "arguments:");
@@ -992,7 +997,7 @@ int ff7cc::platform::run_game(const GameInfo& game, int argc, char** argv) {
         finish_stderr();
         std::_Exit(code);  // guest threads may still be parked on their batons
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "ff7cc: %s\n", e.what());
+        std::fprintf(stderr, "%s: %s\n", game.name, e.what());
         finish_stderr();
         return 1;
     }

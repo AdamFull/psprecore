@@ -9,9 +9,9 @@
 
 #include <cstdint>
 
-#include "ff7cc/platform/display.hpp"
+#include "psprecore/platform/display.hpp"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 // The symbol or letter of face button `button` (kCross, kCircle, kSquare or kTriangle) within `size` of `center`.
 void draw_face_symbol(ImDrawList* dl, ImVec2 center, float size, std::uint32_t button, ButtonGlyphs glyphs,
@@ -29,4 +29,4 @@ void glyph(std::uint32_t button, ButtonGlyphs glyphs);
 // ImGui layout: a button showing the glyph of the face button that also presses it before `label` (also its ID).
 bool glyph_button(const char* label, std::uint32_t button, ButtonGlyphs glyphs, float width = 0.0f);
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

@@ -13,16 +13,16 @@
 #include <optional>
 #include <span>
 
-#include "ff7cc/io/path.hpp"
-#include "ff7cc/runtime/hle.hpp"
-#include "ff7cc/runtime/io.hpp"
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/io/path.hpp"
+#include "psprecore/runtime/hle.hpp"
+#include "psprecore/runtime/io.hpp"
+#include "psprecore/runtime/kernel.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/strings/format.h"
 #include "core/foundation/strings/utf8_string.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -365,4 +365,4 @@ void apply_answer(int slot) {
 
 }  // namespace
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt

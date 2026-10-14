@@ -1,8 +1,8 @@
-add_library(ff7cc_analysis STATIC
+add_library(psprecore_analysis STATIC
     src/program.cpp
 )
-add_library(ff7cc::analysis ALIAS ff7cc_analysis)
+add_library(psprecore::analysis ALIAS psprecore_analysis)
 
-target_include_directories(ff7cc_analysis PUBLIC include)
-target_link_libraries(ff7cc_analysis PUBLIC ff7cc::formats ff7cc::mips)
-ff7cc_target_defaults(ff7cc_analysis)
+target_include_directories(psprecore_analysis PUBLIC include)
+target_link_libraries(psprecore_analysis PUBLIC psprecore::formats psprecore::mips)
+psprecore_target_defaults(psprecore_analysis)

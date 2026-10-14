@@ -8,7 +8,7 @@
 #undef C
 #undef R
 
-namespace ff7cc::rt::audio {
+namespace psprecore::rt::audio {
 
 std::unique_ptr<VorbisStream> VorbisStream::open(nx::fs::path_view path) {
     auto file = nx::fs::file_read(path);
@@ -47,4 +47,4 @@ std::uint32_t VorbisStream::read(std::uint64_t position, std::int16_t* out, std:
     return done;
 }
 
-}  // namespace ff7cc::rt::audio
+}  // namespace psprecore::rt::audio

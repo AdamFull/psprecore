@@ -9,7 +9,7 @@
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
 
-namespace ff7cc::test {
+namespace psprecore::test {
 
 struct Case {
     const char* name;
@@ -29,21 +29,21 @@ struct Registrar {
     Registrar(const char* name, std::function<void()> fn) { registry().push_back({name, std::move(fn)}); }
 };
 
-}  // namespace ff7cc::test
+}  // namespace psprecore::test
 
-#define FF7CC_CONCAT_(a, b) a##b
-#define FF7CC_CONCAT(a, b) FF7CC_CONCAT_(a, b)
+#define PSPRECORE_CONCAT_(a, b) a##b
+#define PSPRECORE_CONCAT(a, b) PSPRECORE_CONCAT_(a, b)
 
 #define TEST_CASE(name)                                                                               \
-    static void FF7CC_CONCAT(test_fn_, __LINE__)();                                                   \
-    static const ::ff7cc::test::Registrar FF7CC_CONCAT(test_reg_, __LINE__){name,                     \
-                                                                            &FF7CC_CONCAT(test_fn_, __LINE__)}; \
-    static void FF7CC_CONCAT(test_fn_, __LINE__)()
+    static void PSPRECORE_CONCAT(test_fn_, __LINE__)();                                                   \
+    static const ::psprecore::test::Registrar PSPRECORE_CONCAT(test_reg_, __LINE__){name,                     \
+                                                                            &PSPRECORE_CONCAT(test_fn_, __LINE__)}; \
+    static void PSPRECORE_CONCAT(test_fn_, __LINE__)()
 
 #define CHECK(expr)                                                                                    \
     do {                                                                                               \
         if (!(expr))                                                                                   \
-            throw ::ff7cc::test::Failure{nx::string(__FILE__) + ":" + nx::format("{}", __LINE__) + ": CHECK(" #expr ")"}; \
+            throw ::psprecore::test::Failure{nx::string(__FILE__) + ":" + nx::format("{}", __LINE__) + ": CHECK(" #expr ")"}; \
     } while (0)
 
 #define CHECK_THROWS_AS(expr, type)                                                                    \

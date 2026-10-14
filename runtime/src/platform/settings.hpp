@@ -1,12 +1,12 @@
 #pragma once
 
-// User settings, stored as key=value lines (ff7cc.ini). Unknown keys are ignored and missing keys keep their
+// User settings, stored as key=value lines (<game>.ini). Unknown keys are ignored and missing keys keep their
 // defaults, so the file survives version changes.
 
-#include "ff7cc/platform/display.hpp"
+#include "psprecore/platform/display.hpp"
 #include "core/foundation/platform/filesystem.h"
 
-namespace ff7cc::platform {
+namespace psprecore::platform {
 
 struct Settings {
     bool software_renderer = false;  // the software (reference) renderer instead of Vulkan
@@ -26,4 +26,4 @@ struct Settings {
     friend bool operator==(const Settings&, const Settings&) = default;
 };
 
-}  // namespace ff7cc::platform
+}  // namespace psprecore::platform

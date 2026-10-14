@@ -1,9 +1,9 @@
-#include "ff7cc/formats/psmf.hpp"
+#include "psprecore/formats/psmf.hpp"
 
 #include <algorithm>
 #include <cstring>
 
-namespace ff7cc::psmf {
+namespace psprecore::psmf {
 
 namespace {
 
@@ -152,4 +152,4 @@ void Demuxer::finish() {
     }
 }
 
-}  // namespace ff7cc::psmf
+}  // namespace psprecore::psmf

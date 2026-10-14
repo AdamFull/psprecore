@@ -6,9 +6,9 @@
 #include <cmath>
 #include <cstdint>
 
-#include "ff7cc/runtime/ge.hpp"
+#include "psprecore/runtime/ge.hpp"
 
-namespace ff7cc::rt::gpu {
+namespace psprecore::rt::gpu {
 
 struct Vec3 {
     float x = 0, y = 0, z = 0;
@@ -93,4 +93,4 @@ private:
     bool need_world = false, need_normal = false;
 };
 
-}  // namespace ff7cc::rt::gpu
+}  // namespace psprecore::rt::gpu

@@ -1,4 +1,4 @@
-#include "ff7cc/runtime/hle.hpp"
+#include "psprecore/runtime/hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -6,11 +6,11 @@
 #include <cstring>
 #include <mutex>
 
-#include "ff7cc/runtime/kernel.hpp"
+#include "psprecore/runtime/kernel.hpp"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/containers/hash_map.h"
 
-namespace ff7cc::rt {
+namespace psprecore::rt {
 
 namespace {
 
@@ -87,10 +87,10 @@ void hle_install() {
     hle_install_savedata();
 }
 
-}  // namespace ff7cc::rt
+}  // namespace psprecore::rt
 
 extern "C" void hle_call(Context* ctx, uint32_t nid) {
-    using namespace ff7cc::rt;
+    using namespace psprecore::rt;
     const auto it = table().find(nid);
     const Entry* e = it == table().end() ? nullptr : &it->second;
     Kernel& k = kernel();
