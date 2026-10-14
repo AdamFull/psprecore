@@ -73,6 +73,8 @@ public:
     void capture_next_present(std::function<void(const std::uint32_t* rgba, int width, int height)> done);
     // Testing: queues a key press and release as if typed (SDL keycode), e.g. to drive the overlay.
     void inject_key(std::uint32_t keycode);
+    // Testing: minimises or restores the window.
+    void set_minimized(bool minimized);
     // Testing: a finger touching window-normalised (x, y), lifted after `polls` calls to poll_events().
     void inject_finger(float x, float y, int polls);
 

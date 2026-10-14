@@ -68,6 +68,8 @@ struct Display::Impl {
     bool vsync = true;
     float refresh_rate = 0.0f;  // Android: requested panel refresh rate (0: default)
     bool background = false;  // Android: the window surface is gone until the app returns
+    bool surface_wanted = false;  // a surface to create as soon as the platform has a window for it
+    std::uint32_t present_errors = 0;  // logged ones (the first few)
 
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -137,6 +139,9 @@ struct Display::Impl {
     void ensure_frame_image(int w, int h);
     void update_pad();
     bool begin_present();
+    bool try_create_surface();
+    void drop_surface();
+    void present_failed(const char* what, VkResult r);
     void blit_and_present(VkImage source, int width, int height, const std::function<void(VkCommandBuffer)>& prepare);
 };
 
@@ -639,18 +644,19 @@ bool Display::poll_events() {
             case SDL_EVENT_WILL_ENTER_BACKGROUND:
             case SDL_EVENT_DID_ENTER_BACKGROUND:
                 if (!d.background) {  // Android destroys the native window: drop everything presented on it
+                    std::fprintf(stderr, "app: background\n");
                     d.background = true;
-                    d.destroy_swapchain();
-                    if (d.surface) vkDestroySurfaceKHR(d.instance, d.surface, nullptr);
-                    d.surface = VK_NULL_HANDLE;
+                    d.surface_wanted = false;
+                    d.drop_surface();
                     d.touch.release_all();
                 }
                 break;
             case SDL_EVENT_DID_ENTER_FOREGROUND:
+                // The new native window may not exist yet (Android creates it after resuming): the surface is
+                // created once it does, the game staying paused until then (see below).
                 if (d.background) {
-                    if (!SDL_Vulkan_CreateSurface(d.window, d.instance, nullptr, &d.surface)) d.surface = VK_NULL_HANDLE;
-                    d.background = d.surface == VK_NULL_HANDLE;
-                    d.swapchain_dirty = true;
+                    std::fprintf(stderr, "app: foreground\n");
+                    d.surface_wanted = true;
                 }
                 break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: d.swapchain_dirty = true; break;
@@ -711,6 +717,11 @@ bool Display::poll_events() {
             default: break;
         }
     }
+    if (d.background && d.surface_wanted && d.try_create_surface()) {
+        d.background = false;
+        d.surface_wanted = false;
+        std::fprintf(stderr, "app: surface recreated\n");
+    }
     d.update_pad();
     return running;
 }
@@ -721,24 +732,72 @@ bool Display::in_background() const { return impl_->background; }
 
 const VulkanContext& Display::vulkan() const { return impl_->ctx; }
 
-// Recreates the swapchain if needed and waits for the previous presentation; false while minimised.
+// A surface for the window, unless the platform has no window for it yet (Android between resuming and creating the
+// new native window: SDL would hand Vulkan a null window, giving a surface that never has a size).
+bool Display::Impl::try_create_surface() {
+#ifdef __ANDROID__
+    if (!SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr))
+        return false;
+#endif
+    if (!SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface)) {
+        surface = VK_NULL_HANDLE;
+        return false;
+    }
+    swapchain_dirty = true;
+    return true;
+}
+
+void Display::Impl::drop_surface() {
+    destroy_swapchain();
+    if (surface) vkDestroySurfaceKHR(instance, surface, nullptr);
+    surface = VK_NULL_HANDLE;
+}
+
+// After a failed acquire or present: recreate what is needed; the frame is dropped.
+void Display::Impl::present_failed(const char* what, VkResult r) {
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        swapchain_dirty = true;
+        return;
+    }
+    if (present_errors < 20) {
+        ++present_errors;
+        std::fprintf(stderr, "present: %s failed (VkResult %d)\n", what, static_cast<int>(r));
+    }
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) return;  // still busy: try again next frame (recreating would wait)
+    if (r == VK_ERROR_SURFACE_LOST_KHR) {
+        drop_surface();
+        surface_wanted = true;  // recreated by the next begin_present
+    } else {
+        swapchain_dirty = true;
+    }
+}
+
+// Recreates the swapchain if needed and waits for the previous presentation; false while nothing can be shown
+// (minimised, in the background, no surface yet, or the GPU still busy with the last frame after a second).
 bool Display::Impl::begin_present() {
-    if (background || !surface) return false;
+    if (background) return false;
+    if (!surface && (!surface_wanted || !try_create_surface())) return false;
+    surface_wanted = false;
     if (swapchain_dirty || !swapchain) {
         destroy_swapchain();
         create_swapchain();
         if (!swapchain) return false;
     }
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (const VkResult r = vkWaitForFences(device, 1, &fence, VK_TRUE, 1'000'000'000ull); r != VK_SUCCESS) {
+        present_failed("waiting for the previous frame", r);
+        return false;
+    }
     return true;
 }
 
 void Display::Impl::blit_and_present(VkImage source, int width, int height,
                                      const std::function<void(VkCommandBuffer)>& prepare) {
     std::uint32_t index = 0;
-    VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &index);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        swapchain_dirty = true;
+    // Anything but success leaves `acquired` unsignalled: submitting work that waits on it would never finish and
+    // every later frame would wait for it (a frozen game).
+    VkResult r = vkAcquireNextImageKHR(device, swapchain, 1'000'000'000ull, acquired, VK_NULL_HANDLE, &index);
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+        present_failed("acquiring a swapchain image", r);
         return;
     }
     ImDrawData* overlay = nullptr;
@@ -887,10 +946,10 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
     pi.pImageIndices = &index;
     r = vkQueuePresentKHR(queue, &pi);
     // SUBOPTIMAL is expected with the identity transform on a rotated display; size changes arrive as events.
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) swapchain_dirty = true;
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) present_failed("presenting", r);
 
     if (readback) {
-        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);  // testing only
         vmaInvalidateAllocation(allocator, readback_mem, 0, VK_WHOLE_SIZE);
         nx::vector<std::uint32_t> rgba(static_cast<std::size_t>(extent.width) * extent.height);
         std::memcpy(rgba.data(), readback_ptr, rgba.size() * 4);
@@ -985,6 +1044,11 @@ bool Display::gamepad_connected() const { return impl_->gamepad != nullptr; }
 void Display::set_button_glyphs(ButtonGlyphs glyphs) { impl_->glyphs = glyphs; }
 
 ButtonGlyphs Display::button_glyphs() const { return impl_->resolved_glyphs(); }
+
+void Display::set_minimized(bool minimized) {
+    if (minimized) SDL_MinimizeWindow(impl_->window);
+    else SDL_RestoreWindow(impl_->window);
+}
 
 void Display::inject_finger(float x, float y, int polls) {
     static SDL_FingerID next = 0x7F000000;

@@ -899,7 +899,15 @@ int main(int argc, char** argv) {
                     }
                 });
             }
+            // Host time between the end of one vblank's handling and the start of the next (the game running and
+            // rendering): long gaps are logged, so freezes reported from devices leave a trace in the log.
+            auto vblank_done = std::chrono::steady_clock::now();
             kernel.on_vblank = [&, pause, arm_window_shot] {
+                const auto vblank_start = std::chrono::steady_clock::now();
+                if (const auto gap = std::chrono::duration_cast<std::chrono::milliseconds>(vblank_start - vblank_done);
+                    gap.count() >= 1000 && !unthrottled)
+                    std::fprintf(stderr, "stall: %lld ms before vblank %llu\n", static_cast<long long>(gap.count()),
+                                 static_cast<unsigned long long>(kernel.vblank_count()));
                 perf_tick();
                 bench_tick();
                 const std::uint64_t vblank = kernel.vblank_count();
@@ -912,6 +920,7 @@ int main(int argc, char** argv) {
                     else if (u.action == "up") display->inject_key(SDLK_UP);
                     else if (u.action == "down") display->inject_key(SDLK_DOWN);
                     else if (u.action == "space") display->inject_key(SDLK_SPACE);
+                    else if (u.action == "minimize" || u.action == "restore") display->set_minimized(u.action == "minimize");
                     else if (u.action == "renderer:vulkan" || u.action == "renderer:software") {
                         settings.software_renderer = u.action == "renderer:software";
                         apply(settings);
@@ -967,6 +976,7 @@ int main(int argc, char** argv) {
                     display->present(frame.data(), w, h);
                     if (!screenshot_path.empty()) screenshot(frame, w, h);
                 }
+                vblank_done = std::chrono::steady_clock::now();
             };
         }
 
