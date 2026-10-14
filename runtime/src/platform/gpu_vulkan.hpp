@@ -29,6 +29,7 @@ public:
 
     void draw(const rt::ge::State& state, rt::ge::Prim prim, const std::vector<rt::ge::Vertex>& vertices) override;
     void transfer(const rt::ge::State& state) override;
+    void begin_batch() override;
 
     // Changes the internal resolution scale from the next frame on (render targets are recreated).
     void set_scale(int scale);

@@ -103,6 +103,9 @@ public:
     virtual ~Renderer() = default;
     virtual void draw(const State& state, Prim prim, const std::vector<Vertex>& vertices) = 0;
     virtual void transfer(const State& state) = 0;  // TRANSFERSTART block copy
+    // A run of display list commands starts. Guest memory only changes between runs (the game's CPU code runs
+    // between sceGe calls), so a renderer may assume texture data is stable within one.
+    virtual void begin_batch() {}
 };
 
 // Normalizes VRAM mirror addresses (0x04200000 and up) to the 2 MiB of real VRAM.

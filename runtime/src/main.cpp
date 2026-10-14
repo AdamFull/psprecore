@@ -6,6 +6,7 @@
 //                                        compare runs both and screenshots show reference | Vulkan | difference)
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
 //       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
+//       [--perf]                        (prints host time per 300 vblanks and display frames)
 //       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
 //       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
 //       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
@@ -104,6 +105,10 @@ public:
         a_->transfer(s);
         b_->transfer(s);
     }
+    void begin_batch() override {
+        a_->begin_batch();
+        b_->begin_batch();
+    }
 
 private:
     std::unique_ptr<Renderer> a_, b_;
@@ -200,7 +205,7 @@ int main(int argc, char** argv) {
         std::string renderer = "vulkan";
         int scale = 0;  // 0: from the settings file
         fs::path settings_path = fs::current_path() / "ff7cc.ini";
-        bool no_audio = false, unthrottled = false;
+        bool no_audio = false, unthrottled = false, perf = false;
         std::uint64_t max_vblanks = 0;
         std::uint64_t ge_dump_vblank = 0;
         std::vector<ScriptedPress> presses;
@@ -219,6 +224,8 @@ int main(int argc, char** argv) {
                 screenshot_path = argv[++i];
             } else if (a == "--unthrottled") {
                 unthrottled = true;
+            } else if (a == "--perf") {
+                perf = true;
             } else if (a == "--no-audio") {
                 no_audio = true;
             } else if (a == "--renderer" && i + 1 < argc) {
@@ -289,8 +296,22 @@ int main(int argc, char** argv) {
                 rt::write_png(screenshot_path, rgba.data(), w, h);
             }
         };
+        auto perf_start = std::chrono::steady_clock::now();
+        std::uint64_t perf_frames = 0;
+        const auto perf_tick = [&] {
+            if (!perf || kernel.vblank_count() % 300 != 0) return;
+            const auto now = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(now - perf_start).count();
+            const std::uint64_t frames = rt::display_frame_count();
+            std::fprintf(stderr, "perf vblank %llu: %.1f ms per vblank (%.2fx real time), %llu frames\n",
+                         static_cast<unsigned long long>(kernel.vblank_count()), ms / 300.0, 300.0 * 16.683 / ms,
+                         static_cast<unsigned long long>(frames - perf_frames));
+            perf_start = now;
+            perf_frames = frames;
+        };
         if (headless)
             kernel.on_vblank = [&] {
+                perf_tick();
                 if (ge_dump_vblank && kernel.vblank_count() == ge_dump_vblank)
                     rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 rt::set_pad(scripted_buttons(presses, kernel.vblank_count()), 128, 128);
@@ -376,6 +397,7 @@ int main(int argc, char** argv) {
                 });
             }
             kernel.on_vblank = [&, gpu, pause, arm_window_shot] {
+                perf_tick();
                 const std::uint64_t vblank = kernel.vblank_count();
                 if (ge_dump_vblank && vblank == ge_dump_vblank) rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 for (const auto& u : ui_script) {

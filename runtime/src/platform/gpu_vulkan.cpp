@@ -83,6 +83,8 @@ struct Texture {
     Image image;
     std::uint64_t content = 0;
     std::uint64_t last_frame = 0;
+    std::uint64_t checked_batch = 0;  // content verified during this batch (see Renderer::begin_batch)
+    std::uint64_t checked_clut = 0;   // CLUT hash at that check
 };
 
 // Everything that selects a VkPipeline. All fields are bytes so the struct hashes and compares as memory.
@@ -159,6 +161,7 @@ struct VulkanGeRenderer::Impl {
     int current = 0;
     bool recording = false;
     std::uint64_t frame_number = 1;
+    std::uint64_t batch = 1;  // display list runs; guest memory is stable within one
 
     std::map<std::uint32_t, Target> targets;   // by VRAM address
     std::map<std::uint64_t, Image> depths;     // by (address, width)
@@ -559,15 +562,21 @@ struct VulkanGeRenderer::Impl {
         const std::uint32_t params[] = {s.param(ge::TEXFORMAT), s.param(ge::TEXMODE), s.param(ge::TEXSIZE0),
                                         s.param(ge::TEXBUFWIDTH0), static_cast<std::uint32_t>(ts.levels())};
         key = hash_bytes(params, sizeof params, key);
-        std::uint64_t content = 0;
-        for (int l = 0; l < ts.levels(); ++l) content = hash_bytes(ts.level_data(l), ts.level_size(l), content);
+        // The CLUT can change between draws (palette swaps); texture data only between batches, so its (much
+        // larger) hash is computed once per batch.
+        std::uint64_t clut = 0;
         if (ts.uses_clut()) {
-            content = hash_bytes(s.clut.data(), s.clut.size(), content);
+            clut = hash_bytes(s.clut.data(), s.clut.size() * sizeof(s.clut[0]));
             const std::uint32_t clut_format = s.param(ge::CLUTFORMAT);
-            content = hash_bytes(&clut_format, 4, content);
+            clut = hash_bytes(&clut_format, 4, clut);
         }
         Texture& t = textures[key];
         t.last_frame = frame_number;
+        if (t.image.image && t.checked_batch == batch && t.checked_clut == clut) return &t.image;
+        std::uint64_t content = clut;
+        for (int l = 0; l < ts.levels(); ++l) content = hash_bytes(ts.level_data(l), ts.level_size(l), content);
+        t.checked_batch = batch;
+        t.checked_clut = clut;
         if (t.image.image && t.content == content) return &t.image;
         if (t.image.image) frame().garbage.push_back(t.image);
         t.content = content;
@@ -1098,6 +1107,7 @@ struct VulkanGeRenderer::Impl {
         const std::uint32_t sx = sp & 0x3FF, sy = (sp >> 10) & 0x3FF, dx = dp & 0x3FF, dy = (dp >> 10) & 0x3FF;
         const std::uint32_t w = (sz & 0x3FF) + 1, h = ((sz >> 10) & 0x3FF) + 1;
         const std::uint32_t bpp = (s.param(ge::TRANSFERSTART) & 1) ? 4 : 2;
+        ++batch;  // the copy can change texture memory within the batch
         if (guest_copies)
             for (std::uint32_t y = 0; y < h; ++y)
                 std::memmove(memory.ptr(dst + ((dy + y) * dst_stride + dx) * bpp), memory.ptr(src + ((sy + y) * src_stride + sx) * bpp), w * bpp);
@@ -1156,6 +1166,8 @@ void VulkanGeRenderer::draw(const rt::ge::State& state, rt::ge::Prim prim, const
 }
 
 void VulkanGeRenderer::transfer(const rt::ge::State& state) { impl_->transfer(state); }
+
+void VulkanGeRenderer::begin_batch() { ++impl_->batch; }
 
 void VulkanGeRenderer::set_scale(int scale) { impl_->pending_scale = std::max(1, scale); }
 
