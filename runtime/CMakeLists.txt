@@ -29,7 +29,7 @@ if(WIN32)
 endif()
 add_library(ff7cc::runtime ALIAS ff7cc_runtime)
 target_include_directories(ff7cc_runtime PUBLIC include PRIVATE src)
-target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips ff7cc::formats PRIVATE ff7cc_stb ff7cc_dav1d)
+target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips ff7cc::formats nx::foundation PRIVATE ff7cc_stb ff7cc_dav1d)
 ff7cc_target_defaults(ff7cc_runtime)
 
 # The game executable needs code generated from the user's own BOOT.BIN (ccrecomp -> generated/).
@@ -64,7 +64,7 @@ if(FF7CC_BUILD_GAME AND EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
     endforeach()
 
     set(_ff7cc_game_sources src/main.cpp src/platform/display_vulkan.cpp src/platform/audio_miniaudio.cpp
-        src/platform/gpu_vulkan.cpp src/platform/overlay.cpp src/platform/settings.cpp src/platform/touch_controls.cpp ${_ff7cc_generated_sources} ${_ff7cc_game_overrides})
+        src/platform/gpu_vulkan.cpp src/platform/allocator.cpp src/platform/overlay.cpp src/platform/settings.cpp src/platform/touch_controls.cpp ${_ff7cc_generated_sources} ${_ff7cc_game_overrides})
     if(ANDROID)
         # SDL's Java activity loads libmain.so and calls SDL_main (see android/).
         add_library(ff7cc SHARED ${_ff7cc_game_sources})

@@ -32,6 +32,7 @@ if(FF7CC_BUILD_GAME)
     include(FF7CCDependencies)
 endif()
 
+add_subdirectory(libs/foundation)
 add_subdirectory(libs/formats)
 add_subdirectory(libs/mips)
 add_subdirectory(libs/analysis)
