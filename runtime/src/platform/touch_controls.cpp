@@ -90,6 +90,24 @@ void TouchControls::finger_down(std::uint64_t id, float x, float y) {
     f.control = hit(f.x, f.y);
     if (f.control == Control::Menu) menu_request_ = true;
     fingers_[id] = f;
+    std::uint32_t bits = 0;
+    switch (f.control) {
+        case Control::DPad: bits = dpad_bits(f); break;
+        case Control::Face: bits = face_bits(f); break;
+        case Control::L: bits = kLTrigger; break;
+        case Control::R: bits = kRTrigger; break;
+        case Control::Select: bits = kSelect; break;
+        case Control::Start: bits = kStart; break;
+        default: break;
+    }
+    for (int b = 0; b < 32; ++b)
+        if (bits & (1u << b)) hold_polls_[b] = kMinHoldPolls;
+    held_bits_ |= bits;
+}
+
+void TouchControls::tick() {
+    for (int b = 0; b < 32; ++b)
+        if (hold_polls_[b] > 0 && --hold_polls_[b] == 0) held_bits_ &= ~(1u << b);
 }
 
 void TouchControls::finger_motion(std::uint64_t id, float x, float y) {
@@ -101,7 +119,11 @@ void TouchControls::finger_motion(std::uint64_t id, float x, float y) {
 
 void TouchControls::finger_up(std::uint64_t id) { fingers_.erase(id); }
 
-void TouchControls::release_all() { fingers_.clear(); }
+void TouchControls::release_all() {
+    fingers_.clear();
+    held_bits_ = 0;
+    for (int& h : hold_polls_) h = 0;
+}
 
 bool TouchControls::take_menu_request() {
     const bool r = menu_request_;
@@ -134,7 +156,7 @@ std::uint32_t TouchControls::face_bits(const Finger& f) const {
 }
 
 std::uint32_t TouchControls::buttons() const {
-    std::uint32_t bits = 0;
+    std::uint32_t bits = held_bits_;
     for (const auto& [_, f] : fingers_) {
         switch (f.control) {
             case Control::DPad: bits |= dpad_bits(f); break;

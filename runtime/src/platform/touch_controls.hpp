@@ -20,6 +20,8 @@ public:
     void finger_motion(std::uint64_t id, float x, float y);
     void finger_up(std::uint64_t id);
     void release_all();
+    // Once per input poll: ages the minimum hold of quick taps.
+    void tick();
 
     std::uint32_t buttons() const;           // PSP button bits (PspButton)
     bool stick(float& x, float& y) const;     // -1..1 while the stick is held
@@ -49,6 +51,11 @@ private:
 
     float width_ = 1280, height_ = 720;
     std::map<std::uint64_t, Finger> fingers_;
+    // A tap shorter than one input poll would never reach the game, which samples the pad once per frame:
+    // buttons touched recently stay pressed for a few polls.
+    static constexpr int kMinHoldPolls = 3;
+    std::uint32_t held_bits_ = 0;
+    int hold_polls_[32] = {};
     bool menu_request_ = false;
 };
 

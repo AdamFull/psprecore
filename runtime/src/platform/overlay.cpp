@@ -110,7 +110,9 @@ void Overlay::draw_menu() {
             ImGui::SameLine();
             ImGui::TextDisabled("%dx%d", 480 * s.scale, 272 * s.scale);
         }
+#ifndef __ANDROID__
         ImGui::Checkbox("Fullscreen (F11)", &s.fullscreen);
+#endif
         ImGui::Checkbox("Show FPS", &s.show_fps);
         ImGui::SeparatorText("Audio");
         ImGui::SliderInt("Volume", &s.volume, 0, 100, "%d%%");
@@ -122,10 +124,16 @@ void Overlay::draw_menu() {
             if (hooks_.apply) hooks_.apply(settings_);
         }
 
+#ifdef __ANDROID__
+        ImGui::SeparatorText("Controls");
+        ImGui::TextDisabled("Touch controls hide while a gamepad is used");
+        ImGui::TextDisabled("Menu: MENU button, Back, or the gamepad's Guide");
+#else
         ImGui::SeparatorText("Keyboard");
         ImGui::TextDisabled("Move: arrows / WASD     X O [] /\\: K L J I");
         ImGui::TextDisabled("L / R: Q / E     Start: Enter     Select: Backspace");
         ImGui::TextDisabled("Menu: Esc or F1 (gamepad: Guide, or both sticks)");
+#endif
         ImGui::Separator();
         if (ImGui::Button("Quit game", {width, 0}) && hooks_.quit) hooks_.quit();
         if (cancel_pressed()) open = false;

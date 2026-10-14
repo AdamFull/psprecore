@@ -559,6 +559,7 @@ bool Display::poll_events() {
     int win_w = 0, win_h = 0;
     SDL_GetWindowSize(d.window, &win_w, &win_h);
     d.touch.set_size(static_cast<float>(win_w), static_cast<float>(win_h));
+    d.touch.tick();
     while (SDL_PollEvent(&e)) {
         if (d.imgui) ImGui_ImplSDL3_ProcessEvent(&e);
         switch (e.type) {
@@ -676,7 +677,13 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
     ImDrawData* overlay = nullptr;
     if (imgui) {
         // Scale the UI with the window height (a 544-line window gets about 16 px text), up to the DPI scale.
-        const float scale = std::clamp(std::min(ui_dpi, static_cast<float>(extent.height) / 600.0f), 0.75f, ui_dpi);
+#ifdef __ANDROID__
+        constexpr float kTouchFactor = 1.35f;  // finger-sized widgets
+#else
+        constexpr float kTouchFactor = 1.0f;
+#endif
+        const float scale = std::clamp(std::min(ui_dpi, static_cast<float>(extent.height) / 600.0f) * kTouchFactor, 0.75f,
+                                       ui_dpi * kTouchFactor);
         if (scale != ui_scale) {
             ui_scale = scale;
             ImGui::GetStyle() = ui_base_style;
