@@ -41,7 +41,7 @@ struct AudioDevice::Impl {
     }
 };
 
-AudioDevice::AudioDevice() : impl_(std::make_unique<Impl>()) {
+AudioDevice::AudioDevice() : impl_(nx::make_unique<Impl>()) {
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
     config.playback.format = ma_format_s16;
     config.playback.channels = 2;

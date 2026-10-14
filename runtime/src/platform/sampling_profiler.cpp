@@ -66,7 +66,7 @@ struct SamplingProfiler::Impl {
     }
 };
 
-SamplingProfiler::SamplingProfiler() : impl_(std::make_unique<Impl>()) {
+SamplingProfiler::SamplingProfiler() : impl_(nx::make_unique<Impl>()) {
     impl_->samples.reserve(1 << 20);
     impl_->sampler = nx::thread([this] { impl_->run(); }, {.name = "sampling profiler"});
 }

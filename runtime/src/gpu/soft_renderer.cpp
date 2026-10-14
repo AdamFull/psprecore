@@ -192,7 +192,7 @@ public:
             nx::thread_pool::config config;
             config.thread_count = threads;
             config.name = "psprecore-raster";
-            pool_ = std::make_unique<nx::thread_pool>(config);
+            pool_ = nx::make_unique<nx::thread_pool>(config);
         }
         threads_ = static_cast<int>(threads);
     }
@@ -236,7 +236,7 @@ private:
     nx::vector<TargetRegion> targets_;  // what the queue writes
     int current_setup_ = -1;      // setups_ index of the draw being queued (-1: not added yet)
     int threads_ = 1;
-    std::unique_ptr<nx::thread_pool> pool_;
+    nx::unique_ptr<nx::thread_pool> pool_;
 };
 
 std::unique_ptr<ge::Renderer> make_soft_renderer_impl(GuestMemory& memory) {

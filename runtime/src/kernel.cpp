@@ -8,6 +8,7 @@
 
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/core/time.h"
 #include "core/foundation/strings/utf8_string.h"
 
 namespace psprecore::rt {
@@ -56,7 +57,7 @@ int Kernel::current_id() const { return tl_current ? tl_current->id : 0; }
 
 int Kernel::create_thread(const nx::string& name, std::uint32_t entry, std::uint32_t priority,
                           std::uint32_t stack_size, std::uint32_t attr) {
-    auto t = std::make_unique<Thread>();
+    auto t = nx::make_unique<Thread>();
     t->id = new_id();
     t->name = name;
     t->entry = entry;
@@ -237,7 +238,7 @@ nx::vector<Thread*> Kernel::waiters(WaitType type, int object) {
 // ---------------------------------------------------------------------------------------------
 
 int Kernel::create_callback(const nx::string& name, std::uint32_t entry, std::uint32_t arg) {
-    auto cb = std::make_unique<Callback>();
+    auto cb = nx::make_unique<Callback>();
     cb->id = new_id();
     cb->name = name;
     cb->entry = entry;
@@ -342,8 +343,7 @@ void Kernel::fire_vblank() {
 }
 
 int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_ptr) {
-    using Clock = std::chrono::steady_clock;
-    auto anchor = Clock::now();  // host time corresponding to virtual time 0 (realtime mode)
+    nx::timestamp anchor = nx::timestamp::now();  // host time corresponding to virtual time 0 (realtime mode)
     const int main_id = create_thread("module_start", entry, 0x20, 0x40000, 0x80000000);
     thread(main_id)->delete_on_exit = true;  // the loader deletes module_start's thread when it returns
     start_thread(main_id, arg_size, arg_ptr);
@@ -360,11 +360,11 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
         for (const auto& [_, t] : threads_)
             if (t->state == Thread::State::Waiting && t->wake_time) next = std::min(next, t->wake_time);
         if (realtime && next > now_us_) {
-            const auto due = anchor + std::chrono::microseconds(next);
-            const auto host = Clock::now();
-            if (due > host) nx::this_thread::sleep_for(due - host);
-            else if (host - due > std::chrono::milliseconds(100)) {  // fell behind
-                anchor = host - std::chrono::microseconds(next);
+            const nx::timestamp due = anchor + nx::duration::from_micros(static_cast<std::int64_t>(next));
+            const nx::timestamp host = nx::timestamp::now();
+            if (due > host) nx::this_thread::sleep_for(std::chrono::nanoseconds((due - host).nanos()));
+            else if (host - due > nx::duration::from_millis(100)) {  // fell behind
+                anchor = host - nx::duration::from_micros(static_cast<std::int64_t>(next));
                 ++fell_behind_;
             }
         }

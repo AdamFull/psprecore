@@ -189,7 +189,7 @@ private:
     bool warned_patches_ = false;
     std::uint32_t warned_signals_ = 0;  // bit per unsupported signal behaviour already reported
     // Lists stay where they are while running: a signal handler may enqueue more (nx::map moves its elements).
-    nx::map<int, std::unique_ptr<List>> lists_;
+    nx::map<int, nx::unique_ptr<List>> lists_;
     int next_id_ = 1;
     Stats stats_;
 };

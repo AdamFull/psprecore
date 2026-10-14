@@ -12,7 +12,6 @@
 #include <exception>
 #include <memory>
 #include <stdexcept>
-#include <string>
 #include <tuple>
 #include <utility>
 
@@ -47,6 +46,7 @@
 #include "psprecore/runtime/kernel.hpp"
 #include "psprecore/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/core/time.h"
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
@@ -596,16 +596,16 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         if (game.mount) game.mount(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
 
         // Input recording / replay. A replay also fixes the guest clock to the recording's.
-        std::unique_ptr<InputReplay> replay;
-        std::unique_ptr<InputRecorder> recorder_in;
+        nx::unique_ptr<InputReplay> replay;
+        nx::unique_ptr<InputRecorder> recorder_in;
         if (!replay_path.empty()) {
-            replay = std::make_unique<InputReplay>(replay_path);
+            replay = nx::make_unique<InputReplay>(replay_path);
             if (!clock_given) clock_base = replay->clock_base();
             std::fprintf(stderr, "replaying %s (until vblank %llu)\n", replay_path.c_str(),
                          static_cast<unsigned long long>(replay->last_vblank()));
         }
         rt::set_wall_clock_base(clock_base);
-        if (!record_path.empty()) recorder_in = std::make_unique<InputRecorder>(record_path, clock_base);
+        if (!record_path.empty()) recorder_in = nx::make_unique<InputRecorder>(record_path, clock_base);
         const bool deterministic_dialogs = replay || recorder_in;
         if (deterministic_dialogs) {
             rt::set_savedata_ui(true);
@@ -657,7 +657,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         memory.write_string(args, boot_path);
 
         // Window + presentation + input, unless running headless.
-        std::unique_ptr<platform::Display> display;
+        nx::unique_ptr<platform::Display> display;
         nx::vector<std::uint32_t> frame;
         bool screenshot_pending = false;  // GPU renderer: capture at the next flip
         std::uint64_t screenshot_at = 0;
@@ -679,7 +679,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             nx::vector<std::uint8_t> bytes;
         };
         nx::vector<BenchDraw> bench_draws;
-        std::unique_ptr<platform::SamplingProfiler> profiler;
+        nx::unique_ptr<platform::SamplingProfiler> profiler;
         // --tex-dump: every texture drawn during two vblanks as DIR/ADDRESS_fFORMAT_WxH_HASH.png, and per draw the
         // texture and the texel rectangle it uses (finding the textures of a scene, e.g. for replacement).
         nx::hash_map<std::uint64_t, int> dumped_textures;
@@ -727,7 +727,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         };
         const auto bench_tick = [&] {
             tex_dump_tick();
-            if (profile_vblank && kernel.vblank_count() == profile_vblank) profiler = std::make_unique<platform::SamplingProfiler>();
+            if (profile_vblank && kernel.vblank_count() == profile_vblank) profiler = nx::make_unique<platform::SamplingProfiler>();
             if (!ge_bench_vblank) return;
             const std::uint64_t vblank = kernel.vblank_count();
             if (vblank == ge_bench_vblank) {
@@ -752,33 +752,33 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             rt::gpu::VertexPipeline vp;
             double checksum = 0;
             constexpr int kRounds = 200;
-            const auto t0 = std::chrono::steady_clock::now();
+            const auto t0 = nx::timestamp::now();
             for (int round = 0; round < kRounds; ++round)
                 for (std::size_t i = 0; i < bench_draws.size(); ++i) {
                     const auto& b = bench_draws[i];
                     rt::ge::decode_vertices(b.state.format, b.morph, b.bytes.data(), b.count, decoded[i]);
                     checksum += decoded[i][0].pos[0];
                 }
-            const auto t1 = std::chrono::steady_clock::now();
+            const auto t1 = nx::timestamp::now();
             for (int round = 0; round < kRounds; ++round)
                 for (std::size_t i = 0; i < bench_draws.size(); ++i) {
                     const auto& b = bench_draws[i];
                     vp.configure(b.state, b.state.on(rt::ge::TEXTUREMAPENABLE), 256, 256, b.state.on(rt::ge::FOGENABLE));
                     for (const auto& v : decoded[i]) checksum += vp.transform(b.state, v).clip[3];
                 }
-            const auto t2 = std::chrono::steady_clock::now();
+            const auto t2 = nx::timestamp::now();
             const double n = static_cast<double>(vertices) * kRounds;
             {  // per format and lighting: where the transform time goes
                 nx::map<std::pair<std::uint32_t, bool>, std::pair<double, std::size_t>> by_format;
                 for (std::size_t i = 0; i < bench_draws.size(); ++i) {
                     const auto& b = bench_draws[i];
-                    const auto s0 = std::chrono::steady_clock::now();
+                    const auto s0 = nx::timestamp::now();
                     for (int round = 0; round < 20; ++round) {
                         vp.configure(b.state, b.state.on(rt::ge::TEXTUREMAPENABLE), 256, 256, b.state.on(rt::ge::FOGENABLE));
                         for (const auto& v : decoded[i]) checksum += vp.transform(b.state, v).clip[3];
                     }
                     auto& e = by_format[{b.state.format.raw & 0xFFFFFF, b.state.on(rt::ge::LIGHTINGENABLE)}];
-                    e.first += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - s0).count() / 20;
+                    e.first += static_cast<double>((nx::timestamp::now() - s0).nanos()) / 20;
                     e.second += b.count;
                 }
                 for (const auto& [k, e] : by_format)
@@ -786,22 +786,22 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                                  k.second ? 1 : 0, e.second, e.first / static_cast<double>(e.second), e.first / 1000.0);
             }
             std::fprintf(stderr, "ge bench: %zu draws, %zu vertices; decode %.2f ns/vertex, transform %.2f ns/vertex (%g)\n",
-                         bench_draws.size(), vertices, std::chrono::duration<double, std::nano>(t1 - t0).count() / n,
-                         std::chrono::duration<double, std::nano>(t2 - t1).count() / n, checksum);
+                         bench_draws.size(), vertices, static_cast<double>((t1 - t0).nanos()) / n,
+                         static_cast<double>((t2 - t1).nanos()) / n, checksum);
             kernel.request_quit();
         };
         platform::VulkanGeRenderer* vulkan_renderer = nullptr;
         platform::AudioDevice* audio_device = nullptr;
-        auto perf_start = std::chrono::steady_clock::now(), perf_last = perf_start;
+        auto perf_start = nx::timestamp::now(), perf_last = perf_start;
         std::uint64_t perf_frames = 0;
         double perf_worst_ms = 0.0;  // longest host time between two vblanks
         const auto perf_tick = [&] {
             if (!perf) return;
-            const auto now = std::chrono::steady_clock::now();
-            perf_worst_ms = std::max(perf_worst_ms, std::chrono::duration<double, std::milli>(now - perf_last).count());
+            const auto now = nx::timestamp::now();
+            perf_worst_ms = std::max(perf_worst_ms, (now - perf_last).millis_f());
             perf_last = now;
             if (kernel.vblank_count() % 300 != 0) return;
-            const double ms = std::chrono::duration<double, std::milli>(now - perf_start).count();
+            const double ms = (now - perf_start).millis_f();
             const std::uint64_t frames = rt::display_frame_count();
             std::fprintf(stderr, "perf vblank %llu: %.1f ms per vblank (%.2fx real time, worst %.1f ms), %llu frames\n",
                          static_cast<unsigned long long>(kernel.vblank_count()), ms / 300.0, 300.0 * 16.683 / ms,
@@ -853,15 +853,15 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             });
         platform::Settings settings = platform::Settings::load(settings_path);
         if (scale) settings.scale = scale;
-        std::unique_ptr<platform::Overlay> overlay;
-        std::unique_ptr<platform::AudioDevice> audio;
-        std::unique_ptr<WavRecorder> recorder;
-        if (!headless && !no_audio) audio = std::make_unique<platform::AudioDevice>();
+        nx::unique_ptr<platform::Overlay> overlay;
+        nx::unique_ptr<platform::AudioDevice> audio;
+        nx::unique_ptr<WavRecorder> recorder;
+        if (!headless && !no_audio) audio = nx::make_unique<platform::AudioDevice>();
         audio_device = audio.get();
-        if (!audio_dump.empty()) recorder = std::make_unique<WavRecorder>(audio_dump, audio.get());
+        if (!audio_dump.empty()) recorder = nx::make_unique<WavRecorder>(audio_dump, audio.get());
         rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
         if (!headless) {
-            display = std::make_unique<platform::Display>(game.title, 960, 544);
+            display = nx::make_unique<platform::Display>(game.title, 960, 544);
             display->set_touch_controls(touch);
             // The renderer can change at run time (pause menu) unless the command line fixed it.
             const bool renderer_choice = renderer.empty();
@@ -887,7 +887,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             hooks.quit = nx::unique_function<void()>([&] { kernel.request_quit(); });
             hooks.renderer_choice = renderer_choice;
             hooks.gpu_renderer = gpu;
-            overlay = std::make_unique<platform::Overlay>(*display, settings, std::move(hooks));
+            overlay = nx::make_unique<platform::Overlay>(*display, settings, std::move(hooks));
             display->set_ui(nx::unique_function<void()>([&] { overlay->draw(); }));
             rt::set_savedata_ui(true);
             // The pause menu stops the game inside on_vblank (the host main thread) until it is closed.
@@ -950,12 +950,12 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             }
             // Host time between the end of one vblank's handling and the start of the next (the game running and
             // rendering): long gaps are logged, so freezes reported from devices leave a trace in the log.
-            auto vblank_done = std::chrono::steady_clock::now();
+            auto vblank_done = nx::timestamp::now();
             kernel.on_vblank = nx::unique_function<void()>([&, pause, arm_window_shot] {
-                const auto vblank_start = std::chrono::steady_clock::now();
-                if (const auto gap = std::chrono::duration_cast<std::chrono::milliseconds>(vblank_start - vblank_done);
-                    gap.count() >= 1000 && !unthrottled)
-                    std::fprintf(stderr, "stall: %lld ms before vblank %llu\n", static_cast<long long>(gap.count()),
+                const auto vblank_start = nx::timestamp::now();
+                if (const nx::duration gap = vblank_start - vblank_done;
+                    gap.millis() >= 1000 && !unthrottled)
+                    std::fprintf(stderr, "stall: %lld ms before vblank %llu\n", static_cast<long long>(gap.millis()),
                                  static_cast<unsigned long long>(kernel.vblank_count()));
                 perf_tick();
                 bench_tick();
@@ -1025,7 +1025,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     display->present(frame.data(), w, h);
                     if (!screenshot_path.empty()) screenshot(frame, w, h);
                 }
-                vblank_done = std::chrono::steady_clock::now();
+                vblank_done = nx::timestamp::now();
             });
         }
 

@@ -49,7 +49,7 @@ struct OpenFile {
     nx::string path;
 };
 // Open files stay where they are (nx::map moves its elements).
-nx::map<int, std::unique_ptr<OpenFile>> g_files;
+nx::map<int, nx::unique_ptr<OpenFile>> g_files;
 int g_next_fd = 3;
 
 struct OpenDir {
@@ -158,7 +158,7 @@ int do_open(const nx::string& path, std::uint32_t flags) {
         if (const nx::vector<char>* replaced = g_overlay ? g_overlay->file(disc_relative(path)) : nullptr) {
             f.memory = replaced;
             const int fd = g_next_fd++;
-            g_files.emplace(fd, std::make_unique<OpenFile>(std::move(f)));
+            g_files.emplace(fd, nx::make_unique<OpenFile>(std::move(f)));
             return fd;
         }
         const bool write = flags & 0x0002, create = flags & 0x0200, truncate = flags & 0x0400;  // PSP_O_WRONLY/CREAT/TRUNC
@@ -184,7 +184,7 @@ int do_open(const nx::string& path, std::uint32_t flags) {
         }
     }
     const int fd = g_next_fd++;
-    g_files.emplace(fd, std::make_unique<OpenFile>(std::move(f)));
+    g_files.emplace(fd, nx::make_unique<OpenFile>(std::move(f)));
     return fd;
 }
 

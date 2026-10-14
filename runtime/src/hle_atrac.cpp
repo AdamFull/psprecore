@@ -36,7 +36,7 @@ struct Slot {
     bool used = false;
     atrac::Info info;
     std::uint64_t key = 0;
-    std::unique_ptr<audio::VorbisStream> stream;
+    nx::unique_ptr<audio::VorbisStream> stream;
     std::uint32_t position = 0;  // next game-timeline sample
     int loops_left = 0;          // -1 = forever
     bool has_loop = false;

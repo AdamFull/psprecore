@@ -1,12 +1,12 @@
 #include "psprecore/runtime/ge.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <cstring>
 
 #include "psprecore/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/core/time.h"
 #include "core/foundation/strings/utf8_string.h"
 
 namespace psprecore::rt::ge {
@@ -254,8 +254,7 @@ void decode_vertices(const VertexFormat& f, const float* morph_weights, const st
 namespace {
 
 std::uint64_t now_ns() {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    return nx::timestamp::now().nanos();
 }
 
 }  // namespace
@@ -307,7 +306,7 @@ void Processor::draw(std::uint32_t p) {
 
 int Processor::enqueue(std::uint32_t list, std::uint32_t stall, bool) {
     const int id = next_id_++;
-    List& l = *(lists_[id] = std::make_unique<List>());
+    List& l = *(lists_[id] = nx::make_unique<List>());
     l.pc = list & 0x0FFFFFFF;
     l.stall = stall & 0x0FFFFFFF;
     ++stats_.lists;

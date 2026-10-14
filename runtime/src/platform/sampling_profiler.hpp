@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <memory>
 
+#include "core/foundation/core/foundation.h"
+
 namespace psprecore::platform {
 
 class SamplingProfiler {
@@ -22,7 +24,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    nx::unique_ptr<Impl> impl_;
 };
 
 }  // namespace psprecore::platform

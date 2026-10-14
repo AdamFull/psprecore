@@ -4,11 +4,9 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <type_traits>
@@ -24,6 +22,7 @@
 #include "gpu/vertex_pipeline.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/core/time.h"
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
@@ -176,8 +175,8 @@ struct VulkanGeRenderer::Impl {
 
     // Targets and depth buffers stay where they are (bound_target/bound_depth and returned references point at them;
     // nx::map moves its elements on insert).
-    nx::map<std::uint32_t, std::unique_ptr<Target>> targets;  // by VRAM address
-    nx::map<std::uint64_t, std::unique_ptr<Image>> depths;    // by (address, width)
+    nx::map<std::uint32_t, nx::unique_ptr<Target>> targets;  // by VRAM address
+    nx::map<std::uint64_t, nx::unique_ptr<Image>> depths;    // by (address, width)
     nx::hash_map<std::uint64_t, Texture> textures;
     rt::gpu::IconStyle icon_style = rt::gpu::IconStyle::PlayStation;
     Image white;  // bound when texturing is off (the descriptor is always declared)
@@ -381,7 +380,7 @@ struct VulkanGeRenderer::Impl {
         if (keys.size() < header || std::memcmp(keys.data(), kPipelineKeysMagic, sizeof kPipelineKeysMagic) != 0 ||
             key_size != sizeof(PipelineKey))
             return;
-        const auto start = std::chrono::steady_clock::now();
+        const auto start = nx::timestamp::now();
         std::size_t count = 0;
         for (std::size_t at = header; at + sizeof(PipelineKey) <= keys.size(); at += sizeof(PipelineKey), ++count) {
             PipelineKey k;
@@ -391,7 +390,7 @@ struct VulkanGeRenderer::Impl {
         cache_dirty_frame = 0;
         stats = {};
         std::fprintf(stderr, "Vulkan: %zu pipelines prepared in %.0f ms\n", count,
-                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+                     (nx::timestamp::now() - start).millis_f());
     }
 
     void save_pipeline_cache() {
@@ -569,7 +568,7 @@ struct VulkanGeRenderer::Impl {
             if (it->second->msaa.image) frame().garbage.push_back(it->second->msaa);
             targets.erase(it);
         }
-        Target& t = *(targets[address] = std::make_unique<Target>());
+        Target& t = *(targets[address] = nx::make_unique<Target>());
         t.address = address;
         t.stride = stride;
         t.format = format;
@@ -589,7 +588,7 @@ struct VulkanGeRenderer::Impl {
         const std::uint64_t key = (std::uint64_t{0x04000000u | (address & 0x1FFFF0)} << 16) | t.stride;
         auto it = depths.find(key);
         if (it != depths.end()) return *it->second;
-        Image& d = *(depths[key] = std::make_unique<Image>());
+        Image& d = *(depths[key] = nx::make_unique<Image>());
         const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         d = make_image(t.color.width, t.color.height, vk.depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT, aspect, 1, samples);
@@ -955,10 +954,10 @@ struct VulkanGeRenderer::Impl {
         pci.pColorBlendState = &cb;
         pci.pDynamicState = &dyn;
         pci.layout = layout;
-        const auto start = std::chrono::steady_clock::now();
+        const auto start = nx::timestamp::now();
         check(vkCreateGraphicsPipelines(vk.device, cache, 1, &pci, nullptr, &p), "graphics pipeline");
         cache_dirty_frame = frame_number;
-        const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        const double took = (nx::timestamp::now() - start).millis_f();
         ++stats.pipelines;
         stats.pipeline_ms += took;
         stats.worst_pipeline_ms = std::max(stats.worst_pipeline_ms, took);
@@ -1099,7 +1098,7 @@ struct VulkanGeRenderer::Impl {
         cull = s.on(ge::CULLFACEENABLE) && !through;
         cull_mode = static_cast<int>(s.param(ge::CULL) & 1);
 
-        const auto transform_start = std::chrono::steady_clock::now();
+        const auto transform_start = nx::timestamp::now();
         clip.resize(vertices.size());
         for (std::size_t i = 0; i < vertices.size(); ++i) clip[i] = vp.transform(s, vertices[i]);
 
@@ -1138,8 +1137,7 @@ struct VulkanGeRenderer::Impl {
                 for (std::size_t i = 0; i + 1 < n; i += 2) sprite(clip[i], clip[i + 1]);
                 break;
         }
-        stats.transform_ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                             std::chrono::steady_clock::now() - transform_start).count());
+        stats.transform_ns += static_cast<std::uint64_t>((nx::timestamp::now() - transform_start).nanos());
         if (out.empty()) return;
 
         // Fixed-function state.
@@ -1270,13 +1268,12 @@ struct VulkanGeRenderer::Impl {
         if (texturing) {
             const std::uint32_t tex_addr = rt::ge::vram_canonical(((s.param(ge::TEXBUFWIDTH0) & 0x0F0000) << 8) |
                                                                   (s.param(ge::TEXADDR0) & 0xFFFFF0));
-            const auto texture_start = std::chrono::steady_clock::now();
+            const auto texture_start = nx::timestamp::now();
             Image* img = nullptr;
             Target* rt_tex = ts.format() < 4 ? target_containing(tex_addr) : nullptr;
             if (rt_tex) img = target_texture(*rt_tex, tex_addr, ts.width(), ts.height());
             if (!img) img = texture(s, ts, tex_addr);
-            stats.texture_ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                               std::chrono::steady_clock::now() - texture_start).count());
+            stats.texture_ns += static_cast<std::uint64_t>((nx::timestamp::now() - texture_start).nanos());
             const std::uint32_t filter = s.param(ge::TEXFILTER), wrap = s.param(ge::TEXWRAP);
             if (img) {
                 view = img->view;
@@ -1381,7 +1378,7 @@ struct VulkanGeRenderer::Impl {
 
 VulkanGeRenderer::VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& memory, int scale,
                                    nx::string pipeline_cache)
-    : impl_(std::make_unique<Impl>(vk, memory, scale, std::move(pipeline_cache))) {
+    : impl_(nx::make_unique<Impl>(vk, memory, scale, std::move(pipeline_cache))) {
     impl_->init();
 }
 

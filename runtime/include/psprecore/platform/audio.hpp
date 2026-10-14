@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "psprecore/runtime/audio.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace psprecore::platform {
 
@@ -33,7 +34,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    nx::unique_ptr<Impl> impl_;
 };
 
 }  // namespace psprecore::platform

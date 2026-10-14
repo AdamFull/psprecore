@@ -2,7 +2,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <functional>
 #include <memory>
 
 #include "psprecore/runtime/ge.hpp"
@@ -23,7 +22,7 @@ struct DisplayState {
     std::uint32_t framebuffer = 0, stride = 512, format = 3;
     std::uint64_t lists = 0, frames = 0;
     int next_callback_id = 1;
-    std::unique_ptr<ge::Processor> ge;
+    nx::unique_ptr<ge::Processor> ge;
     std::uint64_t dump_frame = ~0ull;
     std::FILE* dump = nullptr;
     struct Callback {
@@ -48,7 +47,7 @@ nx::small_vector<Callback, 4> registered_callbacks() {
 
 ge::Processor& gpu() {
     if (!g_display.ge) {
-        g_display.ge = std::make_unique<ge::Processor>(mem());
+        g_display.ge = nx::make_unique<ge::Processor>(mem());
         g_display.ge->set_renderer(g_renderer_factory ? g_renderer_factory(mem()) : gpu::make_soft_renderer(mem()));
         g_display.ge->on_command = ge::Processor::CommandListener([](std::uint32_t pc, std::uint32_t word) {
             if (g_display.dump && g_display.frames == g_display.dump_frame)

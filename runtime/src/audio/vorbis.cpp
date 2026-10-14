@@ -10,10 +10,10 @@
 
 namespace psprecore::rt::audio {
 
-std::unique_ptr<VorbisStream> VorbisStream::open(nx::fs::path_view path) {
+nx::unique_ptr<VorbisStream> VorbisStream::open(nx::fs::path_view path) {
     auto file = nx::fs::file_read(path);
     if (!file.has_value() || file.value().size() > 0x7FFFFFFF) return nullptr;
-    std::unique_ptr<VorbisStream> s(new VorbisStream);
+    auto s = nx::make_unique<VorbisStream>(Key{});
     s->file_ = std::move(file.value());
     int error = 0;
     stb_vorbis* v = stb_vorbis_open_memory(s->file_.data(), static_cast<int>(s->file_.size()), &error, nullptr);

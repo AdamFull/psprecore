@@ -25,8 +25,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
-#include <functional>
 #include <stdexcept>
 #include <utility>
 
@@ -514,7 +512,7 @@ void Display::Impl::update_pad() {
 
 // ---------------------------------------------------------------------------------------------
 
-Display::Display(const char* title, int width, int height) : impl_(std::make_unique<Impl>()) {
+Display::Display(const char* title, int width, int height) : impl_(nx::make_unique<Impl>()) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(nx::format("SDL_Init: {}", SDL_GetError()).c_str());
     SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
 #ifdef __ANDROID__

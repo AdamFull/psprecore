@@ -49,8 +49,8 @@ struct Mpeg {
     int stream_type[16] = {};
     std::uint32_t pixel_mode = 3;
     // Cooked media for the current movie (psprecore/formats/cooked.hpp).
-    std::unique_ptr<media::Av1Video> video;
-    std::unique_ptr<audio::VorbisStream> audio;
+    nx::unique_ptr<media::Av1Video> video;
+    nx::unique_ptr<audio::VorbisStream> audio;
     nx::vector<std::uint32_t> frame;
     int frame_width = 0;
     std::uint64_t audio_base = 0;

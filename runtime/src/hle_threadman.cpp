@@ -69,7 +69,7 @@ void WaitThreadEnd(Context& c) {
 
 void CreateSema(Context& c) {
     Kernel& k = kernel();
-    auto s = std::make_unique<Semaphore>();
+    auto s = nx::make_unique<Semaphore>();
     s->id = k.new_id();
     s->name = mem().string(arg(c, 0), 32);
     s->attr = arg(c, 1);
@@ -166,7 +166,7 @@ bool try_event_flag(EventFlag& f, std::uint32_t pattern, std::uint32_t mode, std
 
 void CreateEventFlag(Context& c) {
     Kernel& k = kernel();
-    auto f = std::make_unique<EventFlag>();
+    auto f = nx::make_unique<EventFlag>();
     f->id = k.new_id();
     f->name = mem().string(arg(c, 0), 32);
     f->attr = arg(c, 1);
@@ -221,7 +221,7 @@ void WaitEventFlag(Context& c) {
 
 void CreateFpl(Context& c) {
     Kernel& k = kernel();
-    auto p = std::make_unique<Fpl>();
+    auto p = nx::make_unique<Fpl>();
     p->id = k.new_id();
     p->name = mem().string(arg(c, 0), 32);
     p->attr = arg(c, 2);

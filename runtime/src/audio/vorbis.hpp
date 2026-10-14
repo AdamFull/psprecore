@@ -13,8 +13,13 @@ struct stb_vorbis;
 namespace psprecore::rt::audio {
 
 class VorbisStream {
+    struct Key {
+        explicit Key() = default;
+    };
+
 public:
-    static std::unique_ptr<VorbisStream> open(nx::fs::path_view path);  // null if missing/invalid
+    static nx::unique_ptr<VorbisStream> open(nx::fs::path_view path);  // null if missing/invalid
+    explicit VorbisStream(Key) {}  // open() only
     ~VorbisStream();
     VorbisStream(const VorbisStream&) = delete;
     VorbisStream& operator=(const VorbisStream&) = delete;
@@ -28,7 +33,6 @@ public:
     std::uint32_t read(std::uint64_t position, std::int16_t* out, std::uint32_t frames);
 
 private:
-    VorbisStream() = default;
     nx::blob<std::uint8_t> file_;  // the whole .ogg (stb_vorbis decodes from memory)
     ::stb_vorbis* vorbis_ = nullptr;
     int channels_ = 0;

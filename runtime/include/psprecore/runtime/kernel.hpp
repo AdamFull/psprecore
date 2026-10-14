@@ -132,7 +132,7 @@ public:
 
     // ---- objects ----
     template <typename T>
-    nx::map<int, std::unique_ptr<T>>& objects();
+    nx::map<int, nx::unique_ptr<T>>& objects();
     int new_id() { return next_id_++; }
     void check_callbacks();  // run pending callbacks for the current thread (CB waits)
     // Calls guest function `entry` on the current thread (EABI args a0-a3, t0-t3) and returns v0. The caller's
@@ -172,11 +172,11 @@ private:
     GuestMemory& memory_;
     GuestHeap user_heap_;
     GuestHeap kernel_heap_;  // kernel-owned allocations (interrupt stack), outside the user partition
-    nx::map<int, std::unique_ptr<Thread>> threads_;
-    nx::map<int, std::unique_ptr<Semaphore>> semas_;
-    nx::map<int, std::unique_ptr<EventFlag>> event_flags_;
-    nx::map<int, std::unique_ptr<Fpl>> fpls_;
-    nx::map<int, std::unique_ptr<Callback>> callbacks_;
+    nx::map<int, nx::unique_ptr<Thread>> threads_;
+    nx::map<int, nx::unique_ptr<Semaphore>> semas_;
+    nx::map<int, nx::unique_ptr<EventFlag>> event_flags_;
+    nx::map<int, nx::unique_ptr<Fpl>> fpls_;
+    nx::map<int, nx::unique_ptr<Callback>> callbacks_;
     struct SubIntr {
         std::uint32_t handler = 0, arg = 0;
         bool enabled = false;
@@ -192,10 +192,10 @@ private:
     int exit_code_ = 0;
 };
 
-template <> inline nx::map<int, std::unique_ptr<Semaphore>>& Kernel::objects() { return semas_; }
-template <> inline nx::map<int, std::unique_ptr<EventFlag>>& Kernel::objects() { return event_flags_; }
-template <> inline nx::map<int, std::unique_ptr<Fpl>>& Kernel::objects() { return fpls_; }
-template <> inline nx::map<int, std::unique_ptr<Callback>>& Kernel::objects() { return callbacks_; }
+template <> inline nx::map<int, nx::unique_ptr<Semaphore>>& Kernel::objects() { return semas_; }
+template <> inline nx::map<int, nx::unique_ptr<EventFlag>>& Kernel::objects() { return event_flags_; }
+template <> inline nx::map<int, nx::unique_ptr<Fpl>>& Kernel::objects() { return fpls_; }
+template <> inline nx::map<int, nx::unique_ptr<Callback>>& Kernel::objects() { return callbacks_; }
 
 Kernel& kernel();  // the single kernel instance (set by the host before running)
 void set_kernel(Kernel* k);

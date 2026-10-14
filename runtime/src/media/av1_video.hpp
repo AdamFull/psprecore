@@ -14,8 +14,13 @@ struct Dav1dContext;
 namespace psprecore::rt::media {
 
 class Av1Video {
+    struct Key {
+        explicit Key() = default;
+    };
+
 public:
-    static std::unique_ptr<Av1Video> open(nx::fs::path_view path);  // null if missing/invalid
+    static nx::unique_ptr<Av1Video> open(nx::fs::path_view path);  // null if missing/invalid
+    explicit Av1Video(Key) {}  // open() only
     ~Av1Video();
     Av1Video(const Av1Video&) = delete;
     Av1Video& operator=(const Av1Video&) = delete;
@@ -27,7 +32,6 @@ public:
     bool next(nx::vector<std::uint32_t>& rgba);
 
 private:
-    Av1Video() = default;
     bool read_packet(nx::vector<std::uint8_t>& out);
 
     nx::fs::stream_ptr file_;

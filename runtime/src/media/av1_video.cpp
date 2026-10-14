@@ -47,14 +47,14 @@ void convert(const Dav1dPicture& pic, nx::vector<std::uint32_t>& rgba) {
 
 }  // namespace
 
-std::unique_ptr<Av1Video> Av1Video::open(nx::fs::path_view path) {
+nx::unique_ptr<Av1Video> Av1Video::open(nx::fs::path_view path) {
     auto opened = nx::fs::open_file(path);
     if (!opened.has_value()) return nullptr;
     nx::fs::stream_ptr f = std::move(opened.value());
     std::uint8_t header[32];
     if (f->read(header, 32) != 32 || std::memcmp(header, "DKIF", 4) != 0 || std::memcmp(header + 8, "AV01", 4) != 0)
         return nullptr;
-    std::unique_ptr<Av1Video> v(new Av1Video);
+    auto v = nx::make_unique<Av1Video>(Key{});
     v->width_ = header[12] | (header[13] << 8);
     v->height_ = header[14] | (header[15] << 8);
     const std::uint32_t header_size = header[6] | (header[7] << 8);
