@@ -4,12 +4,16 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 #include "ff7cc/runtime/hle.hpp"
@@ -113,6 +117,8 @@ struct PipelineKey {
                  clear = 0, src_factor = 0, double_alpha = 0;
     bool operator==(const PipelineKey& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
 };
+static_assert(std::is_trivially_copyable_v<PipelineKey>);
+constexpr char kPipelineKeysMagic[8] = {'F', 'F', '7', 'P', 'K', 'E', 'Y', '1'};
 struct PipelineKeyHash {
     std::size_t operator()(const PipelineKey& k) const { return static_cast<std::size_t>(hash_bytes(&k, sizeof k)); }
 };
@@ -169,6 +175,9 @@ struct VulkanGeRenderer::Impl {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
     std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
+    std::filesystem::path cache_path;
+    VkPipelineCache cache = VK_NULL_HANDLE;
+    std::uint64_t cache_dirty_frame = 0;  // frame of the last pipeline created since the cache was saved (0: saved)
     std::map<std::uint32_t, VkSampler> samplers;
     std::array<Frame, kFrames> frames;
     int current = 0;
@@ -193,7 +202,8 @@ struct VulkanGeRenderer::Impl {
     std::vector<ClipVertex> clip;
     std::vector<GpuVertex> out;
 
-    Impl(const VulkanContext& context, rt::GuestMemory& mem, int s) : vk(context), memory(mem), scale(std::max(1, s)), pending_scale(scale) {}
+    Impl(const VulkanContext& context, rt::GuestMemory& mem, int s, std::filesystem::path cache_file)
+        : vk(context), memory(mem), scale(std::max(1, s)), pending_scale(scale), cache_path(std::move(cache_file)) {}
 
     Frame& frame() { return frames[static_cast<std::size_t>(current)]; }
 
@@ -303,6 +313,7 @@ struct VulkanGeRenderer::Impl {
         };
         vert = module(ge_vert, sizeof ge_vert);
         frag = module(ge_frag, sizeof ge_frag);
+        load_pipeline_cache();
 
         for (Frame& f : frames) {
             VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -338,8 +349,84 @@ struct VulkanGeRenderer::Impl {
         transition(frame().draw, white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
+    static std::vector<char> read_file(const std::filesystem::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+    static void write_file(const std::filesystem::path& path, const void* data, std::size_t size) {
+        std::filesystem::path tmp = path;
+        tmp += ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size))) return;
+        }
+        std::error_code ec;
+        std::filesystem::rename(tmp, path, ec);
+    }
+    std::filesystem::path keys_path() const {
+        std::filesystem::path p = cache_path;
+        return p += ".keys";
+    }
+
+    // Pipelines are created when a draw first needs them, which takes milliseconds each and stalls the game (and
+    // its audio) when an effect brings several at once. So the driver's pipeline cache is kept on disk (the driver
+    // checks its header and ignores data from another GPU or driver), and every pipeline used before is created
+    // again at start from the saved key list.
+    void load_pipeline_cache() {
+        if (cache_path.empty()) {
+            VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+            check(vkCreatePipelineCache(vk.device, &ci, nullptr, &cache), "pipeline cache");
+            return;
+        }
+        const std::vector<char> data = read_file(cache_path);
+        VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        ci.initialDataSize = data.size();
+        ci.pInitialData = data.empty() ? nullptr : data.data();
+        if (vkCreatePipelineCache(vk.device, &ci, nullptr, &cache) != VK_SUCCESS) {
+            ci.initialDataSize = 0;
+            ci.pInitialData = nullptr;
+            check(vkCreatePipelineCache(vk.device, &ci, nullptr, &cache), "pipeline cache");
+        }
+        const std::vector<char> keys = read_file(keys_path());
+        constexpr std::size_t header = sizeof kPipelineKeysMagic + 4;
+        std::uint32_t key_size = 0;
+        if (keys.size() >= header) std::memcpy(&key_size, keys.data() + sizeof kPipelineKeysMagic, 4);
+        if (keys.size() < header || std::memcmp(keys.data(), kPipelineKeysMagic, sizeof kPipelineKeysMagic) != 0 ||
+            key_size != sizeof(PipelineKey))
+            return;
+        const auto start = std::chrono::steady_clock::now();
+        std::size_t count = 0;
+        for (std::size_t at = header; at + sizeof(PipelineKey) <= keys.size(); at += sizeof(PipelineKey), ++count) {
+            PipelineKey k;
+            std::memcpy(&k, keys.data() + at, sizeof k);
+            pipeline(k);
+        }
+        cache_dirty_frame = 0;
+        stats = {};
+        std::fprintf(stderr, "Vulkan: %zu pipelines prepared in %.0f ms\n", count,
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    }
+
+    void save_pipeline_cache() {
+        cache_dirty_frame = 0;
+        if (cache_path.empty()) return;
+        std::size_t size = 0;
+        if (vkGetPipelineCacheData(vk.device, cache, &size, nullptr) != VK_SUCCESS || !size) return;
+        std::vector<char> data(size);
+        if (vkGetPipelineCacheData(vk.device, cache, &size, data.data()) != VK_SUCCESS) return;
+        write_file(cache_path, data.data(), size);
+        std::vector<char> keys(kPipelineKeysMagic, kPipelineKeysMagic + sizeof kPipelineKeysMagic);
+        const std::uint32_t key_size = sizeof(PipelineKey);
+        keys.insert(keys.end(), reinterpret_cast<const char*>(&key_size), reinterpret_cast<const char*>(&key_size) + 4);
+        for (const auto& [k, _] : pipelines)
+            keys.insert(keys.end(), reinterpret_cast<const char*>(&k), reinterpret_cast<const char*>(&k) + sizeof k);
+        write_file(keys_path(), keys.data(), keys.size());
+    }
+
     void shutdown() {
         vkDeviceWaitIdle(vk.device);
+        if (cache_dirty_frame) save_pipeline_cache();
+        vkDestroyPipelineCache(vk.device, cache, nullptr);
         for (Frame& f : frames) {
             for (Image& img : f.garbage) destroy(img);
             vmaDestroyBuffer(vk.allocator, f.vertices.buffer, f.vertices.memory);
@@ -772,7 +859,13 @@ struct VulkanGeRenderer::Impl {
         pci.pColorBlendState = &cb;
         pci.pDynamicState = &dyn;
         pci.layout = layout;
-        check(vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &pci, nullptr, &p), "graphics pipeline");
+        const auto start = std::chrono::steady_clock::now();
+        check(vkCreateGraphicsPipelines(vk.device, cache, 1, &pci, nullptr, &p), "graphics pipeline");
+        cache_dirty_frame = frame_number;
+        const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        ++stats.pipelines;
+        stats.pipeline_ms += took;
+        stats.worst_pipeline_ms = std::max(stats.worst_pipeline_ms, took);
         return p;
     }
 
@@ -1146,6 +1239,8 @@ struct VulkanGeRenderer::Impl {
 
     VulkanGeRenderer::Output finish_frame(std::uint32_t address, std::uint32_t stride, int format,
                                           std::vector<std::uint32_t>* capture) {
+        // Saved once no new pipeline has appeared for ~10 s (the app may be killed rather than closed on Android).
+        if (cache_dirty_frame && frame_number - cache_dirty_frame > 300) save_pipeline_cache();
         begin_frame();
         Target& t = target(address, stride ? stride : 512, format);
         end_rendering();
@@ -1181,8 +1276,9 @@ struct VulkanGeRenderer::Impl {
     }
 };
 
-VulkanGeRenderer::VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& memory, int scale)
-    : impl_(std::make_unique<Impl>(vk, memory, scale)) {
+VulkanGeRenderer::VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& memory, int scale,
+                                   std::filesystem::path pipeline_cache)
+    : impl_(std::make_unique<Impl>(vk, memory, scale, std::move(pipeline_cache))) {
     impl_->init();
 }
 

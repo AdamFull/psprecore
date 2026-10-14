@@ -10,6 +10,7 @@
 // Unlike the software renderer it does not write rendered pixels back to guest VRAM.
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -24,7 +25,10 @@ namespace ff7cc::platform {
 
 class VulkanGeRenderer final : public rt::ge::Renderer {
 public:
-    VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& memory, int scale);
+    // `pipeline_cache`: file keeping compiled pipelines between runs (empty: none), so effects seen before do not
+    // stall the first frame they appear in.
+    VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& memory, int scale,
+                     std::filesystem::path pipeline_cache = {});
     ~VulkanGeRenderer() override;
 
     void draw(const rt::ge::State& state, rt::ge::Prim prim, const std::vector<rt::ge::Vertex>& vertices) override;
@@ -32,6 +36,8 @@ public:
     // Counters since the last call (performance diagnostics, --perf).
     struct Stats {
         std::uint64_t hashed_bytes = 0, uploads = 0, uploaded_texels = 0;
+        std::uint64_t pipelines = 0;  // created
+        double pipeline_ms = 0.0, worst_pipeline_ms = 0.0;
     };
     Stats take_stats();
 

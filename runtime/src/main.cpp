@@ -17,6 +17,7 @@
 //       [--touch]                       (show the on-screen touch controls from the start; default on Android)
 //       [--perf]                        (prints host time per 300 vblanks and display frames)
 //       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
+//       [--mute]                        (testing: open the sound device but play silence)
 //       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
 //       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
 //       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
@@ -388,7 +389,7 @@ int main(int argc, char** argv) {
         std::string renderer = "vulkan";
         int scale = 0;  // 0: from the settings file
         fs::path settings_path = data_dir / "ff7cc.ini";
-        bool no_audio = false, unthrottled = false, perf = false;
+        bool no_audio = false, unthrottled = false, perf = false, mute = false;
 #ifdef __ANDROID__
         bool touch = true;  // shown until a gamepad is used
 #else
@@ -424,6 +425,8 @@ int main(int argc, char** argv) {
                 perf = true;
             } else if (a == "--no-audio") {
                 no_audio = true;
+            } else if (a == "--mute") {
+                mute = true;
             } else if (a == "--renderer" && i + 1 < argc) {
                 renderer = argv[++i];
             } else if (a == "--scale" && i + 1 < argc) {
@@ -575,21 +578,35 @@ int main(int argc, char** argv) {
             }
         };
         platform::VulkanGeRenderer* vulkan_renderer = nullptr;
-        auto perf_start = std::chrono::steady_clock::now();
+        platform::AudioDevice* audio_device = nullptr;
+        auto perf_start = std::chrono::steady_clock::now(), perf_last = perf_start;
         std::uint64_t perf_frames = 0;
+        double perf_worst_ms = 0.0;  // longest host time between two vblanks
         const auto perf_tick = [&] {
-            if (!perf || kernel.vblank_count() % 300 != 0) return;
+            if (!perf) return;
             const auto now = std::chrono::steady_clock::now();
+            perf_worst_ms = std::max(perf_worst_ms, std::chrono::duration<double, std::milli>(now - perf_last).count());
+            perf_last = now;
+            if (kernel.vblank_count() % 300 != 0) return;
             const double ms = std::chrono::duration<double, std::milli>(now - perf_start).count();
             const std::uint64_t frames = rt::display_frame_count();
-            std::fprintf(stderr, "perf vblank %llu: %.1f ms per vblank (%.2fx real time), %llu frames\n",
+            std::fprintf(stderr, "perf vblank %llu: %.1f ms per vblank (%.2fx real time, worst %.1f ms), %llu frames\n",
                          static_cast<unsigned long long>(kernel.vblank_count()), ms / 300.0, 300.0 * 16.683 / ms,
-                         static_cast<unsigned long long>(frames - perf_frames));
+                         perf_worst_ms, static_cast<unsigned long long>(frames - perf_frames));
+            perf_worst_ms = 0.0;
             if (vulkan_renderer) {
                 const auto st = vulkan_renderer->take_stats();
-                std::fprintf(stderr, "    vulkan: %.1f MB texture hashing, %llu uploads (%.2f Mtexels)\n",
+                std::fprintf(stderr, "    vulkan: %.1f MB texture hashing, %llu uploads (%.2f Mtexels), %llu pipelines (%.1f ms, worst %.1f)\n",
                              static_cast<double>(st.hashed_bytes) / 1e6,
-                             static_cast<unsigned long long>(st.uploads), static_cast<double>(st.uploaded_texels) / 1e6);
+                             static_cast<unsigned long long>(st.uploads), static_cast<double>(st.uploaded_texels) / 1e6,
+                             static_cast<unsigned long long>(st.pipelines), st.pipeline_ms, st.worst_pipeline_ms);
+            }
+            if (audio_device) {
+                const auto st = audio_device->take_stats();
+                std::fprintf(stderr, "    audio: %llu underruns, %.1f ms skipped, %.1f ms dropped, queue %.1f..%.1f ms, %llu fell behind\n",
+                             static_cast<unsigned long long>(st.underruns), st.skipped_frames / 44.1,
+                             st.dropped_frames / 44.1, st.min_queued / 44.1, st.max_queued / 44.1,
+                             static_cast<unsigned long long>(kernel.fell_behind_count()));
             }
             perf_start = now;
             perf_frames = frames;
@@ -612,6 +629,7 @@ int main(int argc, char** argv) {
         std::unique_ptr<platform::AudioDevice> audio;
         std::unique_ptr<WavRecorder> recorder;
         if (!headless && !no_audio) audio = std::make_unique<platform::AudioDevice>();
+        audio_device = audio.get();
         if (!audio_dump.empty()) recorder = std::make_unique<WavRecorder>(audio_dump, audio.get());
         rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
         if (!headless) {
@@ -621,7 +639,7 @@ int main(int argc, char** argv) {
             const auto apply = [&](const platform::Settings& s) {
                 if (vulkan_renderer) vulkan_renderer->set_scale(s.scale);
                 if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
-                if (audio) audio->set_volume(static_cast<float>(s.volume) / 100.0f);
+                if (audio) audio->set_volume(mute ? 0.0f : static_cast<float>(s.volume) / 100.0f);
                 kernel.realtime = s.frame_limit && !unthrottled;
             };
             apply(settings);
@@ -655,7 +673,8 @@ int main(int argc, char** argv) {
             };
             if (gpu) {
                 rt::set_ge_renderer_factory([&](rt::GuestMemory& mem) {
-                    auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale);
+                    auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale,
+                                                                          data_dir / "vulkan_pipelines.bin");
                     vulkan_renderer = r.get();
                     if (renderer != "compare") return std::unique_ptr<rt::ge::Renderer>(std::move(r));
                     r->set_guest_copies(false);  // the software renderer already copies in guest memory

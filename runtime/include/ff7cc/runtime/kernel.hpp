@@ -159,6 +159,8 @@ public:
     void request_quit() { quit_ = true; }
     bool quit_requested() const { return quit_; }
     std::uint64_t max_vblanks = 0;  // stop after this many vblanks (0 = run forever)
+    // Realtime mode: how often the guest fell more than 100 ms behind the host clock (time was dropped).
+    std::uint64_t fell_behind_count() const { return fell_behind_; }
 
 private:
     void schedule_from(Thread* from);  // hand the baton to the best ready thread (or the idle loop)
@@ -167,6 +169,7 @@ private:
     void host_thread_main(Thread* t);
     void fire_vblank();
 
+    std::uint64_t fell_behind_ = 0;
     GuestMemory& memory_;
     GuestHeap user_heap_;
     GuestHeap kernel_heap_;  // kernel-owned allocations (interrupt stack), outside the user partition

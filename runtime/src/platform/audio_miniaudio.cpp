@@ -1,9 +1,14 @@
 #include "ff7cc/platform/audio.hpp"
 
+#include "platform/audio_ring.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 #define MINIAUDIO_IMPLEMENTATION
@@ -17,53 +22,17 @@
 
 namespace ff7cc::platform {
 
-namespace {
-
-constexpr std::size_t kRingFrames = 16384;  // ~370 ms
-constexpr std::size_t kMaxQueuedFrames = 44100 / 5;  // drop input beyond ~200 ms to bound latency
-
-// Single producer (the guest audio threads, which never run concurrently) / single consumer (device callback).
-struct Ring {
-    std::vector<std::int16_t> data = std::vector<std::int16_t>(kRingFrames * 2);
-    std::atomic<std::size_t> read{0}, write{0};
-
-    std::size_t queued() const { return write.load(std::memory_order_acquire) - read.load(std::memory_order_acquire); }
-    void push(const std::int16_t* frames, std::size_t count) {
-        if (queued() + count > kMaxQueuedFrames) return;
-        std::size_t w = write.load(std::memory_order_relaxed);
-        for (std::size_t i = 0; i < count; ++i, ++w) {
-            const std::size_t slot = (w % kRingFrames) * 2;
-            data[slot] = frames[2 * i];
-            data[slot + 1] = frames[2 * i + 1];
-        }
-        write.store(w, std::memory_order_release);
-    }
-    // Adds up to `count` frames into `acc`; missing frames are silence.
-    void mix_into(std::int32_t* acc, std::size_t count) {
-        std::size_t r = read.load(std::memory_order_relaxed);
-        const std::size_t available = std::min(count, write.load(std::memory_order_acquire) - r);
-        for (std::size_t i = 0; i < available; ++i, ++r) {
-            const std::size_t slot = (r % kRingFrames) * 2;
-            acc[2 * i] += data[slot];
-            acc[2 * i + 1] += data[slot + 1];
-        }
-        read.store(r, std::memory_order_release);
-    }
-};
-
-}  // namespace
-
 struct AudioDevice::Impl {
     ma_device device{};
     bool ok = false;
-    std::array<Ring, rt::AudioSink::kSources> rings;
+    std::array<AudioRing, rt::AudioSink::kSources> rings;
     std::vector<std::int32_t> acc;
     std::atomic<std::int32_t> gain{256};  // master volume, 256 = unity
 
     static void callback(ma_device* device, void* output, const void*, ma_uint32 frames) {
         auto* self = static_cast<Impl*>(device->pUserData);
         self->acc.assign(static_cast<std::size_t>(frames) * 2, 0);
-        for (Ring& ring : self->rings) ring.mix_into(self->acc.data(), frames);
+        for (AudioRing& ring : self->rings) ring.mix_into(self->acc.data(), frames);
         auto* out = static_cast<std::int16_t*>(output);
         const std::int32_t gain = self->gain.load(std::memory_order_relaxed);
         for (std::size_t i = 0; i < self->acc.size(); ++i)
@@ -90,7 +59,11 @@ AudioDevice::AudioDevice() : impl_(std::make_unique<Impl>()) {
         return;
     }
     impl_->ok = true;
-    std::fprintf(stderr, "Audio device: %s\n", impl_->device.playback.name);
+    // The cushion covers a few device periods (AAudio and some WASAPI devices use large bursts).
+    const std::size_t period = impl_->device.playback.internalPeriodSizeInFrames;
+    for (AudioRing& ring : impl_->rings) ring.target = std::max(kMinTargetFrames, 3 * period);
+    std::fprintf(stderr, "Audio device: %s (period %zu frames, cushion %.0f ms)\n", impl_->device.playback.name,
+                 period, static_cast<double>(impl_->rings[0].target) / 44.1);
 }
 
 AudioDevice::~AudioDevice() {
@@ -107,6 +80,24 @@ void AudioDevice::set_paused(bool paused) {
 
 void AudioDevice::set_volume(float volume) {
     impl_->gain.store(static_cast<std::int32_t>(std::clamp(volume, 0.0f, 1.0f) * 256.0f + 0.5f), std::memory_order_relaxed);
+}
+
+AudioDevice::Stats AudioDevice::take_stats() {
+    Stats st;
+    st.min_queued = SIZE_MAX;
+    for (AudioRing& ring : impl_->rings) {
+        st.underruns += ring.underruns.exchange(0, std::memory_order_relaxed);
+        st.skipped_frames += ring.skipped_frames.exchange(0, std::memory_order_relaxed);
+        st.dropped_frames += std::exchange(ring.dropped_frames, 0);
+        if (std::exchange(ring.pushes, 0)) {
+            st.min_queued = std::min(st.min_queued, ring.min_queued);
+            st.max_queued = std::max(st.max_queued, ring.max_queued);
+        }
+        ring.min_queued = SIZE_MAX;
+        ring.max_queued = 0;
+    }
+    if (st.min_queued == SIZE_MAX) st.min_queued = 0;
+    return st;
 }
 
 void AudioDevice::submit(int source, const std::int16_t* frames, std::size_t count) {

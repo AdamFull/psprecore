@@ -20,6 +20,7 @@ PARAM.SFO
 /generated/
 /saves/
 /ff7cc.ini
+/vulkan_pipelines.bin*
 
 # --- Build output ---
 /build/

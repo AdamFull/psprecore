@@ -349,7 +349,10 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
             const auto due = anchor + std::chrono::microseconds(next);
             const auto host = Clock::now();
             if (due > host) std::this_thread::sleep_until(due);
-            else if (host - due > std::chrono::milliseconds(100)) anchor = host - std::chrono::microseconds(next);  // fell behind
+            else if (host - due > std::chrono::milliseconds(100)) {  // fell behind
+                anchor = host - std::chrono::microseconds(next);
+                ++fell_behind_;
+            }
         }
         now_us_ = std::max(now_us_, next);
         if (now_us_ >= next_vblank_us_) {
