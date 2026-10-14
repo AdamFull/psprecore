@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "ff7cc/platform/display.hpp"
+#include "platform/button_glyphs.hpp"
 
 namespace ff7cc::platform {
 
@@ -22,18 +22,12 @@ bool in_rect(float x, float y, float cx, float cy, float w, float h, float margi
     return std::abs(x - cx) <= w * 0.5f + margin && std::abs(y - cy) <= h * 0.5f + margin;
 }
 
-// Face buttons, clockwise from the top, with their offsets from the cluster centre and symbol colours.
+// Face buttons, clockwise from the top, with their offsets from the cluster centre.
 struct FaceButton {
     std::uint32_t bit;
     float dx, dy;
-    ImU32 color;
 };
-constexpr FaceButton kFace[4] = {
-    {kTriangle, 0, -1, IM_COL32(64, 224, 160, 220)},
-    {kCircle, 1, 0, IM_COL32(255, 100, 100, 220)},
-    {kCross, 0, 1, IM_COL32(130, 170, 255, 220)},
-    {kSquare, -1, 0, IM_COL32(240, 140, 220, 220)},
-};
+constexpr FaceButton kFace[4] = {{kTriangle, 0, -1}, {kCircle, 1, 0}, {kCross, 0, 1}, {kSquare, -1, 0}};
 
 }  // namespace
 
@@ -188,7 +182,7 @@ bool TouchControls::stick(float& x, float& y) const {
     return false;
 }
 
-void TouchControls::draw(ImDrawList* dl) const {
+void TouchControls::draw(ImDrawList* dl, ButtonGlyphs glyphs) const {
     const Layout l = layout();
     const std::uint32_t pressed = buttons();
     const float thick = std::max(1.5f, l.unit * 0.05f);
@@ -223,19 +217,7 @@ void TouchControls::draw(ImDrawList* dl) const {
         const ImVec2 c{l.face_x + b.dx * l.face_spread, l.face_y + b.dy * l.face_spread};
         dl->AddCircleFilled(c, l.face_r, (pressed & b.bit) ? kPressed : kBase, 32);
         dl->AddCircle(c, l.face_r, kOutline, 32, thick);
-        const float s = l.face_r * 0.45f;
-        switch (b.bit) {
-            case kTriangle:
-                dl->AddTriangle({c.x, c.y - s}, {c.x + s * 0.95f, c.y + s * 0.65f}, {c.x - s * 0.95f, c.y + s * 0.65f}, b.color,
-                                thick * 1.5f);
-                break;
-            case kCircle: dl->AddCircle(c, s, b.color, 24, thick * 1.5f); break;
-            case kCross:
-                dl->AddLine({c.x - s, c.y - s}, {c.x + s, c.y + s}, b.color, thick * 1.5f);
-                dl->AddLine({c.x - s, c.y + s}, {c.x + s, c.y - s}, b.color, thick * 1.5f);
-                break;
-            default: dl->AddRect({c.x - s * 0.85f, c.y - s * 0.85f}, {c.x + s * 0.85f, c.y + s * 0.85f}, b.color, 0, 0, thick * 1.5f); break;
-        }
+        draw_face_symbol(dl, c, l.face_r * 0.45f, b.bit, glyphs, thick * 1.5f);
     }
 
     // Shoulders and the top row.
@@ -248,12 +230,14 @@ void TouchControls::draw(ImDrawList* dl) const {
         dl->AddText(ImGui::GetFont(), font, {center.x - size.x * 0.5f, center.y - size.y * 0.5f}, kText, text);
     };
     const float shoulder_y = 0.3f * l.unit + l.shoulder_h * 0.5f;
-    labelled({l.shoulder_w * 0.5f, shoulder_y}, l.shoulder_w, l.shoulder_h, "L", pressed & kLTrigger);
-    labelled({width_ - l.shoulder_w * 0.5f, shoulder_y}, l.shoulder_w, l.shoulder_h, "R", pressed & kRTrigger);
+    labelled({l.shoulder_w * 0.5f, shoulder_y}, l.shoulder_w, l.shoulder_h, button_name(kLTrigger, glyphs),
+             pressed & kLTrigger);
+    labelled({width_ - l.shoulder_w * 0.5f, shoulder_y}, l.shoulder_w, l.shoulder_h, button_name(kRTrigger, glyphs),
+             pressed & kRTrigger);
     const float step = l.top_w + l.top_gap;
-    labelled({width_ * 0.5f - step, l.top_y}, l.top_w, l.top_h, "SELECT", pressed & kSelect);
+    labelled({width_ * 0.5f - step, l.top_y}, l.top_w, l.top_h, button_name(kSelect, glyphs), pressed & kSelect);
     labelled({width_ * 0.5f, l.top_y}, l.top_w, l.top_h, "MENU", false);
-    labelled({width_ * 0.5f + step, l.top_y}, l.top_w, l.top_h, "START", pressed & kStart);
+    labelled({width_ * 0.5f + step, l.top_y}, l.top_w, l.top_h, button_name(kStart, glyphs), pressed & kStart);
 }
 
 }  // namespace ff7cc::platform

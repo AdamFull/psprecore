@@ -774,6 +774,7 @@ int main(int argc, char** argv) {
                 if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
                 display->set_vsync(s.vsync);
                 display->set_refresh_rate(s.refresh_60hz ? 60.0f : 0.0f);
+                display->set_button_glyphs(s.button_glyphs);
                 if (audio) audio->set_volume(mute ? 0.0f : static_cast<float>(s.volume) / 100.0f);
                 kernel.realtime = s.frame_limit && !unthrottled;
                 if (renderer_choice) switch_renderer = s.software_renderer == gpu;  // applied when the menu closes

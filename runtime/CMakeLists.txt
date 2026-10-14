@@ -65,7 +65,7 @@ if(FF7CC_BUILD_GAME AND EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
     endforeach()
 
     set(_ff7cc_game_sources src/main.cpp src/platform/display_vulkan.cpp src/platform/audio_miniaudio.cpp
-        src/platform/gpu_vulkan.cpp src/platform/allocator.cpp src/platform/sampling_profiler.cpp src/platform/overlay.cpp src/platform/settings.cpp src/platform/touch_controls.cpp ${_ff7cc_generated_sources} ${_ff7cc_game_overrides})
+        src/platform/gpu_vulkan.cpp src/platform/allocator.cpp src/platform/sampling_profiler.cpp src/platform/overlay.cpp src/platform/settings.cpp src/platform/touch_controls.cpp src/platform/button_glyphs.cpp ${_ff7cc_generated_sources} ${_ff7cc_game_overrides})
     if(ANDROID)
         # SDL's Java activity loads libmain.so and calls SDL_main (see android/).
         add_library(ff7cc SHARED ${_ff7cc_game_sources})

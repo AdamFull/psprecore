@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "ff7cc/platform/display.hpp"
 #include "core/foundation/containers/map.h"
 
 struct ImDrawList;
@@ -28,7 +29,7 @@ public:
     bool stick(float& x, float& y) const;     // -1..1 while the stick is held
     bool take_menu_request();
 
-    void draw(ImDrawList* list) const;
+    void draw(ImDrawList* list, ButtonGlyphs glyphs) const;
 
 private:
     enum class Control { None, Stick, DPad, Face, L, R, Select, Start, Menu };

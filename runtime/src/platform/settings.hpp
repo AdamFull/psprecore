@@ -3,6 +3,7 @@
 // User settings, stored as key=value lines (ff7cc.ini). Unknown keys are ignored and missing keys keep their
 // defaults, so the file survives version changes.
 
+#include "ff7cc/platform/display.hpp"
 #include "core/foundation/platform/filesystem.h"
 
 namespace ff7cc::platform {
@@ -17,6 +18,7 @@ struct Settings {
     bool vsync = true;        // wait for the display's refresh when presenting
     bool refresh_60hz = true; // Android: run the panel at 60 Hz (the game's rate) instead of the device's maximum
     bool show_fps = false;
+    ButtonGlyphs button_glyphs = ButtonGlyphs::Auto;  // the port's own UI; Auto: the connected gamepad's
 
     static Settings load(nx::fs::path_view path);  // defaults when the file is missing
     bool save(nx::fs::path_view path) const;

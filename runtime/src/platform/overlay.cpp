@@ -7,6 +7,7 @@
 
 #include "ff7cc/platform/display.hpp"
 #include "ff7cc/runtime/hle.hpp"
+#include "platform/button_glyphs.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
@@ -80,6 +81,20 @@ void Overlay::draw() {
     if (menu_open_) draw_menu();
 }
 
+bool Overlay::pad_glyphs() const {
+    return display_.gamepad_connected() || settings_.button_glyphs != ButtonGlyphs::Auto;
+}
+
+bool Overlay::button(const char* label, std::uint32_t pad_button) {
+    return pad_glyphs() ? glyph_button(label, pad_button, display_.button_glyphs()) : ImGui::Button(label);
+}
+
+void Overlay::pad_hint(std::uint32_t pad_button, const char* text) {
+    glyph(pad_button, display_.button_glyphs());
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::TextDisabled("%s", text);
+}
+
 void Overlay::draw_fps() {
     ImGui::SetNextWindowPos({8, 8});
     ImGui::SetNextWindowBgAlpha(0.4f);
@@ -129,24 +144,32 @@ void Overlay::draw_menu() {
 #ifdef __ANDROID__
         ImGui::Checkbox("60 Hz display (saves battery)", &s.refresh_60hz);
 #endif
+        ImGui::SeparatorText("Controls");
+        int glyphs = static_cast<int>(s.button_glyphs);
+        if (ImGui::Combo("Button glyphs", &glyphs, "Auto (gamepad)\0PlayStation\0Xbox\0Nintendo\0"))
+            s.button_glyphs = static_cast<ButtonGlyphs>(glyphs);
         ImGui::PopItemWidth();
         if (s != settings_) {
             settings_ = s;
             if (hooks_.apply) hooks_.apply(settings_);
         }
 
+        const char* guide = pad_glyphs() ? guide_name(display_.button_glyphs()) : "Guide button";
 #ifdef __ANDROID__
-        ImGui::SeparatorText("Controls");
         ImGui::TextDisabled("Touch controls hide while a gamepad is used");
-        ImGui::TextDisabled("Menu: MENU button, Back, or the gamepad's Guide");
+        ImGui::TextDisabled("Menu: MENU button, Back, or the gamepad's %s", guide);
 #else
-        ImGui::SeparatorText("Keyboard");
-        ImGui::TextDisabled("Move: arrows / WASD     X O [] /\\: K L J I");
+        ImGui::TextDisabled("Keyboard: move with arrows / WASD     X O [] /\\: K L J I");
         ImGui::TextDisabled("L / R: Q / E     Start: Enter     Select: Backspace");
-        ImGui::TextDisabled("Menu: Esc or F1 (gamepad: Guide, or both sticks)");
+        ImGui::TextDisabled("Menu: Esc or F1 (gamepad: %s, or both sticks)", guide);
 #endif
         ImGui::Separator();
         if (ImGui::Button("Quit game", {width, 0}) && hooks_.quit) hooks_.quit();
+        if (pad_glyphs()) {
+            pad_hint(kCross, "Select");
+            ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+            pad_hint(kCircle, "Back");
+        }
         if (cancel_pressed()) open = false;
     }
     ImGui::End();
@@ -185,7 +208,7 @@ void Overlay::draw_save_dialog() {
                  kDialogFlags | ImGuiWindowFlags_NoResize | (d.slots.empty() ? ImGuiWindowFlags_AlwaysAutoResize : 0));
     if (d.slots.empty()) {
         ImGui::TextUnformatted("There is no save data.");
-        if (ImGui::Button("OK")) chosen = -1;
+        if (button("OK", kCross)) chosen = -1;
     } else {
         const float line = ImGui::GetTextLineHeightWithSpacing();
         const float row_h = line * 4.0f;
@@ -231,18 +254,18 @@ void Overlay::draw_save_dialog() {
             ImGui::PopID();
         }
         ImGui::EndChild();
-        if (ImGui::Button("Cancel")) chosen = -1;
+        if (button("Cancel", kCircle)) chosen = -1;
     }
     if (ask_overwrite) ImGui::OpenPopup("Overwrite?");
     if (ImGui::BeginPopupModal("Overwrite?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("Overwrite this save data?");
-        if (ImGui::Button("Yes")) {
+        if (button("Yes", kCross)) {
             chosen = overwrite_slot_;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SetItemDefaultFocus();
         ImGui::SameLine();
-        if (ImGui::Button("No") || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) ImGui::CloseCurrentPopup();
+        if (button("No", kCircle) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
     if (chosen == -2 && cancel_pressed() && !menu_open_) chosen = -1;

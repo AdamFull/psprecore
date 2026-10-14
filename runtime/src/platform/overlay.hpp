@@ -41,6 +41,11 @@ private:
     void draw_menu();
     void draw_save_dialog();
     void draw_fps();
+    // Gamepad glyphs in the overlay: with a gamepad connected, or when the glyphs were chosen in the settings.
+    bool pad_glyphs() const;
+    // A button; with pad_glyphs(), showing the face button that presses it (the focused item takes Cross).
+    bool button(const char* label, std::uint32_t pad_button);
+    void pad_hint(std::uint32_t pad_button, const char* text);
     void release_icons();
     std::uint64_t icon(const nx::string& path);
 

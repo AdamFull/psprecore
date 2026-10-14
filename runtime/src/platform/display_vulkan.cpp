@@ -86,6 +86,9 @@ struct Display::Impl {
     std::uint32_t keyboard_buttons = 0, gamepad_buttons = 0;
     float key_x = 0, key_y = 0;
     SDL_Gamepad* gamepad = nullptr;
+    ButtonGlyphs glyphs = ButtonGlyphs::Auto;             // the setting
+    ButtonGlyphs pad_glyphs = ButtonGlyphs::PlayStation;  // the connected gamepad's
+    ButtonGlyphs resolved_glyphs() const { return glyphs != ButtonGlyphs::Auto ? glyphs : pad_glyphs; }
     bool menu_request = false;
     bool stick_l = false, stick_r = false;
     TouchControls touch;
@@ -565,6 +568,26 @@ bool Display::poll_events() {
             default: return 0;
         }
     };
+    const auto glyphs_of = [](SDL_Gamepad* pad) {
+        switch (SDL_GetGamepadType(pad)) {
+            case SDL_GAMEPAD_TYPE_PS3:
+            case SDL_GAMEPAD_TYPE_PS4:
+            case SDL_GAMEPAD_TYPE_PS5: return ButtonGlyphs::PlayStation;
+            case SDL_GAMEPAD_TYPE_XBOX360:
+            case SDL_GAMEPAD_TYPE_XBOXONE: return ButtonGlyphs::Xbox;
+            case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+            case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+            case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+            case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return ButtonGlyphs::Nintendo;
+            default: break;
+        }
+        // Other pads by the label of their bottom face button; most generic ones are labelled like Xbox pads.
+        switch (SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_SOUTH)) {
+            case SDL_GAMEPAD_BUTTON_LABEL_CROSS: return ButtonGlyphs::PlayStation;
+            case SDL_GAMEPAD_BUTTON_LABEL_B: return ButtonGlyphs::Nintendo;
+            default: return ButtonGlyphs::Xbox;
+        }
+    };
     for (auto it = d.injected.begin(); it != d.injected.end();) {  // scripted test touches
         if (--it->polls > 0) {
             ++it;
@@ -636,13 +659,14 @@ bool Display::poll_events() {
                 break;
             }
             case SDL_EVENT_GAMEPAD_ADDED:
-                if (!d.gamepad) d.gamepad = SDL_OpenGamepad(e.gdevice.which);
+                if (!d.gamepad && (d.gamepad = SDL_OpenGamepad(e.gdevice.which))) d.pad_glyphs = glyphs_of(d.gamepad);
                 break;
             case SDL_EVENT_GAMEPAD_REMOVED:
                 if (d.gamepad && SDL_GetGamepadID(d.gamepad) == e.gdevice.which) {
                     SDL_CloseGamepad(d.gamepad);
                     d.gamepad = nullptr;
                     d.gamepad_buttons = 0;
+                    d.pad_glyphs = ButtonGlyphs::PlayStation;
                 }
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -715,7 +739,7 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         if (ui) ui();
-        if (touch_mode) touch.draw(ImGui::GetForegroundDrawList());
+        if (touch_mode) touch.draw(ImGui::GetForegroundDrawList(), resolved_glyphs());
         ImGui::Render();
         overlay = ImGui::GetDrawData();
         if (overlay->TotalVtxCount == 0) overlay = nullptr;
@@ -930,6 +954,12 @@ bool Display::take_menu_request() {
 void Display::set_touch_controls(bool visible) { impl_->touch_mode = visible; }
 
 bool Display::touch_controls() const { return impl_->touch_mode; }
+
+bool Display::gamepad_connected() const { return impl_->gamepad != nullptr; }
+
+void Display::set_button_glyphs(ButtonGlyphs glyphs) { impl_->glyphs = glyphs; }
+
+ButtonGlyphs Display::button_glyphs() const { return impl_->resolved_glyphs(); }
 
 void Display::inject_finger(float x, float y, int polls) {
     static SDL_FingerID next = 0x7F000000;
