@@ -66,7 +66,10 @@
 #include "platform/gpu_vulkan.hpp"
 #include "platform/overlay.hpp"
 #include "platform/settings.hpp"
+#include "gpu/button_icons.hpp"
+#include "gpu/hash.hpp"
 #include "gpu/soft_renderer.hpp"
+#include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
 #include "platform/sampling_profiler.hpp"
 #include "ff7cc/runtime/hle.hpp"
@@ -74,6 +77,7 @@
 #include "ff7cc/runtime/kernel.hpp"
 #include "ff7cc/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/hash_map.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
@@ -433,7 +437,8 @@ int main(int argc, char** argv) {
         bool touch = false;
 #endif
         std::uint64_t max_vblanks = 0;
-        std::uint64_t ge_dump_vblank = 0, ge_bench_vblank = 0, profile_vblank = 0;
+        std::uint64_t ge_dump_vblank = 0, ge_bench_vblank = 0, profile_vblank = 0, tex_dump_vblank = 0;
+        nx::string tex_dump_dir;
         std::uint64_t state_hash_every = 0;
         std::uint64_t ram_dump_vblank = 0;
         nx::string ram_dump_path;
@@ -490,6 +495,10 @@ int main(int argc, char** argv) {
             else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(parse_u64(argv[++i]), "ge_dump.txt");
             else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = parse_u64(argv[++i]);
             else if (a == "--ge-bench" && i + 1 < argc) ge_bench_vblank = parse_u64(argv[++i]);
+            else if (a == "--tex-dump" && i + 2 < argc) {
+                tex_dump_vblank = parse_u64(argv[++i]);
+                tex_dump_dir = argv[++i];
+            }
             else if (a == "--profile" && i + 1 < argc) profile_vblank = parse_u64(argv[++i]);
             else if (a == "--soft-threads" && i + 1 < argc) rt::gpu::set_soft_renderer_threads(static_cast<int>(parse_u64(argv[++i])));
             else if (a == "--state-hash" && i + 1 < argc) state_hash_every = parse_u64(argv[++i]);
@@ -624,7 +633,53 @@ int main(int argc, char** argv) {
         };
         nx::vector<BenchDraw> bench_draws;
         std::unique_ptr<platform::SamplingProfiler> profiler;
+        // --tex-dump: every texture drawn during two vblanks as DIR/ADDRESS_fFORMAT_WxH_HASH.png, and per draw the
+        // texture and the texel rectangle it uses (finding the textures of a scene, e.g. for replacement).
+        nx::hash_map<std::uint64_t, int> dumped_textures;
+        const auto tex_dump_tick = [&] {
+            if (!tex_dump_vblank) return;
+            const std::uint64_t vblank = kernel.vblank_count();
+            if (vblank == tex_dump_vblank + 2) rt::set_ge_draw_listener({});  // two vblanks: 30 fps scenes draw every other one
+            if (vblank != tex_dump_vblank) return;
+            nx::fs::create_directories(tex_dump_dir);
+            rt::set_ge_draw_listener([&](const rt::ge::Draw& d) {
+                const rt::ge::State& s = *d.state;
+                if (!s.on(rt::ge::TEXTUREMAPENABLE) || !d.count) return;
+                rt::gpu::TextureSampler t;
+                t.setup(s, memory);
+                nx::vector<std::uint32_t> rgba(static_cast<std::size_t>(t.width()) * static_cast<std::size_t>(t.height()));
+                t.decode(0, rgba.data());
+                const std::uint64_t h = rt::gpu::hash_bytes(rgba.data(), rgba.size() * 4);
+                const std::uint32_t address = rt::ge::vram_canonical(((s.param(rt::ge::TEXBUFWIDTH0) & 0x0F0000) << 8) |
+                                                                     (s.param(rt::ge::TEXADDR0) & 0xFFFFF0));
+                // Named by the texel hash the button icon table uses (gpu/button_icons.cpp).
+                const std::uint64_t texels = rt::gpu::icon_texture_hash(t.level_data(0), t.level_size(0));
+                const nx::string name = nx::format("{:08X}_f{}_{}x{}_{:016X}", address, t.format(), t.width(), t.height(), texels);
+                if (dumped_textures.emplace(h, 0).second)
+                    rt::write_png(path_join(tex_dump_dir, name + ".png"), rgba.data(), t.width(), t.height());
+                if (d.indices) {
+                    std::fprintf(stderr, "tex-dump: prim %u x%u indexed %s\n", d.prim, d.count, name.c_str());
+                    return;
+                }
+                float morph[8];
+                for (int i = 0; i < 8; ++i) morph[i] = s.flt(static_cast<std::uint8_t>(rt::ge::MORPHWEIGHT0 + i));
+                nx::vector<rt::ge::Vertex> v;
+                rt::ge::decode_vertices(s.format, morph, memory.ptr(rt::ge::vram_canonical(d.vertices)), d.count, v);
+                float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f, x0 = 1e9f, y0 = 1e9f;
+                for (const auto& p : v) {
+                    u0 = std::min(u0, p.uv[0]);
+                    v0 = std::min(v0, p.uv[1]);
+                    u1 = std::max(u1, p.uv[0]);
+                    v1 = std::max(v1, p.uv[1]);
+                    x0 = std::min(x0, p.pos[0]);
+                    y0 = std::min(y0, p.pos[1]);
+                }
+                std::fprintf(stderr, "tex-dump: prim %u x%u %s at (%.0f, %.0f) uv %.0f,%.0f-%.0f,%.0f %s\n", d.prim, d.count,
+                             s.format.through ? "2d" : "3d", x0, y0, u0, v0, u1, v1, name.c_str());
+            });
+        };
         const auto bench_tick = [&] {
+            tex_dump_tick();
             if (profile_vblank && kernel.vblank_count() == profile_vblank) profiler = std::make_unique<platform::SamplingProfiler>();
             if (!ge_bench_vblank) return;
             const std::uint64_t vblank = kernel.vblank_count();
@@ -869,6 +924,12 @@ int main(int argc, char** argv) {
                 }
                 if (!window_shot_path.empty() && vblank == window_shot_vblank) window_shot_armed = true;
                 if (!display->poll_events()) kernel.request_quit();
+                if (vulkan_renderer) {  // follows the setting and, for Auto, the gamepad plugged in
+                    const platform::ButtonGlyphs g = display->button_glyphs();
+                    vulkan_renderer->set_button_icons(g == platform::ButtonGlyphs::Xbox       ? rt::gpu::IconStyle::Xbox
+                                                      : g == platform::ButtonGlyphs::Nintendo ? rt::gpu::IconStyle::Nintendo
+                                                                                              : rt::gpu::IconStyle::PlayStation);
+                }
                 if (display->in_background()) {  // Android: hold the game until the app returns
                     if (audio) audio->set_paused(true);
                     while (display->in_background() && !kernel.quit_requested()) {

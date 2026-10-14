@@ -179,6 +179,7 @@ struct VulkanGeRenderer::Impl {
     nx::map<std::uint32_t, std::unique_ptr<Target>> targets;  // by VRAM address
     nx::map<std::uint64_t, std::unique_ptr<Image>> depths;    // by (address, width)
     nx::hash_map<std::uint64_t, Texture> textures;
+    rt::gpu::IconStyle icon_style = rt::gpu::IconStyle::PlayStation;
     Image white;  // bound when texturing is off (the descriptor is always declared)
     Buffer readback;
     VkDeviceSize readback_size = 0;
@@ -798,6 +799,9 @@ struct VulkanGeRenderer::Impl {
             auto* dst = reinterpret_cast<std::uint32_t*>(staging(static_cast<VkDeviceSize>(w) * h * 4, offset));
             if (!dst) break;  // staging full: the level stays undefined this frame (rare)
             ts.decode(static_cast<int>(l), dst);
+            if (l == 0 && icon_style != rt::gpu::IconStyle::PlayStation)
+                if (const auto* atlas = rt::gpu::find_icon_atlas(ts.format(), w, h, ts.level_data(0), ts.level_size(0)))
+                    rt::gpu::draw_button_icons(*atlas, dst, w, icon_style);
             VkBufferImageCopy copy{};
             copy.bufferOffset = offset;
             copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};
@@ -1392,6 +1396,13 @@ void VulkanGeRenderer::transfer(const rt::ge::State& state) { impl_->transfer(st
 VulkanGeRenderer::Stats VulkanGeRenderer::take_stats() { return std::exchange(impl_->stats, Stats{}); }
 
 void VulkanGeRenderer::set_scale(int scale) { impl_->pending_scale = std::max(1, scale); }
+
+void VulkanGeRenderer::set_button_icons(rt::gpu::IconStyle style) {
+    if (impl_->icon_style == style) return;
+    impl_->icon_style = style;
+    for (auto& [_, t] : impl_->textures) impl_->frame().garbage.push_back(t.image);  // destroyed once the slot is reused
+    impl_->textures.clear();
+}
 
 void VulkanGeRenderer::set_msaa(int samples) {
     VkPhysicalDeviceProperties props;

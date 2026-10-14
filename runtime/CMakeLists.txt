@@ -17,6 +17,7 @@ add_library(ff7cc_runtime STATIC
     src/vfpu.cpp
     src/ge.cpp
     src/image_io.cpp
+    src/gpu/button_icons.cpp
     src/gpu/texture.cpp
     src/gpu/soft_renderer.cpp
     src/gpu/vertex_pipeline.cpp
