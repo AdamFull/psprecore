@@ -3,6 +3,7 @@
 // Window, presentation and input (SDL3 + Vulkan). Runs on the host main thread.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 #include "ff7cc/platform/vulkan_context.hpp"
@@ -36,6 +37,24 @@ public:
     void present_image(VkImage image, int width, int height);
     const VulkanContext& vulkan() const;
     PadState pad() const;
+
+    // Dear ImGui overlay: `ui` runs once per presented frame, between ImGui::NewFrame() and ImGui::Render().
+    void set_ui(std::function<void()> ui);
+    // Presents the last frame again with the overlay (while the game is paused); false while minimised.
+    bool present_again();
+    // True once per press of Escape/F1 or the gamepad Guide button (or both stick clicks).
+    bool take_menu_request();
+    void set_fullscreen(bool on);
+    bool fullscreen() const;
+
+    // Testing: reads back the next presented window image (overlay included) as RGBA8.
+    void capture_next_present(std::function<void(const std::uint32_t* rgba, int width, int height)> done);
+    // Testing: queues a key press and release as if typed (SDL keycode), e.g. to drive the overlay.
+    void inject_key(std::uint32_t keycode);
+
+    // Small RGBA8 textures for the overlay (e.g. save icons); the result is an ImTextureID.
+    std::uint64_t create_texture(const std::uint32_t* rgba, int width, int height);
+    void destroy_texture(std::uint64_t texture);
 
 private:
     struct Impl;

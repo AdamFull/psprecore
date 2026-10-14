@@ -1,9 +1,10 @@
 // sceUtilitySavedata: the PSP save/load system dialog.
 //
 // Saves are stored unencrypted under <save dir>/SAVEDATA/<gameName><saveName>/: the game's data file, the
-// icon/picture files it supplies, and PARAM.txt (titles and details, for a future save picker). The list
-// modes normally show a system dialog; until the overlay UI exists, the slot is chosen from the game's focus
-// hint (load: the newest save; save: the focused or first free slot). Status goes INIT -> FINISHED at once.
+// icon/picture files it supplies, and PARAM.txt (titles and details for the save picker). The list modes show
+// the frontend's picker (see set_savedata_ui): the dialog stays RUNNING until answer_save_dialog(). Without a
+// frontend the slot is chosen from the game's focus hint (load: the newest save; save: the focused or first
+// free slot) and the status goes INIT -> FINISHED at once.
 
 #include <algorithm>
 #include <chrono>
@@ -11,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,8 +48,19 @@ constexpr std::uint32_t kErrorLoadBroken = 0x80110308;
 constexpr std::uint32_t kErrorSaveNoSpace = 0x80110383;
 constexpr std::uint32_t kErrorDeleteNoData = 0x80110347;
 
-enum : std::uint32_t { kStatusNone = 0, kStatusInit = 1, kStatusFinished = 3, kStatusShutdown = 4 };
+constexpr std::uint32_t kResultCancelled = 1;
+
+enum : std::uint32_t { kStatusNone = 0, kStatusInit = 1, kStatusRunning = 2, kStatusFinished = 3, kStatusShutdown = 4 };
 std::uint32_t g_status = kStatusNone;
+
+bool g_ui = false;
+struct Pending {
+    std::uint32_t param = 0;
+    std::uint32_t mode = 0;
+    std::string game;
+    SaveDialog dialog;
+};
+std::optional<Pending> g_pending;
 
 std::string guest_string(std::uint32_t addr, std::size_t max) {
     std::string s = mem().string(addr, max);
@@ -87,6 +100,29 @@ void write_file(const fs::path& path, const std::uint8_t* data, std::size_t size
     f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
 }
 
+// PARAM.txt holds one key=value per line; backslashes and newlines in values are escaped.
+std::string escape(std::string_view v) {
+    std::string out;
+    for (const char ch : v) {
+        if (ch == '\\') out += "\\\\";
+        else if (ch == '\n') out += "\\n";
+        else if (ch != '\r') out += ch;
+    }
+    return out;
+}
+std::string unescape(std::string_view v) {
+    std::string out;
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        if (v[i] == '\\' && i + 1 < v.size()) {
+            ++i;
+            out += v[i] == 'n' ? '\n' : v[i];
+        } else {
+            out += v[i];
+        }
+    }
+    return out;
+}
+
 // Optional files (ICON0.PNG etc.): {buf, bufSize, size, unknown}.
 void save_extra(std::uint32_t param, std::uint32_t field, const fs::path& path) {
     const std::uint32_t buf = mem().read32(param + field), size = mem().read32(param + field + 8);
@@ -114,10 +150,10 @@ std::uint32_t do_save(std::uint32_t param, const std::string& game, const std::s
     save_extra(param, kPic1, folder / "PIC1.PNG");
     save_extra(param, kSnd0, folder / "SND0.AT3");
     std::ofstream sfo(folder / "PARAM.txt", std::ios::trunc);
-    sfo << "title=" << guest_string(param + kSfoTitle, 128) << '\n'
-        << "savedata_title=" << guest_string(param + kSfoSavedataTitle, 128) << '\n'
+    sfo << "title=" << escape(guest_string(param + kSfoTitle, 128)) << '\n'
+        << "savedata_title=" << escape(guest_string(param + kSfoSavedataTitle, 128)) << '\n'
         << "parental_level=" << int{*mem().ptr(param + kSfoParental)} << '\n'
-        << "detail=" << guest_string(param + kSfoDetail, 1024) << '\n';
+        << "detail=" << escape(guest_string(param + kSfoDetail, 1024)) << '\n';
     std::fprintf(stderr, "savedata: saved %s/%s (%u bytes)\n", (game + save).c_str(), file.c_str(), size);
     return 0;
 }
@@ -168,12 +204,62 @@ std::string pick_slot(std::uint32_t param, const std::string& game, bool for_sav
     return existing.empty() ? names.front() : newest();
 }
 
+std::int64_t unix_time(fs::file_time_type t) {
+    using namespace std::chrono;
+    const auto sys = system_clock::now() + duration_cast<system_clock::duration>(t - fs::file_time_type::clock::now());
+    return duration_cast<seconds>(sys.time_since_epoch()).count();
+}
+
+SaveSlotInfo slot_info(const std::string& game, const std::string& save, const std::string& file) {
+    SaveSlotInfo info;
+    info.name = save;
+    info.exists = save_exists(game, save, file);
+    if (!info.exists) return info;
+    const fs::path folder = save_folder(game, save);
+    info.time = unix_time(save_time(game, save, file));
+    if (fs::exists(folder / "ICON0.PNG")) info.icon = folder / "ICON0.PNG";
+    std::ifstream sfo(folder / "PARAM.txt");
+    for (std::string line; std::getline(sfo, line);) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq), value = unescape(std::string_view(line).substr(eq + 1));
+        if (key == "savedata_title") info.title = value;
+        else if (key == "detail") info.detail = value;
+    }
+    return info;
+}
+
+// Opens the frontend's picker for a list dialog; the game polls GetStatus until answer_save_dialog().
+void open_dialog(std::uint32_t param, std::uint32_t mode, const std::string& game) {
+    const std::string file = guest_string(param + kFileName, 13);
+    std::vector<std::string> names = save_name_list(param);
+    if (names.empty()) names.push_back(guest_string(param + kSaveName, 20));
+    Pending p{param, mode, game, {}};
+    p.dialog.save = mode == kListSave;
+    const std::string focus = pick_slot(param, game, p.dialog.save);
+    for (const auto& n : names) {
+        SaveSlotInfo info = slot_info(game, n, file);
+        if (!p.dialog.save && !info.exists) continue;
+        if (n == focus) p.dialog.focus = static_cast<int>(p.dialog.slots.size());
+        p.dialog.slots.push_back(std::move(info));
+    }
+    g_pending = std::move(p);
+}
+
 void InitStart(Context& c) {
     const std::uint32_t param = arg(c, 0);
     const std::uint32_t mode = mem().read32(param + kMode);
     const std::string game = guest_string(param + kGameName, 13);
     const std::string save = guest_string(param + kSaveName, 20);
+    const auto names = save_name_list(param);
+    std::fprintf(stderr, "savedata: mode %u, %s%s/%s, %zu names in the list (%s..%s)\n", mode, game.c_str(), save.c_str(),
+                 guest_string(param + kFileName, 13).c_str(), names.size(), names.empty() ? "" : names.front().c_str(), names.empty() ? "" : names.back().c_str());
     std::uint32_t result = 0;
+    if (g_ui && (mode == kListLoad || mode == kListSave)) {
+        open_dialog(param, mode, game);
+        g_status = kStatusInit;
+        return ret(c, 0);
+    }
     switch (mode) {
         case kAutoLoad:
         case kLoad: result = do_load(param, game, save); break;
@@ -210,6 +296,7 @@ void InitStart(Context& c) {
 void GetStatus(Context& c) {
     const std::uint32_t s = g_status;
     if (g_status == kStatusShutdown) g_status = kStatusNone;
+    if (g_status == kStatusInit && g_pending) g_status = kStatusRunning;  // the dialog is now on screen
     ret(c, s);
 }
 void ShutdownStart(Context& c) {
@@ -228,5 +315,27 @@ constexpr HleBinding kBindings[] = {
 }  // namespace
 
 void hle_install_savedata() { hle_bind(kBindings); }
+
+void set_savedata_ui(bool enabled) { g_ui = enabled; }
+
+const SaveDialog* pending_save_dialog() { return g_pending ? &g_pending->dialog : nullptr; }
+
+void answer_save_dialog(int slot) {
+    if (!g_pending) return;
+    const Pending p = std::move(*g_pending);
+    g_pending.reset();
+    std::uint32_t result = p.dialog.slots.empty() ? kErrorLoadNoData : kResultCancelled;
+    if (slot >= 0 && static_cast<std::size_t>(slot) < p.dialog.slots.size()) {
+        const std::string& name = p.dialog.slots[static_cast<std::size_t>(slot)].name;
+        if (p.mode == kListSave) {
+            result = do_save(p.param, p.game, name);
+            if (result == 0) mem().write_string(p.param + kSaveName, name);
+        } else {
+            result = do_load(p.param, p.game, name);
+        }
+    }
+    mem().write32(p.param + kResult, result);
+    g_status = kStatusFinished;
+}
 
 }  // namespace ff7cc::rt

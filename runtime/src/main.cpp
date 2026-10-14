@@ -1,14 +1,19 @@
-// ff7cc — runs the recompiled game (headless for now).
+// ff7cc — runs the recompiled game in a window (or headless, for testing).
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
 //       [--renderer vulkan|soft] [--scale N]   (window only; headless always uses the software renderer)
+//       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
 //       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
 //       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
 //       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
 //       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
 //                                        up/down/left/right/l/r for 6 vblanks; for automated testing)
+//       [--ui VBLANK ACTION]...         (scripted overlay input: menu, enter, escape, up, down, space)
+//       [--window-shot VBLANK out.png]  (captures the window, overlay included; a pause menu opened by --ui
+//                                        closes itself after this capture so the run can continue)
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -17,8 +22,11 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#include <SDL3/SDL_keycode.h>
 
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
@@ -26,6 +34,8 @@
 #include "ff7cc/platform/audio.hpp"
 #include "ff7cc/platform/display.hpp"
 #include "platform/gpu_vulkan.hpp"
+#include "platform/overlay.hpp"
+#include "platform/settings.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
@@ -83,6 +93,11 @@ struct ScriptedPress {
     std::uint32_t buttons;
 };
 
+struct ScriptedUi {
+    std::uint64_t vblank;
+    std::string action;
+};
+
 std::uint32_t button_from_name(std::string_view name) {
     using namespace ff7cc::platform;
     static constexpr std::pair<std::string_view, std::uint32_t> kNames[] = {
@@ -125,10 +140,14 @@ int main(int argc, char** argv) {
         std::string audio_dump;
         fs::path cooked_dir;
         std::string renderer = "vulkan";
-        int scale = 2;
+        int scale = 0;  // 0: from the settings file
+        fs::path settings_path = fs::current_path() / "ff7cc.ini";
         bool no_audio = false, unthrottled = false;
         std::uint64_t max_vblanks = 0;
         std::vector<ScriptedPress> presses;
+        std::vector<ScriptedUi> ui_script;
+        std::uint64_t window_shot_vblank = 0;
+        std::string window_shot_path;
         for (int i = 2; i < argc; ++i) {
             const std::string_view a = argv[i];
             if (a == "--trace") trace = true;
@@ -147,10 +166,19 @@ int main(int argc, char** argv) {
                 renderer = argv[++i];
             } else if (a == "--scale" && i + 1 < argc) {
                 scale = std::max(1, std::stoi(argv[++i]));
+            } else if (a == "--settings" && i + 1 < argc) {
+                settings_path = argv[++i];
             } else if (a == "--cooked" && i + 1 < argc) {
                 cooked_dir = argv[++i];
             } else if (a == "--audio-dump" && i + 1 < argc) {
                 audio_dump = argv[++i];
+            }
+            else if (a == "--ui" && i + 2 < argc) {
+                const std::uint64_t at = std::stoull(argv[++i]);
+                ui_script.push_back({at, argv[++i]});
+            } else if (a == "--window-shot" && i + 2 < argc) {
+                window_shot_vblank = std::stoull(argv[++i]);
+                window_shot_path = argv[++i];
             }
             else if (a == "--press" && i + 2 < argc) {
                 const std::uint64_t at = std::stoull(argv[++i]);
@@ -208,6 +236,9 @@ int main(int argc, char** argv) {
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             };
         platform::VulkanGeRenderer* vulkan_renderer = nullptr;
+        platform::Settings settings = platform::Settings::load(settings_path);
+        if (scale) settings.scale = scale;
+        std::unique_ptr<platform::Overlay> overlay;
         std::unique_ptr<platform::AudioDevice> audio;
         std::unique_ptr<WavRecorder> recorder;
         if (!headless && !no_audio) audio = std::make_unique<platform::AudioDevice>();
@@ -215,11 +246,45 @@ int main(int argc, char** argv) {
         rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
         if (!headless) {
             display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
-            kernel.realtime = !unthrottled;
             const bool gpu = renderer != "soft";
+            const auto apply = [&](const platform::Settings& s) {
+                if (vulkan_renderer) vulkan_renderer->set_scale(s.scale);
+                if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
+                if (audio) audio->set_volume(static_cast<float>(s.volume) / 100.0f);
+                kernel.realtime = s.frame_limit && !unthrottled;
+            };
+            apply(settings);
+            platform::Overlay::Hooks hooks;
+            hooks.apply = apply;
+            hooks.quit = [&] { kernel.request_quit(); };
+            hooks.gpu_renderer = gpu;
+            overlay = std::make_unique<platform::Overlay>(*display, settings, std::move(hooks));
+            display->set_ui([&] { overlay->draw(); });
+            rt::set_savedata_ui(true);
+            // The pause menu stops the game inside on_vblank (the host main thread) until it is closed.
+            bool window_shot_armed = false, window_shot_taken = false;
+            const auto arm_window_shot = [&] {
+                window_shot_armed = false;
+                display->capture_next_present([&](const std::uint32_t* rgba, int w, int h) {
+                    rt::write_png(window_shot_path, rgba, w, h);
+                    window_shot_taken = true;
+                });
+            };
+            const auto pause = [&] {
+                const platform::Settings before = settings;
+                for (int frame = 0; overlay->menu_open() && !kernel.quit_requested(); ++frame) {
+                    if (window_shot_taken && !ui_script.empty()) overlay->close_menu();  // scripted test run
+                    if (window_shot_armed && frame == 5) arm_window_shot();  // auto-sized windows show after a frame
+                    if (!display->poll_events()) kernel.request_quit();
+                    if (display->take_menu_request()) overlay->handle_menu_request();
+                    if (!display->present_again()) std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                }
+                if (settings != before && !settings.save(settings_path))
+                    std::fprintf(stderr, "could not write %s\n", settings_path.string().c_str());
+            };
             if (gpu) {
                 rt::set_ge_renderer_factory([&](rt::GuestMemory& mem) {
-                    auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, scale);
+                    auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale);
                     vulkan_renderer = r.get();
                     return std::unique_ptr<rt::ge::Renderer>(std::move(r));
                 });
@@ -234,9 +299,23 @@ int main(int argc, char** argv) {
                     }
                 });
             }
-            kernel.on_vblank = [&, gpu] {
+            kernel.on_vblank = [&, gpu, pause, arm_window_shot] {
+                const std::uint64_t vblank = kernel.vblank_count();
+                for (const auto& u : ui_script) {
+                    if (u.vblank != vblank) continue;
+                    if (u.action == "menu") overlay->handle_menu_request();
+                    else if (u.action == "enter") display->inject_key(SDLK_RETURN);
+                    else if (u.action == "escape") display->inject_key(SDLK_ESCAPE);
+                    else if (u.action == "up") display->inject_key(SDLK_UP);
+                    else if (u.action == "down") display->inject_key(SDLK_DOWN);
+                    else if (u.action == "space") display->inject_key(SDLK_SPACE);
+                }
+                if (!window_shot_path.empty() && vblank == window_shot_vblank) window_shot_armed = true;
                 if (!display->poll_events()) kernel.request_quit();
-                const auto pad = display->pad();
+                if (display->take_menu_request()) overlay->handle_menu_request();
+                if (overlay->menu_open()) pause();
+                if (window_shot_armed) arm_window_shot();
+                const auto pad = overlay->wants_input() ? platform::PadState{} : display->pad();
                 rt::set_pad(pad.buttons | scripted_buttons(presses, kernel.vblank_count()), pad.lx, pad.ly);
                 if (gpu && !screenshot_path.empty()) {  // captured at the next flip
                     const std::uint64_t n = kernel.vblank_count();

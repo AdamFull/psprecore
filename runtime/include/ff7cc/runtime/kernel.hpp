@@ -157,6 +157,7 @@ public:
     bool realtime = false;           // pace virtual time to the host clock (windowed play)
     std::function<void()> on_vblank;  // runs on the host main thread at every vblank (present, input)
     void request_quit() { quit_ = true; }
+    bool quit_requested() const { return quit_; }
     std::uint64_t max_vblanks = 0;  // stop after this many vblanks (0 = run forever)
 
 private:

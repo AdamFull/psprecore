@@ -147,6 +147,7 @@ struct VulkanGeRenderer::Impl {
     VulkanContext vk;
     rt::GuestMemory& memory;
     int scale;
+    int pending_scale;
 
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -175,7 +176,7 @@ struct VulkanGeRenderer::Impl {
     std::vector<ClipVertex> clip;
     std::vector<GpuVertex> out;
 
-    Impl(const VulkanContext& context, rt::GuestMemory& mem, int s) : vk(context), memory(mem), scale(std::max(1, s)) {}
+    Impl(const VulkanContext& context, rt::GuestMemory& mem, int s) : vk(context), memory(mem), scale(std::max(1, s)), pending_scale(scale) {}
 
     Frame& frame() { return frames[static_cast<std::size_t>(current)]; }
 
@@ -347,6 +348,15 @@ struct VulkanGeRenderer::Impl {
 
     void begin_frame() {
         if (recording) return;
+        if (pending_scale != scale) {
+            // Render targets are rebuilt at the new size and re-seeded from guest VRAM on first use.
+            vkDeviceWaitIdle(vk.device);
+            for (auto& [_, t] : targets) destroy(t.color);
+            for (auto& [_, d] : depths) destroy(d);
+            targets.clear();
+            depths.clear();
+            scale = pending_scale;
+        }
         Frame& f = frame();
         vkWaitForFences(vk.device, 1, &f.fence, VK_TRUE, UINT64_MAX);
         for (Image& img : f.garbage) destroy(img);
@@ -1131,6 +1141,10 @@ void VulkanGeRenderer::draw(const rt::ge::State& state, rt::ge::Prim prim, const
 }
 
 void VulkanGeRenderer::transfer(const rt::ge::State& state) { impl_->transfer(state); }
+
+void VulkanGeRenderer::set_scale(int scale) { impl_->pending_scale = std::max(1, scale); }
+
+int VulkanGeRenderer::scale() const { return impl_->scale; }
 
 VulkanGeRenderer::Output VulkanGeRenderer::finish_frame(std::uint32_t address, std::uint32_t stride, int format,
                                                        std::vector<std::uint32_t>* capture) {

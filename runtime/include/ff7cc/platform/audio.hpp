@@ -16,6 +16,7 @@ public:
     AudioDevice& operator=(const AudioDevice&) = delete;
 
     bool ok() const;
+    void set_volume(float volume);  // master volume, 0..1
     void submit(int source, const std::int16_t* frames, std::size_t count) override;
 
 private:

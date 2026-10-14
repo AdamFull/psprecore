@@ -58,14 +58,16 @@ struct AudioDevice::Impl {
     bool ok = false;
     std::array<Ring, rt::AudioSink::kSources> rings;
     std::vector<std::int32_t> acc;
+    std::atomic<std::int32_t> gain{256};  // master volume, 256 = unity
 
     static void callback(ma_device* device, void* output, const void*, ma_uint32 frames) {
         auto* self = static_cast<Impl*>(device->pUserData);
         self->acc.assign(static_cast<std::size_t>(frames) * 2, 0);
         for (Ring& ring : self->rings) ring.mix_into(self->acc.data(), frames);
         auto* out = static_cast<std::int16_t*>(output);
+        const std::int32_t gain = self->gain.load(std::memory_order_relaxed);
         for (std::size_t i = 0; i < self->acc.size(); ++i)
-            out[i] = static_cast<std::int16_t>(std::clamp(self->acc[i], -32768, 32767));
+            out[i] = static_cast<std::int16_t>(std::clamp((self->acc[i] * gain) >> 8, -32768, 32767));
     }
 };
 
@@ -96,6 +98,10 @@ AudioDevice::~AudioDevice() {
 }
 
 bool AudioDevice::ok() const { return impl_->ok; }
+
+void AudioDevice::set_volume(float volume) {
+    impl_->gain.store(static_cast<std::int32_t>(std::clamp(volume, 0.0f, 1.0f) * 256.0f + 0.5f), std::memory_order_relaxed);
+}
 
 void AudioDevice::submit(int source, const std::int16_t* frames, std::size_t count) {
     if (impl_->ok && source >= 0 && source < kSources) impl_->rings[static_cast<std::size_t>(source)].push(frames, count);

@@ -1,9 +1,12 @@
 // SDL3 window + Vulkan presentation. A frame is either uploaded from the CPU (software renderer) or taken from a
 // GPU image (the Vulkan GE renderer's render target) and blitted, scaled and aspect-preserving, into the
-// swapchain. One frame in flight keeps this simple.
+// swapchain; the Dear ImGui overlay is drawn on top. One frame in flight keeps this simple.
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <imgui.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_vulkan.h>
 #include <volk.h>
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
@@ -16,9 +19,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <functional>
+#include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ff7cc/platform/display.hpp"
@@ -48,6 +54,7 @@ struct Display::Impl {
     VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_UNORM;
     VkExtent2D extent{};
     std::vector<VkImage> images;
+    std::vector<VkImageView> views;
     bool swapchain_dirty = false;
 
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -67,8 +74,28 @@ struct Display::Impl {
     std::uint32_t keyboard_buttons = 0, gamepad_buttons = 0;
     float key_x = 0, key_y = 0;
     SDL_Gamepad* gamepad = nullptr;
+    bool menu_request = false;
+    bool stick_l = false, stick_r = false;
+
+    bool imgui = false;
+    float ui_dpi = 1.0f, ui_scale = 0.0f;  // the font is rasterised at the DPI scale; ui_scale follows the window
+    ImGuiStyle ui_base_style;
+    std::function<void()> ui;
+    VkImage last_source = VK_NULL_HANDLE;  // the last presented frame, for present_again()
+    int last_w = 0, last_h = 0;
+    VkSampler ui_sampler = VK_NULL_HANDLE;
+    struct UiTexture {
+        VkImage image;
+        VmaAllocation memory;
+        VkImageView view;
+    };
+    std::map<std::uint64_t, UiTexture> ui_textures;  // by descriptor set
+    bool can_capture = false;  // swapchain images support TRANSFER_SRC
+    std::function<void(const std::uint32_t*, int, int)> capture;
 
     void create_device();
+    void init_imgui();
+    void shutdown_imgui();
     void create_swapchain();
     void destroy_swapchain();
     void ensure_frame_image(int w, int h);
@@ -253,6 +280,8 @@ void Display::Impl::create_swapchain() {
     sci.imageExtent = extent;
     sci.imageArrayLayers = 1;
     sci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    can_capture = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (can_capture) sci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -262,6 +291,15 @@ void Display::Impl::create_swapchain() {
     vkGetSwapchainImagesKHR(device, swapchain, &count, nullptr);
     images.resize(count);
     vkGetSwapchainImagesKHR(device, swapchain, &count, images.data());
+    views.resize(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = images[i];
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = swapchain_format;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        check(vkCreateImageView(device, &vci, nullptr, &views[i]), "swapchain image view");
+    }
     VkSemaphoreCreateInfo semci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     rendered.resize(count);
     for (auto& s : rendered) check(vkCreateSemaphore(device, &semci, nullptr, &s), "vkCreateSemaphore");
@@ -273,6 +311,8 @@ void Display::Impl::destroy_swapchain() {
     vkDeviceWaitIdle(device);
     for (auto s : rendered) vkDestroySemaphore(device, s, nullptr);
     rendered.clear();
+    for (auto v : views) vkDestroyImageView(device, v, nullptr);
+    views.clear();
     if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
     swapchain = VK_NULL_HANDLE;
     images.clear();
@@ -310,6 +350,81 @@ void Display::Impl::ensure_frame_image(int w, int h) {
     staging_ptr = info.pMappedData;
 }
 
+void Display::Impl::init_imgui() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.IniFilename = nullptr;
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+
+    // A system UI font where one exists (it is not redistributed); otherwise ImGui's built-in font, enlarged.
+    const float dpi = std::max(1.0f, SDL_GetWindowDisplayScale(window));
+    ui_dpi = dpi;
+    const float size = std::round(18.0f * dpi);
+    std::vector<std::filesystem::path> fonts;
+    if (const char* windir = std::getenv("WINDIR")) fonts.push_back(std::filesystem::path(windir) / "Fonts" / "segoeui.ttf");
+    fonts.push_back("/system/fonts/Roboto-Regular.ttf");
+    fonts.push_back("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+    bool loaded = false;
+    for (const auto& f : fonts) {
+        std::error_code ec;
+        if (!std::filesystem::exists(f, ec)) continue;
+        if (io.Fonts->AddFontFromFileTTF(f.string().c_str(), size)) {
+            loaded = true;
+            break;
+        }
+    }
+    if (!loaded) {
+        ImFontConfig config;
+        config.SizePixels = std::round(13.0f * dpi) * 1.5f;
+        io.Fonts->AddFontDefault(&config);
+    }
+    ui_base_style = style;
+
+    ImGui_ImplSDL3_InitForVulkan(window);
+    ImGui_ImplVulkan_InitInfo info{};
+    info.ApiVersion = ctx.api_version;
+    info.Instance = instance;
+    info.PhysicalDevice = gpu;
+    info.Device = device;
+    info.QueueFamily = queue_family;
+    info.Queue = queue;
+    info.DescriptorPoolSize = 64;  // the font atlas plus overlay textures
+    info.MinImageCount = 2;
+    info.ImageCount = std::max<std::uint32_t>(2, static_cast<std::uint32_t>(images.size()));
+    info.UseDynamicRendering = true;
+    info.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
+    info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &swapchain_format;
+    if (!ImGui_ImplVulkan_Init(&info)) throw std::runtime_error("ImGui Vulkan backend initialisation failed");
+
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+    sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.maxLod = 1.0f;
+    check(vkCreateSampler(device, &sci, nullptr, &ui_sampler), "vkCreateSampler");
+    imgui = true;
+}
+
+void Display::Impl::shutdown_imgui() {
+    if (!imgui) return;
+    for (auto& [set, t] : ui_textures) {
+        ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(set));
+        vkDestroyImageView(device, t.view, nullptr);
+        vmaDestroyImage(allocator, t.image, t.memory);
+    }
+    ui_textures.clear();
+    vkDestroySampler(device, ui_sampler, nullptr);
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    imgui = false;
+}
+
 void Display::Impl::update_pad() {
     // Last-used device wins: keyboard and gamepad are combined, analog comes from whichever moved.
     std::uint32_t buttons = keyboard_buttons | gamepad_buttons;
@@ -335,12 +450,14 @@ Display::Display(const char* title, int width, int height) : impl_(std::make_uni
     if (!impl_->window) throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
     impl_->create_device();
     impl_->create_swapchain();
+    impl_->init_imgui();
 }
 
 Display::~Display() {
     auto& d = *impl_;
     if (d.device) {
         vkDeviceWaitIdle(d.device);
+        d.shutdown_imgui();
         d.destroy_swapchain();
         if (d.frame) vmaDestroyImage(d.allocator, d.frame, d.frame_mem);
         if (d.staging) vmaDestroyBuffer(d.allocator, d.staging, d.staging_mem);
@@ -396,12 +513,20 @@ bool Display::poll_events() {
         }
     };
     while (SDL_PollEvent(&e)) {
+        if (d.imgui) ImGui_ImplSDL3_ProcessEvent(&e);
         switch (e.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: d.swapchain_dirty = true; break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
                 const bool down = e.type == SDL_EVENT_KEY_DOWN;
+                if (down && !e.key.repeat) {
+                    if (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_F1) d.menu_request = true;
+                    if (e.key.key == SDLK_F11 || (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT))) {
+                        set_fullscreen(!fullscreen());
+                        break;  // Alt+Enter is not Start
+                    }
+                }
                 if (const auto bit = key_bit(e.key.key)) d.keyboard_buttons = down ? d.keyboard_buttons | bit : d.keyboard_buttons & ~bit;
                 const float v = down ? 1.0f : 0.0f;
                 if (e.key.key == SDLK_A) d.key_x = -v;
@@ -422,6 +547,13 @@ bool Display::poll_events() {
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
             case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+                const bool down = e.gbutton.down;
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE && down) d.menu_request = true;
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_STICK) d.stick_l = down;
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) d.stick_r = down;
+                if (down && d.stick_l && d.stick_r &&
+                    (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_STICK || e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK))
+                    d.menu_request = true;
                 const auto bit = pad_bit(e.gbutton.button);
                 d.gamepad_buttons = e.gbutton.down ? d.gamepad_buttons | bit : d.gamepad_buttons & ~bit;
                 break;
@@ -456,6 +588,27 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
         swapchain_dirty = true;
         return;
     }
+    ImDrawData* overlay = nullptr;
+    if (imgui) {
+        // Scale the UI with the window height (a 544-line window gets about 16 px text), up to the DPI scale.
+        const float scale = std::clamp(std::min(ui_dpi, static_cast<float>(extent.height) / 600.0f), 0.75f, ui_dpi);
+        if (scale != ui_scale) {
+            ui_scale = scale;
+            ImGui::GetStyle() = ui_base_style;
+            ImGui::GetStyle().ScaleAllSizes(scale);
+            ImGui::GetIO().FontGlobalScale = scale / ui_dpi;
+        }
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+        if (ui) ui();
+        ImGui::Render();
+        overlay = ImGui::GetDrawData();
+        if (overlay->TotalVtxCount == 0) overlay = nullptr;
+    }
+    last_source = source;
+    last_w = width;
+    last_h = height;
     vkResetFences(device, 1, &fence);
     vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -489,12 +642,70 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
     blit.dstOffsets[1] = {dx + dw, dy + dh, 1};
     vkCmdBlitImage(cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    VK_FILTER_LINEAR);
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    b.dstAccessMask = 0;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &b);
+    if (overlay) {
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &b);
+        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        color.imageView = views[index];
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        ri.renderArea = {{0, 0}, extent};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &color;
+        ctx.begin_rendering(cmd, &ri);
+        ImGui_ImplVulkan_RenderDrawData(overlay, cmd);
+        ctx.end_rendering(cmd);
+        b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        b.dstAccessMask = 0;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &b);
+    } else {
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = 0;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &b);
+    }
+    VkBuffer readback = VK_NULL_HANDLE;
+    VmaAllocation readback_mem = VK_NULL_HANDLE;
+    void* readback_ptr = nullptr;
+    if (capture && can_capture) {
+        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bci.size = static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo info;
+        check(vmaCreateBuffer(allocator, &bci, &aci, &readback, &readback_mem, &info), "capture buffer");
+        readback_ptr = info.pMappedData;
+        b.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                             1, &b);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {extent.width, extent.height, 1};
+        vkCmdCopyImageToBuffer(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.dstAccessMask = 0;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &b);
+    }
     vkEndCommandBuffer(cmd);
 
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -516,6 +727,22 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
     pi.pImageIndices = &index;
     r = vkQueuePresentKHR(queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_dirty = true;
+
+    if (readback) {
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vmaInvalidateAllocation(allocator, readback_mem, 0, VK_WHOLE_SIZE);
+        std::vector<std::uint32_t> rgba(static_cast<std::size_t>(extent.width) * extent.height);
+        std::memcpy(rgba.data(), readback_ptr, rgba.size() * 4);
+        const bool bgra = swapchain_format == VK_FORMAT_B8G8R8A8_UNORM || swapchain_format == VK_FORMAT_B8G8R8A8_SRGB;
+        for (auto& px : rgba) {
+            if (bgra) px = (px & 0xFF00FF00u) | ((px >> 16) & 0xFFu) | ((px & 0xFFu) << 16);
+            px |= 0xFF000000u;
+        }
+        vmaDestroyBuffer(allocator, readback, readback_mem);
+        const auto done = std::move(capture);
+        capture = nullptr;
+        done(rgba.data(), static_cast<int>(extent.width), static_cast<int>(extent.height));
+    }
 }
 
 void Display::present(const std::uint32_t* rgba, int width, int height) {
@@ -550,6 +777,124 @@ void Display::present_image(VkImage image, int width, int height) {
     auto& d = *impl_;
     if (!d.begin_present()) return;
     d.blit_and_present(image, width, height, {});
+}
+
+bool Display::present_again() {
+    auto& d = *impl_;
+    if (!d.last_source || !d.begin_present()) return false;
+    d.blit_and_present(d.last_source, d.last_w, d.last_h, {});
+    return true;
+}
+
+void Display::capture_next_present(std::function<void(const std::uint32_t*, int, int)> done) {
+    impl_->capture = std::move(done);
+}
+
+void Display::inject_key(std::uint32_t keycode) {
+    const SDL_Scancode scancode = SDL_GetScancodeFromKey(keycode, nullptr);
+    for (const bool down : {true, false}) {
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+        e.key.windowID = SDL_GetWindowID(impl_->window);
+        e.key.key = keycode;
+        e.key.scancode = scancode;
+        e.key.down = down;
+        SDL_PushEvent(&e);
+    }
+}
+
+void Display::set_ui(std::function<void()> ui) { impl_->ui = std::move(ui); }
+
+bool Display::take_menu_request() { return std::exchange(impl_->menu_request, false); }
+
+void Display::set_fullscreen(bool on) { SDL_SetWindowFullscreen(impl_->window, on); }
+
+bool Display::fullscreen() const { return (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_FULLSCREEN) != 0; }
+
+std::uint64_t Display::create_texture(const std::uint32_t* rgba, int width, int height) {
+    auto& d = *impl_;
+    if (!d.imgui || width <= 0 || height <= 0) return 0;
+    Impl::UiTexture t{};
+    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    check(vmaCreateImage(d.allocator, &ici, &aci, &t.image, &t.memory, nullptr), "overlay texture");
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image = t.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    check(vkCreateImageView(d.device, &vci, nullptr, &t.view), "overlay texture view");
+
+    // One-off upload through a temporary staging buffer; waits for the GPU (textures are created rarely).
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * static_cast<VkDeviceSize>(height) * 4;
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.size = bytes;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VmaAllocationCreateInfo sai{};
+    sai.usage = VMA_MEMORY_USAGE_AUTO;
+    sai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VmaAllocation staging_mem = VK_NULL_HANDLE;
+    VmaAllocationInfo info;
+    check(vmaCreateBuffer(d.allocator, &bci, &sai, &staging, &staging_mem, &info), "overlay staging buffer");
+    std::memcpy(info.pMappedData, rgba, bytes);
+
+    vkWaitForFences(d.device, 1, &d.fence, VK_TRUE, UINT64_MAX);
+    vkResetCommandBuffer(d.cmd, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(d.cmd, &bi);
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.image = t.image;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(d.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.imageExtent = ici.extent;
+    vkCmdCopyBufferToImage(d.cmd, staging, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(d.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &b);
+    vkEndCommandBuffer(d.cmd);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &d.cmd;
+    vkResetFences(d.device, 1, &d.fence);
+    check(vkQueueSubmit(d.queue, 1, &si, d.fence), "vkQueueSubmit");
+    vkWaitForFences(d.device, 1, &d.fence, VK_TRUE, UINT64_MAX);
+    vmaDestroyBuffer(d.allocator, staging, staging_mem);
+
+    const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(d.ui_sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    const auto id = reinterpret_cast<std::uint64_t>(set);
+    d.ui_textures.emplace(id, t);
+    return id;
+}
+
+void Display::destroy_texture(std::uint64_t texture) {
+    auto& d = *impl_;
+    const auto it = d.ui_textures.find(texture);
+    if (it == d.ui_textures.end()) return;
+    vkDeviceWaitIdle(d.device);
+    ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(texture));
+    vkDestroyImageView(d.device, it->second.view, nullptr);
+    vmaDestroyImage(d.allocator, it->second.image, it->second.memory);
+    d.ui_textures.erase(it);
 }
 
 }  // namespace ff7cc::platform

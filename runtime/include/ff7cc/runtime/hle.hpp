@@ -55,6 +55,27 @@ void set_flip_handler(std::function<void(std::uint32_t address, std::uint32_t st
 bool read_framebuffer(std::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8
 void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly);
 bool write_png(const std::string& path, const std::uint32_t* rgba, int width, int height);
+bool read_png(const std::string& path, std::vector<std::uint32_t>& rgba, int& width, int& height);  // RGBA8
+
+// Save/load list dialogs (sceUtilitySavedata list modes). With a frontend UI enabled, a dialog stays open
+// (status RUNNING) until the frontend answers it; otherwise a slot is chosen automatically. Both calls are made
+// between guest time slices (e.g. from Kernel::on_vblank), never concurrently with guest code.
+struct SaveSlotInfo {
+    std::string name;    // save name suffix (e.g. "0001")
+    bool exists = false;
+    std::string title;   // SFO savedata title and detail text written by the game (UTF-8)
+    std::string detail;
+    std::filesystem::path icon;  // ICON0.PNG, if any
+    std::int64_t time = 0;       // last write, seconds since the Unix epoch
+};
+struct SaveDialog {
+    bool save = false;  // save (any slot) or load (existing slots only)
+    std::vector<SaveSlotInfo> slots;
+    int focus = 0;      // slot the PSP dialog would highlight first
+};
+void set_savedata_ui(bool enabled);
+const SaveDialog* pending_save_dialog();  // nullptr when no dialog is open
+void answer_save_dialog(int slot);        // index into SaveDialog::slots, or -1 to cancel
 
 // Directory with cooked media (cccook output); sceAtrac/sceMpeg look up replacements there.
 void set_cooked_root(const std::filesystem::path& root);

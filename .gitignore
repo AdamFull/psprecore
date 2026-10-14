@@ -19,6 +19,7 @@ PARAM.SFO
 /cooked/
 /generated/
 /saves/
+/ff7cc.ini
 
 # --- Build output ---
 /build/

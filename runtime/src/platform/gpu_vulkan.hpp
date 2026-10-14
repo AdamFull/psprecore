@@ -30,6 +30,10 @@ public:
     void draw(const rt::ge::State& state, rt::ge::Prim prim, const std::vector<rt::ge::Vertex>& vertices) override;
     void transfer(const rt::ge::State& state) override;
 
+    // Changes the internal resolution scale from the next frame on (render targets are recreated).
+    void set_scale(int scale);
+    int scale() const;
+
     struct Output {
         VkImage image = VK_NULL_HANDLE;  // TRANSFER_SRC_OPTIMAL until the next frame starts
         int width = 0, height = 0;       // displayed region (480x272 times the scale)
