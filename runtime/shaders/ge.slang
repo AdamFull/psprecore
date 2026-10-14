@@ -33,11 +33,15 @@ struct VertexInput {
     [[vk::location(3)]] float4 spec_fog;  // separate specular (rgb) and fog factor (a, 1 = no fog)
 };
 
+struct Varyings {
+    [[vk::location(0)]] float3 uvq;
+    [[vk::location(1)]] float4 color;
+    [[vk::location(2)]] float4 spec_fog;
+};
+
 struct VertexOutput {
     float4 position : SV_Position;
-    float3 uvq;
-    float4 color;
-    float4 spec_fog;
+    Varyings varyings;
     float point_size : SV_PointSize;
 };
 
@@ -45,9 +49,9 @@ struct VertexOutput {
 VertexOutput vertex_main(VertexInput input) {
     VertexOutput o;
     o.position = input.position;
-    o.uvq = input.uvq;
-    o.color = input.color;
-    o.spec_fog = input.spec_fog;
+    o.varyings.uvq = input.uvq;
+    o.varyings.color = input.color;
+    o.varyings.spec_fog = input.spec_fog;
     o.point_size = 1.0;
     return o;
 }
@@ -68,7 +72,7 @@ bool compare(int func, uint a, uint b) {
 uint to_byte(float v) { return uint(clamp(v, 0.0, 1.0) * 255.0 + 0.5); }
 
 [shader("fragment")]
-float4 fragment_main(VertexOutput input) : SV_Target {
+float4 fragment_main(Varyings input) : SV_Target {
     float4 c = input.color;
     if (kClearMode) return c;
 

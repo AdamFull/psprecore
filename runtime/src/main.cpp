@@ -2,6 +2,8 @@
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
+//       [--renderer vulkan|soft] [--scale N]   (window only; headless always uses the software renderer)
+//       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
 //       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
 //       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
 //       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
@@ -23,6 +25,7 @@
 #include "ff7cc/io/file.hpp"
 #include "ff7cc/platform/audio.hpp"
 #include "ff7cc/platform/display.hpp"
+#include "platform/gpu_vulkan.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
@@ -121,6 +124,9 @@ int main(int argc, char** argv) {
         std::string screenshot_path;
         std::string audio_dump;
         fs::path cooked_dir;
+        std::string renderer = "vulkan";
+        int scale = 2;
+        bool no_audio = false, unthrottled = false;
         std::uint64_t max_vblanks = 0;
         std::vector<ScriptedPress> presses;
         for (int i = 2; i < argc; ++i) {
@@ -133,6 +139,14 @@ int main(int argc, char** argv) {
             } else if (a == "--screenshot-every" && i + 2 < argc) {
                 screenshot_every = std::stoull(argv[++i]);
                 screenshot_path = argv[++i];
+            } else if (a == "--unthrottled") {
+                unthrottled = true;
+            } else if (a == "--no-audio") {
+                no_audio = true;
+            } else if (a == "--renderer" && i + 1 < argc) {
+                renderer = argv[++i];
+            } else if (a == "--scale" && i + 1 < argc) {
+                scale = std::max(1, std::stoi(argv[++i]));
             } else if (a == "--cooked" && i + 1 < argc) {
                 cooked_dir = argv[++i];
             } else if (a == "--audio-dump" && i + 1 < argc) {
@@ -175,8 +189,10 @@ int main(int argc, char** argv) {
         // Window + presentation + input, unless running headless.
         std::unique_ptr<platform::Display> display;
         std::vector<std::uint32_t> frame;
+        bool screenshot_pending = false;  // GPU renderer: capture at the next flip
+        std::uint64_t screenshot_at = 0;
         const auto screenshot = [&](const std::vector<std::uint32_t>& rgba, int w, int h) {
-            const std::uint64_t n = kernel.vblank_count();
+            const std::uint64_t n = screenshot_pending ? screenshot_at : kernel.vblank_count();
             if (screenshot_every && n % screenshot_every == 0) {
                 char name[32];
                 std::snprintf(name, sizeof name, "_%06llu.png", static_cast<unsigned long long>(n));
@@ -191,20 +207,46 @@ int main(int argc, char** argv) {
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             };
+        platform::VulkanGeRenderer* vulkan_renderer = nullptr;
         std::unique_ptr<platform::AudioDevice> audio;
         std::unique_ptr<WavRecorder> recorder;
-        if (!headless) audio = std::make_unique<platform::AudioDevice>();
+        if (!headless && !no_audio) audio = std::make_unique<platform::AudioDevice>();
         if (!audio_dump.empty()) recorder = std::make_unique<WavRecorder>(audio_dump, audio.get());
         rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
         if (!headless) {
             display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
-            kernel.realtime = true;
-            kernel.on_vblank = [&] {
+            kernel.realtime = !unthrottled;
+            const bool gpu = renderer != "soft";
+            if (gpu) {
+                rt::set_ge_renderer_factory([&](rt::GuestMemory& mem) {
+                    auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, scale);
+                    vulkan_renderer = r.get();
+                    return std::unique_ptr<rt::ge::Renderer>(std::move(r));
+                });
+                rt::set_flip_handler([&](std::uint32_t address, std::uint32_t stride, std::uint32_t format) {
+                    if (!vulkan_renderer) return;
+                    const bool capture = screenshot_pending;
+                    const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
+                    if (out.image) display->present_image(out.image, out.width, out.height);
+                    if (capture) {
+                        screenshot(frame, out.width, out.height);
+                        screenshot_pending = false;
+                    }
+                });
+            }
+            kernel.on_vblank = [&, gpu] {
                 if (!display->poll_events()) kernel.request_quit();
                 const auto pad = display->pad();
                 rt::set_pad(pad.buttons | scripted_buttons(presses, kernel.vblank_count()), pad.lx, pad.ly);
+                if (gpu && !screenshot_path.empty()) {  // captured at the next flip
+                    const std::uint64_t n = kernel.vblank_count();
+                    if ((screenshot_every && n % screenshot_every == 0) || (!screenshot_every && n == screenshot_vblank)) {
+                        screenshot_pending = true;
+                        screenshot_at = n;
+                    }
+                }
                 int w = 0, h = 0;
-                if (rt::read_framebuffer(frame, w, h)) {
+                if (!gpu && rt::read_framebuffer(frame, w, h)) {
                     display->present(frame.data(), w, h);
                     if (!screenshot_path.empty()) screenshot(frame, w, h);
                 }

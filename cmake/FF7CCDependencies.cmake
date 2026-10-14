@@ -3,6 +3,7 @@
 #   Vulkan headers, volk and VMA from the installed Vulkan SDK.
 
 include(FetchContent)
+include(FF7CCShaders)
 
 FetchContent_Declare(SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git

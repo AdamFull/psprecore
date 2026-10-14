@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -25,13 +26,16 @@ struct DisplayState {
     std::FILE* dump = nullptr;
 } g_display;
 
+std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> g_renderer_factory;
+std::function<void(std::uint32_t, std::uint32_t, std::uint32_t)> g_flip_handler;
+
 std::uint32_t g_pad_buttons = 0;
 std::uint8_t g_pad_lx = 128, g_pad_ly = 128;
 
 ge::Processor& gpu() {
     if (!g_display.ge) {
         g_display.ge = std::make_unique<ge::Processor>(mem());
-        g_display.ge->set_renderer(gpu::make_soft_renderer(mem()));
+        g_display.ge->set_renderer(g_renderer_factory ? g_renderer_factory(mem()) : gpu::make_soft_renderer(mem()));
         g_display.ge->on_command = [](std::uint32_t pc, std::uint32_t word) {
             if (g_display.dump && g_display.frames == g_display.dump_frame)
                 std::fprintf(g_display.dump, "%08X: %08X  %s\n", pc, word, ge::describe(word).c_str());
@@ -57,6 +61,7 @@ void SetFrameBuf(Context& c) {
     g_display.framebuffer = arg(c, 0);
     g_display.stride = arg(c, 1);
     g_display.format = arg(c, 2);
+    if (g_flip_handler && g_display.framebuffer) g_flip_handler(g_display.framebuffer, g_display.stride, g_display.format);
     ret(c, 0);
 }
 void GetFrameBuf(Context& c) {
@@ -131,6 +136,14 @@ constexpr HleBinding kBindings[] = {
 }  // namespace
 
 void hle_install_display() { hle_bind(kBindings); }
+
+void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory) {
+    g_renderer_factory = std::move(factory);
+}
+
+void set_flip_handler(std::function<void(std::uint32_t, std::uint32_t, std::uint32_t)> handler) {
+    g_flip_handler = std::move(handler);
+}
 
 void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly) {
     g_pad_buttons = buttons;

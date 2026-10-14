@@ -8,6 +8,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,6 +17,11 @@
 #include "ff7cc/recomp/recomp.h"
 
 namespace ff7cc::rt {
+
+class GuestMemory;
+namespace ge {
+class Renderer;
+}
 
 struct HleImport {
     const char* library;
@@ -38,6 +45,11 @@ void install_crash_handler();
 
 // Writes every GE command executed during display frame `frame` to `path` (debugging).
 void set_ge_dump(std::uint64_t frame, const char* path);
+
+// GE renderer used for display lists (call before the game starts; default: the software renderer).
+void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory);
+// Called on every framebuffer flip (sceDisplaySetFrameBuf) with the address, stride and pixel format.
+void set_flip_handler(std::function<void(std::uint32_t address, std::uint32_t stride, std::uint32_t format)> handler);
 
 // Display output and controller input for the host frontend.
 bool read_framebuffer(std::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8

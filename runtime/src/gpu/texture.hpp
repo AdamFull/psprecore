@@ -3,6 +3,7 @@
 // GE texture sampling for the software renderer: formats 5650/5551/4444/8888, CLUT4/8/16/32 and the PSP
 // DXT1/3/5 variants, swizzled layouts, wrap/clamp, nearest/bilinear and mip levels.
 
+#include <cstddef>
 #include <cstdint>
 
 #include "ff7cc/runtime/ge.hpp"
@@ -28,6 +29,14 @@ public:
     int levels() const { return levels_; }
     int width(int level = 0) const { return level_[level].width; }
     int height(int level = 0) const { return level_[level].height; }
+
+    // Decodes a whole level to RGBA8, width(level) * height(level) texels.
+    void decode(int level, std::uint32_t* out) const;
+    // Guest memory a level occupies (for change detection), and whether the CLUT affects the texels.
+    const std::uint8_t* level_data(int level) const { return level_[level].data; }
+    std::size_t level_size(int level) const;
+    bool uses_clut() const { return format_ >= 4 && format_ <= 7; }
+    int format() const { return format_; }
 
     // u, v are normalized to the level-0 size (1.0 = full width); the level picks the mip.
     std::uint32_t sample(float u, float v, int level, bool linear) const;

@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "ff7cc/platform/vulkan_context.hpp"
+
 namespace ff7cc::platform {
 
 // PSP controller state (sceCtrl button bits).
@@ -29,6 +31,10 @@ public:
     bool poll_events();
     // Shows a frame of 32-bit RGBA pixels (row-major, `width` pixels per row).
     void present(const std::uint32_t* rgba, int width, int height);
+    // Shows the top-left width x height region of a GPU image (e.g. a GE render target). The image must be in
+    // TRANSFER_SRC_OPTIMAL layout and is left in it; work submitted earlier on the queue is ordered before.
+    void present_image(VkImage image, int width, int height);
+    const VulkanContext& vulkan() const;
     PadState pad() const;
 
 private:

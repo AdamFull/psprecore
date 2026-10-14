@@ -146,6 +146,22 @@ std::uint32_t TextureSampler::texel(const Level& l, int x, int y) const {
     }
 }
 
+void TextureSampler::decode(int level, std::uint32_t* out) const {
+    const Level& l = level_[std::clamp(level, 0, levels_ - 1)];
+    for (int y = 0; y < l.height; ++y)
+        for (int x = 0; x < l.width; ++x) *out++ = texel(l, x, y);
+}
+
+std::size_t TextureSampler::level_size(int level) const {
+    const Level& l = level_[std::clamp(level, 0, levels_ - 1)];
+    if (format_ >= 8) {  // DXT blocks
+        const std::size_t blocks = static_cast<std::size_t>(std::max(l.buffer_width / 4, 1)) * static_cast<std::size_t>((l.height + 3) / 4);
+        return blocks * (format_ == 8 ? 8u : 16u);
+    }
+    static constexpr int kBits[8] = {16, 16, 16, 32, 4, 8, 16, 32};
+    return static_cast<std::size_t>(l.buffer_width) * static_cast<std::size_t>(l.height) * static_cast<std::size_t>(kBits[format_ & 7]) / 8;
+}
+
 int TextureSampler::wrap(int c, int size, bool clamp) const {
     return clamp ? std::clamp(c, 0, size - 1) : c & (size - 1);
 }

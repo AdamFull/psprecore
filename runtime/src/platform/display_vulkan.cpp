@@ -1,6 +1,6 @@
-// SDL3 window + Vulkan presentation. The PSP frame is uploaded into a small image each frame and blitted
-// (scaled, aspect-preserving) into the swapchain. One frame in flight keeps this simple; the GE renderer
-// (Phase 5) will replace the CPU upload with GPU-rendered images.
+// SDL3 window + Vulkan presentation. A frame is either uploaded from the CPU (software renderer) or taken from a
+// GPU image (the Vulkan GE renderer's render target) and blitted, scaled and aspect-preserving, into the
+// swapchain. One frame in flight keeps this simple.
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -41,6 +42,7 @@ struct Display::Impl {
     std::uint32_t queue_family = 0;
     VkQueue queue = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
+    VulkanContext ctx;
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_UNORM;
@@ -71,6 +73,8 @@ struct Display::Impl {
     void destroy_swapchain();
     void ensure_frame_image(int w, int h);
     void update_pad();
+    bool begin_present();
+    void blit_and_present(VkImage source, int width, int height, const std::function<void(VkCommandBuffer)>& prepare);
 };
 
 void Display::Impl::create_device() {
@@ -83,7 +87,7 @@ void Display::Impl::create_device() {
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "FF7CCRECOMP";
-    app.apiVersion = VK_API_VERSION_1_1;
+    app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
     ici.enabledExtensionCount = static_cast<std::uint32_t>(exts.size());
@@ -125,17 +129,46 @@ void Display::Impl::create_device() {
     vkGetPhysicalDeviceProperties(gpu, &props);
     std::fprintf(stderr, "Vulkan device: %s\n", props.deviceName);
 
+    // Vulkan 1.3 where available; otherwise 1.1 + VK_KHR_dynamic_rendering (the GE renderer needs it).
+    const std::uint32_t api = std::min<std::uint32_t>(props.apiVersion, VK_API_VERSION_1_3);
+    std::uint32_t ext_total = 0;
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &ext_total, nullptr);
+    std::vector<VkExtensionProperties> available(ext_total);
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &ext_total, available.data());
+    const auto has_ext = [&](const char* name) {
+        return std::any_of(available.begin(), available.end(), [&](const auto& e) { return std::strcmp(e.extensionName, name) == 0; });
+    };
+    std::vector<const char*> device_exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const bool core13 = api >= VK_API_VERSION_1_3;
+    if (!core13) {
+        if (!has_ext(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) throw std::runtime_error("Vulkan dynamic rendering is not supported");
+        device_exts.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        device_exts.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+        device_exts.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+    }
+    VkPhysicalDeviceFeatures supported;
+    vkGetPhysicalDeviceFeatures(gpu, &supported);
+    VkPhysicalDeviceFeatures enabled{};
+    enabled.logicOp = supported.logicOp;
+    enabled.samplerAnisotropy = supported.samplerAnisotropy;
+    enabled.depthClamp = supported.depthClamp;
+    VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    features13.dynamicRendering = VK_TRUE;
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_khr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
+    dynamic_khr.dynamicRendering = VK_TRUE;
+
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qci.queueFamilyIndex = queue_family;
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
-    const char* device_exts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    dci.pNext = core13 ? static_cast<void*>(&features13) : static_cast<void*>(&dynamic_khr);
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
-    dci.ppEnabledExtensionNames = device_exts;
+    dci.enabledExtensionCount = static_cast<std::uint32_t>(device_exts.size());
+    dci.ppEnabledExtensionNames = device_exts.data();
+    dci.pEnabledFeatures = &enabled;
     check(vkCreateDevice(gpu, &dci, nullptr, &device), "vkCreateDevice");
     volkLoadDevice(device);
     vkGetDeviceQueue(device, queue_family, 0, &queue);
@@ -147,9 +180,30 @@ void Display::Impl::create_device() {
     aci.physicalDevice = gpu;
     aci.device = device;
     aci.instance = instance;
-    aci.vulkanApiVersion = VK_API_VERSION_1_1;
+    aci.vulkanApiVersion = api;
     aci.pVulkanFunctions = &fns;
     check(vmaCreateAllocator(&aci, &allocator), "vmaCreateAllocator");
+
+    ctx.instance = instance;
+    ctx.gpu = gpu;
+    ctx.device = device;
+    ctx.queue = queue;
+    ctx.queue_family = queue_family;
+    ctx.allocator = allocator;
+    ctx.api_version = api;
+    ctx.logic_op = enabled.logicOp;
+    ctx.sampler_anisotropy = enabled.samplerAnisotropy;
+    ctx.depth_clamp = enabled.depthClamp;
+    ctx.begin_rendering = core13 ? vkCmdBeginRendering : vkCmdBeginRenderingKHR;
+    ctx.end_rendering = core13 ? vkCmdEndRendering : vkCmdEndRenderingKHR;
+    for (const VkFormat f : {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(gpu, f, &fp);
+        if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+            ctx.depth_format = f;
+            break;
+        }
+    }
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -381,89 +435,121 @@ bool Display::poll_events() {
 
 PadState Display::pad() const { return impl_->pad; }
 
-void Display::present(const std::uint32_t* rgba, int width, int height) {
-    auto& d = *impl_;
-    if (d.swapchain_dirty || !d.swapchain) {
-        d.destroy_swapchain();
-        d.create_swapchain();
-        if (!d.swapchain) return;
-    }
-    vkWaitForFences(d.device, 1, &d.fence, VK_TRUE, UINT64_MAX);
-    d.ensure_frame_image(width, height);
-    std::memcpy(d.staging_ptr, rgba, static_cast<std::size_t>(width) * height * 4);
+const VulkanContext& Display::vulkan() const { return impl_->ctx; }
 
+// Recreates the swapchain if needed and waits for the previous presentation; false while minimised.
+bool Display::Impl::begin_present() {
+    if (swapchain_dirty || !swapchain) {
+        destroy_swapchain();
+        create_swapchain();
+        if (!swapchain) return false;
+    }
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    return true;
+}
+
+void Display::Impl::blit_and_present(VkImage source, int width, int height,
+                                     const std::function<void(VkCommandBuffer)>& prepare) {
     std::uint32_t index = 0;
-    VkResult r = vkAcquireNextImageKHR(d.device, d.swapchain, UINT64_MAX, d.acquired, VK_NULL_HANDLE, &index);
+    VkResult r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &index);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        d.swapchain_dirty = true;
+        swapchain_dirty = true;
         return;
     }
-    vkResetFences(d.device, 1, &d.fence);
-    vkResetCommandBuffer(d.cmd, 0);
+    vkResetFences(device, 1, &fence);
+    vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(d.cmd, &bi);
+    vkBeginCommandBuffer(cmd, &bi);
+    if (prepare) prepare(cmd);
 
-    const auto barrier = [&](VkImage image, VkImageLayout from, VkImageLayout to, VkAccessFlags src, VkAccessFlags dst) {
-        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        b.oldLayout = from;
-        b.newLayout = to;
-        b.srcAccessMask = src;
-        b.dstAccessMask = dst;
-        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = image;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdPipelineBarrier(d.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &b);
-    };
-    const VkImage target = d.images[index];
-
-    barrier(d.frame, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
-    vkCmdCopyBufferToImage(d.cmd, d.staging, d.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    barrier(d.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-
-    barrier(target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    const VkImage target = images[index];
+    b.image = target;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // ALL_COMMANDS also orders the blit after earlier submissions writing `source` (e.g. the GE renderer).
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
     const VkClearColorValue black{};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(d.cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+    vkCmdClearColorImage(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
     // Fit the frame into the window, keeping its aspect ratio.
-    const double scale = std::min(static_cast<double>(d.extent.width) / width, static_cast<double>(d.extent.height) / height);
+    const double scale = std::min(static_cast<double>(extent.width) / width, static_cast<double>(extent.height) / height);
     const int dw = static_cast<int>(width * scale), dh = static_cast<int>(height * scale);
-    const int dx = (static_cast<int>(d.extent.width) - dw) / 2, dy = (static_cast<int>(d.extent.height) - dh) / 2;
+    const int dx = (static_cast<int>(extent.width) - dw) / 2, dy = (static_cast<int>(extent.height) - dh) / 2;
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.srcOffsets[1] = {width, height, 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[0] = {dx, dy, 0};
     blit.dstOffsets[1] = {dx + dw, dy + dh, 1};
-    vkCmdBlitImage(d.cmd, d.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, VK_FILTER_LINEAR);
-    barrier(target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
-    vkEndCommandBuffer(d.cmd);
+    vkCmdBlitImage(cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   VK_FILTER_LINEAR);
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = 0;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
+    vkEndCommandBuffer(cmd);
 
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.waitSemaphoreCount = 1;
-    si.pWaitSemaphores = &d.acquired;
+    si.pWaitSemaphores = &acquired;
     si.pWaitDstStageMask = &wait_stage;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &d.cmd;
+    si.pCommandBuffers = &cmd;
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = &d.rendered[index];
-    check(vkQueueSubmit(d.queue, 1, &si, d.fence), "vkQueueSubmit");
+    si.pSignalSemaphores = &rendered[index];
+    check(vkQueueSubmit(queue, 1, &si, fence), "vkQueueSubmit");
 
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &d.rendered[index];
+    pi.pWaitSemaphores = &rendered[index];
     pi.swapchainCount = 1;
-    pi.pSwapchains = &d.swapchain;
+    pi.pSwapchains = &swapchain;
     pi.pImageIndices = &index;
-    r = vkQueuePresentKHR(d.queue, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) d.swapchain_dirty = true;
+    r = vkQueuePresentKHR(queue, &pi);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_dirty = true;
+}
+
+void Display::present(const std::uint32_t* rgba, int width, int height) {
+    auto& d = *impl_;
+    if (!d.begin_present()) return;
+    d.ensure_frame_image(width, height);
+    std::memcpy(d.staging_ptr, rgba, static_cast<std::size_t>(width) * height * 4);
+    d.blit_and_present(d.frame, width, height, [&](VkCommandBuffer cmd) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.image = d.frame;
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &b);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
+        vkCmdCopyBufferToImage(cmd, d.staging, d.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &b);
+    });
+}
+
+void Display::present_image(VkImage image, int width, int height) {
+    auto& d = *impl_;
+    if (!d.begin_present()) return;
+    d.blit_and_present(image, width, height, {});
 }
 
 }  // namespace ff7cc::platform
