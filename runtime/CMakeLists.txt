@@ -17,6 +17,7 @@ add_library(ff7cc_runtime STATIC
     src/image_io.cpp
     src/gpu/texture.cpp
     src/gpu/soft_renderer.cpp
+    src/audio/sas.cpp
 )
 if(WIN32)
     target_link_libraries(ff7cc_runtime PRIVATE dbghelp)
@@ -38,9 +39,10 @@ if(FF7CC_BUILD_GAME AND EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
     endif()
     set_source_files_properties(${_ff7cc_generated_sources} PROPERTIES COMPILE_OPTIONS "${_ff7cc_generated_flags}")
 
-    add_executable(ff7cc src/main.cpp src/platform/display_vulkan.cpp ${_ff7cc_generated_sources})
+    add_executable(ff7cc src/main.cpp src/platform/display_vulkan.cpp src/platform/audio_miniaudio.cpp
+                         ${_ff7cc_generated_sources})
     target_include_directories(ff7cc PRIVATE "${FF7CC_GENERATED_DIR}")
-    target_link_libraries(ff7cc PRIVATE ff7cc::runtime ff7cc::formats SDL3::SDL3-static ff7cc_vulkan)
+    target_link_libraries(ff7cc PRIVATE ff7cc::runtime ff7cc::formats SDL3::SDL3-static ff7cc_vulkan ff7cc_miniaudio)
     ff7cc_target_defaults(ff7cc)
 else()
     message(STATUS "FF7CC: no generated code in ${FF7CC_GENERATED_DIR} (run ccrecomp to create it)")

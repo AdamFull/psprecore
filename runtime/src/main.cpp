@@ -2,6 +2,7 @@
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
+//       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
 //       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
 //                                        up/down/left/right/l/r for 6 vblanks; for automated testing)
 
@@ -19,6 +20,7 @@
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/io/file.hpp"
+#include "ff7cc/platform/audio.hpp"
 #include "ff7cc/platform/display.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
@@ -28,6 +30,49 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+// Records every audio source to <prefix>_<source>.wav (and forwards to the device, if any). For testing.
+class WavRecorder final : public ff7cc::rt::AudioSink {
+public:
+    WavRecorder(std::string prefix, ff7cc::rt::AudioSink* next) : prefix_(std::move(prefix)), next_(next) {}
+    ~WavRecorder() override { flush(); }
+
+    void submit(int source, const std::int16_t* frames, std::size_t count) override {
+        if (source >= 0 && source < kSources) samples_[source].insert(samples_[source].end(), frames, frames + count * 2);
+        if (next_) next_->submit(source, frames, count);
+    }
+    void flush() {
+        for (int s = 0; s < kSources; ++s) {
+            const auto& pcm = samples_[s];
+            if (pcm.empty()) continue;
+            const std::string path = prefix_ + "_" + std::to_string(s) + ".wav";
+            std::FILE* f = std::fopen(path.c_str(), "wb");
+            if (!f) continue;
+            const auto put32 = [f](std::uint32_t v) { std::fwrite(&v, 4, 1, f); };
+            const auto put16 = [f](std::uint16_t v) { std::fwrite(&v, 2, 1, f); };
+            const auto bytes = static_cast<std::uint32_t>(pcm.size() * 2);
+            std::fwrite("RIFF", 1, 4, f);
+            put32(36 + bytes);
+            std::fwrite("WAVEfmt ", 1, 8, f);
+            put32(16);
+            put16(1);  // PCM
+            put16(2);
+            put32(44100);
+            put32(44100 * 4);
+            put16(4);
+            put16(16);
+            std::fwrite("data", 1, 4, f);
+            put32(bytes);
+            std::fwrite(pcm.data(), 2, pcm.size(), f);
+            std::fclose(f);
+        }
+    }
+
+private:
+    std::string prefix_;
+    ff7cc::rt::AudioSink* next_;
+    std::vector<std::int16_t> samples_[kSources];
+};
 
 struct ScriptedPress {
     std::uint64_t vblank;
@@ -73,6 +118,7 @@ int main(int argc, char** argv) {
         bool trace = false, headless = false;
         std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
         std::string screenshot_path;
+        std::string audio_dump;
         std::uint64_t max_vblanks = 0;
         std::vector<ScriptedPress> presses;
         for (int i = 2; i < argc; ++i) {
@@ -85,6 +131,8 @@ int main(int argc, char** argv) {
             } else if (a == "--screenshot-every" && i + 2 < argc) {
                 screenshot_every = std::stoull(argv[++i]);
                 screenshot_path = argv[++i];
+            } else if (a == "--audio-dump" && i + 1 < argc) {
+                audio_dump = argv[++i];
             }
             else if (a == "--press" && i + 2 < argc) {
                 const std::uint64_t at = std::stoull(argv[++i]);
@@ -134,6 +182,11 @@ int main(int argc, char** argv) {
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             };
+        std::unique_ptr<platform::AudioDevice> audio;
+        std::unique_ptr<WavRecorder> recorder;
+        if (!headless) audio = std::make_unique<platform::AudioDevice>();
+        if (!audio_dump.empty()) recorder = std::make_unique<WavRecorder>(audio_dump, audio.get());
+        rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
         if (!headless) {
             display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
             kernel.realtime = true;
@@ -154,6 +207,7 @@ int main(int argc, char** argv) {
         const int code = kernel.run(kLoadBase + module.entry, static_cast<std::uint32_t>(boot_path.size() + 1), args);
         std::fprintf(stderr, "stopped after %.3f s of guest time (%llu vblanks)\n",
                      static_cast<double>(kernel.now()) / 1e6, static_cast<unsigned long long>(kernel.vblank_count()));
+        if (recorder) recorder->flush();
         if (trace || headless) kernel.dump_threads(stderr);
         std::fflush(stderr);
         std::_Exit(code);  // guest threads may still be parked on their batons
