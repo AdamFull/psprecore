@@ -7,6 +7,7 @@
 #include <exception>
 
 #include "psprecore/analysis/program.hpp"
+#include "psprecore/cli.hpp"
 #include "psprecore/error.hpp"
 #include "psprecore/formats/elf.hpp"
 #include "psprecore/formats/prx.hpp"
@@ -22,18 +23,6 @@
 using namespace psprecore;
 
 namespace {
-
-void usage() {
-    std::fputs(
-        "usage: psprx <command> [args]\n"
-        "\n"
-        "  info    <module>                      module info, segments, imports/exports, relocations\n"
-        "  imports <module> [nids.tsv]           every imported function (named when a NID database is given)\n"
-        "  nids    <sdk-lib-dir> <nids.tsv>      build a NID database from PSPSDK stub libraries (lib*.a)\n"
-        "  image   <module> <base> <out.bin>     write the loaded, relocated image (e.g. base 0x08804000)\n"
-        "  disasm  <module> [section]            objdump-style listing (default .text, module-relative)\n",
-        stderr);
-}
 
 // library \t nid (hex) \t name; lines without all three fields are skipped.
 nx::map<std::uint32_t, nx::string> load_nids(nx::fs::path_view path) {
@@ -264,24 +253,41 @@ int cmd_disasm(nx::fs::path_view path, nx::string_view section_name) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const nx::vector<nx::string_view> args(argv + 1, argv + argc);
-    if (args.empty() || args[0] == "-h" || args[0] == "--help") {
-        usage();
-        return args.empty() ? 2 : 0;
-    }
+    nx::string module, nids, out, section = ".text", base, ghidra;
+    nx::cli::Parser cli("psprx", "Inspects PSP PRX modules (e.g. BOOT.BIN).");
+    cli.command("info", "module info, segments, imports/exports, relocations").positional("module", module, "the PRX");
+    cli.command("imports", "every imported function (named when a NID database is given)")
+        .positional("module", module, "the PRX")
+        .positional("nids", nids, "NID database (psprx nids)", {.required = false});
+    cli.command("nids", "build a NID database from PSPSDK stub libraries (lib*.a)")
+        .positional("sdk-lib-dir", module, "the SDK's psp/sdk/lib folder")
+        .positional("out", out, "the database to write (.tsv)");
+    cli.command("image", "write the loaded, relocated image")
+        .positional("module", module, "the PRX")
+        .positional("base", base, "load address, e.g. 0x08804000")
+        .positional("out", out, "the image to write");
+    cli.command("disasm", "objdump-style listing (module-relative addresses)")
+        .positional("module", module, "the PRX or ELF object")
+        .positional("section", section, "section to list (default: .text)", {.required = false});
+    cli.command("symbols", "function list with recovered names, optionally as a Ghidra import")
+        .positional("module", module, "the PRX")
+        .positional("nids", nids, "NID database")
+        .positional("out", out, "symbols to write (.tsv)")
+        .positional("base", base, "load address of the Ghidra program", {.required = false})
+        .positional("ghidra", ghidra, "Ghidra symbol file to write (needs <base>)", {.required = false});
+    nx::string command;
+    if (const int code = parse_command_line(cli, argc, argv, &command); code >= 0) return code;
     try {
-        const auto cmd = args[0];
-        if (cmd == "info" && args.size() == 2) return cmd_info(args[1]);
-        if (cmd == "imports" && (args.size() == 2 || args.size() == 3))
-            return cmd_imports(args[1], args.size() == 3 ? args[2] : nx::string_view());
-        if (cmd == "nids" && args.size() == 3) return cmd_nids(args[1], args[2]);
-        if (cmd == "disasm" && (args.size() == 2 || args.size() == 3))
-            return cmd_disasm(args[1], args.size() == 3 ? args[2] : nx::string_view(".text"));
-        if (cmd == "symbols" && (args.size() == 4 || args.size() == 6))
-            return cmd_symbols(args[1], args[2], args[3], args.size() == 6 ? parse_address(args[4]) : 0,
-                               args.size() == 6 ? args[5] : nx::string_view());
-        if (cmd == "image" && args.size() == 4) return cmd_image(args[1], args[2], args[3]);
-        usage();
+        if (command == "info") return cmd_info(module);
+        if (command == "imports") return cmd_imports(module, nids);
+        if (command == "nids") return cmd_nids(module, out);
+        if (command == "image") return cmd_image(module, base, out);
+        if (command == "disasm") return cmd_disasm(module, section);
+        if (command == "symbols") {
+            if (base.empty() != ghidra.empty()) throw Error("symbols: give both <base> and <ghidra>, or neither");
+            return cmd_symbols(module, nids, out, base.empty() ? 0 : parse_address(base), ghidra);
+        }
+        std::fputs(cli.help().c_str(), stderr);
         return 2;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "psprx: %s\n", e.what());

@@ -1,12 +1,13 @@
 // psprecomp — translate BOOT.BIN into C (see docs/recompiler.md).
 //
-//   psprecomp <BOOT.BIN> <output dir> [--overrides DIR] [--per-file N]
+//   psprecomp <BOOT.BIN> <output dir> [--overrides DIR] [--per-file N]     (--help)
 
 #include <algorithm>
 #include <cstdio>
 #include <exception>
 
 #include "psprecore/analysis/program.hpp"
+#include "psprecore/cli.hpp"
 #include "psprecore/error.hpp"
 #include "psprecore/formats/elf.hpp"
 #include "psprecore/formats/prx.hpp"
@@ -71,22 +72,20 @@ nx::set<std::uint32_t> scan_overrides(nx::fs::path_view dir) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::fputs("usage: psprecomp <BOOT.BIN> <output dir> [--overrides DIR] [--per-file N]\n"
-                   "  --overrides DIR   scan DIR for GAME_FUNC(XXXXXXXX, ...) replacements (default: none)\n",
-                   stderr);
-        return 2;
-    }
+    nx::string input, out_dir, overrides;
+    std::size_t per_file = 200;
+    nx::cli::Parser cli("psprecomp", "Translates a PSP executable (an unencrypted PRX such as BOOT.BIN) into C.");
+    cli.root()
+        .positional("module", input, "the executable (BOOT.BIN)")
+        .positional("out", out_dir, "output folder: funcs.h, lookup.c and funcs_NNN.c")
+        .option("overrides", overrides, "folder scanned for GAME_FUNC(XXXXXXXX, ...) replacements: their originals are "
+                                        "generated as f_XXXXXXXX_orig", {.value_name = "DIR"})
+        .option("per-file", per_file, "functions per .c file (default: 200)", {.value_name = "N"});
+    if (const int code = parse_command_line(cli, argc, argv); code >= 0) return code;
     try {
-        const nx::string_view input = argv[1], out_dir = argv[2];
-        std::size_t per_file = 200;
         recomp::Options options;
-        for (int i = 3; i < argc; ++i) {
-            const nx::string_view a = argv[i];
-            if (a == "--overrides" && i + 1 < argc) options.overrides = scan_overrides(argv[++i]);
-            else if (a == "--per-file" && i + 1 < argc) per_file = parse_u64(argv[++i]);
-            else throw Error(nx::string("unknown option ") + a);
-        }
+        if (!overrides.empty()) options.overrides = scan_overrides(overrides);
+        if (per_file == 0) per_file = 1;
 
         const auto data = io::read_all(input);
         const elf::File file(data);
@@ -120,7 +119,7 @@ int main(int argc, char** argv) {
         const auto& s = gen.stats();
         std::printf("%zu functions, %zu instructions, %zu jump tables, %zu tail calls, %zu weak-symbol calls"
                     " -> %zu files in %s\n",
-                    s.functions, s.instructions, s.jump_tables, s.tail_calls, s.null_calls, files, argv[2]);
+                    s.functions, s.instructions, s.jump_tables, s.tail_calls, s.null_calls, files, out_dir.c_str());
         if (!options.overrides.empty())
             std::printf("%zu of %zu overrides matched a function\n", s.overrides, options.overrides.size());
         std::printf("%zu warnings\n", s.warnings.size());
