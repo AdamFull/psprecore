@@ -1,6 +1,6 @@
-// ff7cc — runs the recompiled game in a window (or headless, for testing).
+// The front end (ff7cc/platform/frontend.hpp): runs the recompiled game in a window (or headless, for testing).
 //
-//   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
+//   <game> <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
 //       [--renderer vulkan|soft|compare] [--scale N]   (window only, default: the setting, which the pause menu
 //                                        changes; headless always uses the software renderer;
@@ -18,8 +18,8 @@
 //       [--clock UNIX]                  (guest wall clock at boot; default: now, or the recording's)
 //       [--saves DIR]                   (save data folder; default: saves/ next to the settings; recordings
 //                                        snapshot it to <file>.saves and replays run on a copy of that)
-//       [--mods DIR]                    (mod folders, each with pkg/NNNNN.* entry replacements; default ./mods)
-//       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
+//       [--mods DIR]                    (mod folders, for the game's mount hook; default ./mods)
+//       [--settings FILE]               (default ./<game>.ini; written when changed in the pause menu)
 //       [--touch]                       (show the on-screen touch controls from the start; default on Android)
 //       [--perf]                        (prints host time per 300 vblanks and display frames)
 //       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
@@ -48,7 +48,6 @@
 
 #include <SDL3/SDL_keycode.h>
 #ifdef __ANDROID__
-#include <SDL3/SDL_main.h>  // main() becomes SDL_main, called by SDLActivity
 #include <SDL3/SDL_messagebox.h>
 #include <SDL3/SDL_system.h>
 #include <android/log.h>
@@ -63,10 +62,11 @@
 #include "ff7cc/text.hpp"
 #include "ff7cc/platform/audio.hpp"
 #include "ff7cc/platform/display.hpp"
+#include "ff7cc/platform/frontend.hpp"
 #include "platform/gpu_vulkan.hpp"
 #include "platform/overlay.hpp"
 #include "platform/settings.hpp"
-#include "gpu/button_icons.hpp"
+#include "ff7cc/gpu/button_icons.hpp"
 #include "gpu/hash.hpp"
 #include "gpu/soft_renderer.hpp"
 #include "gpu/texture.hpp"
@@ -327,7 +327,6 @@ using namespace ff7cc;
 
 namespace {
 
-constexpr std::uint32_t kLoadBase = 0x08804000;  // must match the base ccrecomp translated for
 
 #ifdef __ANDROID__
 // The runtime logs to stderr; on Android forward it line by line to logcat (tag "ff7cc") and to `log_path`
@@ -378,13 +377,14 @@ void finish_stderr() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int ff7cc::platform::run_game(const GameInfo& game, int argc, char** argv) {
+    const std::uint32_t kLoadBase = game.load_base;  // must match the base ccrecomp translated for
     // Saves, settings and cooked media live in the working directory on desktop and in the app's external
     // files directory (Android/data/<package>/files) on Android, next to the extracted game folder.
     nx::string data_dir = ".";
 #ifdef __ANDROID__
     if (const char* ext = SDL_GetAndroidExternalStoragePath()) data_dir = ext;
-    redirect_stderr_to_logcat(path_join(data_dir, "ff7cc.log"));
+    redirect_stderr_to_logcat(path_join(data_dir, nx::format("{}.log", game.name)));
     if (argc > 1) {  // launch-intent options (testing)
         std::fprintf(stderr, "arguments:");
         for (int i = 1; i < argc; ++i) std::fprintf(stderr, " [%s]", argv[i]);
@@ -393,7 +393,7 @@ int main(int argc, char** argv) {
     // Options may come from the launch intent (GameActivity); a leading non-option argument is the game folder.
     const bool explicit_dir = argc >= 2 && nx::string_view(argv[1]).substr(0, 2) != "--";
     const int first_option = explicit_dir ? 2 : 1;
-    const nx::string game_dir = explicit_dir ? nx::string(argv[1]) : path_join(data_dir, "Crisis Core - Final Fantasy VII EU");
+    const nx::string game_dir = explicit_dir ? nx::string(argv[1]) : path_join(data_dir, game.folder);
     // A folder created by `adb push` before the app's first start belongs to the shell user, and the app is then
     // denied access to it.
     const auto probe = nx::fs::open_file(path_join(game_dir, "PSP_GAME", "SYSDIR", "BOOT.BIN"));
@@ -415,7 +415,7 @@ int main(int argc, char** argv) {
     }
 #else
     if (argc < 2) {
-        std::fputs("usage: ff7cc <extracted disc folder> [--trace] [--vblanks N]\n", stderr);
+        std::fprintf(stderr, "usage: %s <extracted disc folder> [--trace] [--vblanks N]\n", game.name);
         return 2;
     }
     const nx::string game_dir = argv[1];
@@ -429,7 +429,7 @@ int main(int argc, char** argv) {
         nx::string cooked_dir;
         nx::string renderer;  // empty: the setting (Vulkan or software, switchable in the pause menu)
         int scale = 0;  // 0: from the settings file
-        nx::string settings_path = path_join(data_dir, "ff7cc.ini");
+        nx::string settings_path = path_join(data_dir, nx::format("{}.ini", game.name));
         bool no_audio = false, unthrottled = false, perf = false, mute = false;
 #ifdef __ANDROID__
         bool touch = true;  // shown until a gamepad is used
@@ -546,7 +546,7 @@ int main(int argc, char** argv) {
             if (nx::fs::exists(saves)) (void)nx::fs::copy(saves, snapshot, true);
         }
         rt::set_storage(game_dir, saves);
-        rt::set_mods(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
+        if (game.mount) game.mount(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
 
         // Input recording / replay. A replay also fixes the guest clock to the recording's.
         std::unique_ptr<InputReplay> replay;
@@ -814,7 +814,7 @@ int main(int argc, char** argv) {
         if (!audio_dump.empty()) recorder = std::make_unique<WavRecorder>(audio_dump, audio.get());
         rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
         if (!headless) {
-            display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
+            display = std::make_unique<platform::Display>(game.title, 960, 544);
             display->set_touch_controls(touch);
             // The renderer can change at run time (pause menu) unless the command line fixed it.
             const bool renderer_choice = renderer.empty();

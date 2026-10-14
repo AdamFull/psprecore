@@ -1,8 +1,8 @@
 // IoFileMgrForUser and sceUmdUser.
 //
-// disc0:/... maps to the extracted disc folder, ms0:/... to the host save folder. The game reads discimg.pkg
-// through the raw UMD block devices (umd0:/umd1:): seeks are absolute sectors and reads are sector counts.
-// sceIoGetstat reports discimg.pkg at kPkgLbn, the LBN PPSSPP assigns, so logs stay comparable.
+// disc0:/... maps to the extracted disc folder, ms0:/... to the host save folder. Games that read an archive
+// through the raw UMD block devices (umd0:/umd1:: seeks are absolute sectors, reads are sector counts) get the
+// file mapped with map_disc_file at its LBN. A DiscOverlay (mods) can change those sectors and whole files.
 
 #include <algorithm>
 #include <cstdio>
@@ -10,7 +10,6 @@
 #include <memory>
 #include <span>
 
-#include "ff7cc/formats/pkg.hpp"
 #include "ff7cc/io/file.hpp"
 #include "ff7cc/io/path.hpp"
 #include "ff7cc/text.hpp"
@@ -20,13 +19,14 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/format.h"
 #include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
 namespace {
 
-constexpr std::uint32_t kSector = 2048, kPkgLbn = 0x463;
+constexpr std::uint32_t kSector = 2048;
 constexpr std::uint32_t kErrorNotFound = 0x80010002, kErrorBadFile = 0x80020323;
 
 nx::string g_game_dir, g_save_dir;
@@ -40,7 +40,7 @@ struct OpenFile {
     bool writable = false;
     nx::vector<char> contents;
     nx::string host;
-    const nx::vector<char>* memory = nullptr;  // served from memory (the patched discimg.fse)
+    const nx::vector<char>* memory = nullptr;  // served from memory (a file replaced by the disc overlay)
     std::uint64_t memory_pos = 0;               // position in `contents` or `memory`
     bool block = false;        // umd0:/umd1:
     std::uint64_t sector = 0;  // block devices: current absolute LBN
@@ -58,46 +58,28 @@ struct OpenDir {
 };
 nx::map<int, OpenDir> g_dirs;
 
-nx::fs::stream_ptr g_pkg;  // discimg.pkg for block reads
-std::uint64_t g_pkg_sectors = 0;
-
-// Mod overlay (set_mods): a virtual archive with every entry in its original order, as a repacked archive would
-// have them (the original is laid out contiguously, so without mods the layout is identical). Entries after a
-// resized one move; the game finds files only through discimg.fse, which it is given patched. Keeping the order
-// matters: the game treats files by position (moving a module past the movies changes how it is loaded).
-struct VirtualEntry {
-    std::uint64_t sector = 0, sectors = 0;  // virtual position, relative to the start of discimg.pkg
-    std::uint64_t source_sector = 0;        // original position (unmodified entries)
-    nx::string mod;                         // replacement file, if any
-};
-nx::vector<VirtualEntry> g_virtual;  // empty when no mod replaces anything
-nx::vector<char> g_patched_fse;
-
-// Reads `count` sectors of the virtual archive starting at `first` (relative to its start) into `out`.
-void read_virtual(std::uint64_t first, std::uint64_t count, char* out) {
-    auto it = std::upper_bound(g_virtual.begin(), g_virtual.end(), first,
-                               [](std::uint64_t s, const VirtualEntry& e) { return s < e.sector; });
-    if (it != g_virtual.begin()) --it;
-    for (std::uint64_t s = first, end = first + count; s < end && it != g_virtual.end(); ++it) {
-        if (it->sectors == 0 || it->sector + it->sectors <= s) continue;
-        if (it->sector >= end) break;
-        const std::uint64_t from = std::max(s, it->sector), to = std::min(end, it->sector + it->sectors);
-        char* dst = out + (from - first) * kSector;
-        const auto bytes = static_cast<std::size_t>((to - from) * kSector);
-        if (it->mod.empty()) {
-            if (g_pkg && g_pkg->seek(static_cast<std::int64_t>((it->source_sector + from - it->sector) * kSector)))
-                (void)g_pkg->read(dst, bytes);
-        } else if (auto mod = nx::fs::open_file(it->mod); mod.has_value()) {
-            if (mod.value()->seek(static_cast<std::int64_t>((from - it->sector) * kSector)))
-                (void)mod.value()->read(dst, bytes);  // the last sector is zero-padded
-        }
-        s = to;
-    }
-}
+// The file read through the block devices (map_disc_file).
+nx::string g_mapped_path;  // relative to the disc folder, lower case
+std::uint32_t g_mapped_lbn = 0;
+nx::fs::stream_ptr g_mapped;
+std::unique_ptr<DiscOverlay> g_overlay;
 
 nx::string lower(nx::string s) {
     for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return s;
+}
+
+// Guest path on the disc -> path relative to the disc folder, lower case with '/' (empty for other devices).
+nx::string disc_relative(const nx::string& guest) {
+    const auto colon = guest.find(':');
+    if (colon == nx::string::npos) return {};
+    const nx::string device = lower(guest.substr(0, colon));
+    if (device != "disc0" && device != "umd0" && device != "umd1") return {};
+    nx::string rest = lower(guest.substr(colon + 1));
+    for (auto& ch : rest)
+        if (ch == '\\') ch = '/';
+    while (!rest.empty() && rest.front() == '/') rest.erase(0, 1);
+    return rest;
 }
 
 // Guest path -> host path (empty if the device is not backed by files).
@@ -119,10 +101,9 @@ bool is_block_device(const nx::string& guest) {
 
 std::int64_t block_read(OpenFile& f, std::uint32_t buffer, std::uint32_t sectors) {
     nx::vector<char> data(static_cast<std::size_t>(sectors) * kSector, 0);
-    if (f.sector >= kPkgLbn && !g_virtual.empty()) {
-        read_virtual(f.sector - kPkgLbn, sectors, data.data());
-    } else if (f.sector >= kPkgLbn && g_pkg) {
-        if (g_pkg->seek(static_cast<std::int64_t>((f.sector - kPkgLbn) * kSector))) (void)g_pkg->read(data.data(), data.size());
+    if (f.sector >= g_mapped_lbn && !g_mapped_path.empty()) {
+        if (g_overlay) g_overlay->read_sectors(f.sector - g_mapped_lbn, sectors, data.data());
+        else read_disc_sectors(f.sector - g_mapped_lbn, sectors, data.data());
     }
     std::memcpy(mem().ptr(buffer), data.data(), data.size());
     f.sector += sectors;
@@ -174,8 +155,8 @@ int do_open(const nx::string& path, std::uint32_t flags) {
     } else {
         const nx::string host = host_path(path);
         if (host.empty()) return static_cast<int>(kErrorNotFound);
-        if (!g_patched_fse.empty() && lower(file_name(host)) == "discimg.fse") {
-            f.memory = &g_patched_fse;
+        if (const nx::vector<char>* replaced = g_overlay ? g_overlay->file(disc_relative(path)) : nullptr) {
+            f.memory = replaced;
             const int fd = g_next_fd++;
             g_files.emplace(fd, std::make_unique<OpenFile>(std::move(f)));
             return fd;
@@ -299,7 +280,7 @@ void Getstat(Context& c) {
     const nx::string path = mem().string(arg(c, 0));
     const nx::string host = host_path(path);
     if (host.empty() || !nx::fs::exists(host)) return ret(c, kErrorNotFound);
-    write_stat(arg(c, 1), host, lower(file_name(host)) == "discimg.pkg" ? kPkgLbn : 0);
+    write_stat(arg(c, 1), host, !g_mapped_path.empty() && disc_relative(path) == g_mapped_path ? g_mapped_lbn : 0);
     ret(c, 0);
 }
 void Mkdir(Context& c) {
@@ -383,64 +364,26 @@ constexpr HleBinding kBindings[] = {
 void set_storage(nx::string_view game_dir, nx::string_view save_dir) {
     g_game_dir = game_dir;
     g_save_dir = save_dir;
-    const nx::string pkg = path_join(game_dir, "PSP_GAME", "USRDIR", "discimg.pkg");
-    auto opened = nx::fs::open_file(pkg);
-    g_pkg = opened.has_value() ? std::move(opened.value()) : nx::fs::stream_ptr{};
-    if (!g_pkg) std::fprintf(stderr, "warning: discimg.pkg not found under %s\n", g_game_dir.c_str());
-    g_pkg_sectors = g_pkg ? (nx::fs::stat_file(pkg).size + kSector - 1) / kSector : 0;
 }
 
-void set_mods(nx::string_view mods_dir) {
-    g_virtual.clear();
-    g_patched_fse.clear();
-    if (!is_directory(mods_dir)) return;
-    nx::vector<nx::string> mods;
-    if (auto list = nx::fs::directory_entries(mods_dir); list.has_value())
-        for (const auto& d : list.value())
-            if (d.type == nx::fs::file_type::directory && is_directory(path_join(d.path, "pkg"))) mods.push_back(d.path);
-    std::sort(mods.begin(), mods.end());
-    nx::map<std::size_t, nx::string> replaced;  // entry -> file (later mods win)
-    for (const auto& m : mods) {
-        auto files = nx::fs::directory_entries(path_join(m, "pkg"));
-        if (!files.has_value()) continue;
-        for (const auto& f : files.value()) {
-            const nx::string stem = file_stem(f.path);
-            if (f.type != nx::fs::file_type::regular || stem.empty() ||
-                stem.view().find_first_not_of("0123456789") != nx::string_view::npos)
-                continue;
-            replaced[static_cast<std::size_t>(parse_u64(stem))] = f.path;
-        }
-    }
-    if (replaced.empty()) return;
-
-    const nx::string fse_path = path_join(g_game_dir, "PSP_GAME", "USRDIR", "discimg.fse");
-    const auto fse = io::read_all(fse_path);
-    auto entries = pkg::parse_index(fse);
-    for (const auto& [index, path] : replaced)
-        if (index >= entries.size())
-            std::fprintf(stderr, "mods: %s replaces entry %zu, but the archive has %zu entries\n", path.c_str(),
-                         index, entries.size());
-    std::uint64_t next = 0;
-    g_virtual.reserve(entries.size());
-    for (std::size_t i = 0; i < entries.size(); ++i) {
-        VirtualEntry v;
-        v.sector = next;
-        v.source_sector = entries[i].sector;
-        if (const auto it = replaced.find(i); it != replaced.end()) {
-            v.mod = it->second;
-            entries[i].size = static_cast<std::uint32_t>(nx::fs::stat_file(v.mod).size);
-        }
-        v.sectors = (std::uint64_t{entries[i].size} + kSector - 1) / kSector;
-        entries[i].sector = static_cast<std::uint32_t>(next);
-        next += v.sectors;
-        g_virtual.push_back(std::move(v));
-    }
-    const auto patched = pkg::serialize_index(entries);
-    g_patched_fse.assign(reinterpret_cast<const char*>(patched.data()), reinterpret_cast<const char*>(patched.data()) + patched.size());
-    std::fprintf(stderr, "mods: %zu archive entries replaced from %zu mod folders in %s\n", replaced.size(), mods.size(),
-                 nx::string(mods_dir).c_str());
+void map_disc_file(nx::string_view path, std::uint32_t lbn) {
+    g_mapped_path = disc_relative(nx::format("disc0:/{}", path));
+    g_mapped_lbn = lbn;
+    const nx::string host = path_join(g_game_dir, path);
+    auto opened = nx::fs::open_file(host);
+    g_mapped = opened.has_value() ? std::move(opened.value()) : nx::fs::stream_ptr{};
+    if (!g_mapped) std::fprintf(stderr, "warning: %s not found\n", host.c_str());
 }
 
+void read_disc_sectors(std::uint64_t first, std::uint64_t count, char* out) {
+    std::memset(out, 0, static_cast<std::size_t>(count) * kSector);
+    if (g_mapped && g_mapped->seek(static_cast<std::int64_t>(first * kSector)))
+        (void)g_mapped->read(out, static_cast<std::size_t>(count) * kSector);  // short at the end of the file
+}
+
+void set_disc_overlay(std::unique_ptr<DiscOverlay> overlay) { g_overlay = std::move(overlay); }
+
+const nx::string& game_dir() { return g_game_dir; }
 const nx::string& save_dir() { return g_save_dir; }
 
 void hle_install_io() { hle_bind(kBindings); }

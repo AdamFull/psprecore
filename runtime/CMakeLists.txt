@@ -65,7 +65,9 @@ if(FF7CC_BUILD_GAME AND EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
         endforeach()
     endforeach()
 
-    set(_ff7cc_game_sources src/main.cpp src/platform/display_vulkan.cpp src/platform/audio_miniaudio.cpp
+    # The game's own code (main, archive and mods, icon atlases) and the runtime's front end.
+    file(GLOB _ff7cc_game_own CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/*.cpp")
+    set(_ff7cc_game_sources ${_ff7cc_game_own} src/frontend.cpp src/platform/display_vulkan.cpp src/platform/audio_miniaudio.cpp
         src/platform/gpu_vulkan.cpp src/platform/allocator.cpp src/platform/sampling_profiler.cpp src/platform/overlay.cpp src/platform/settings.cpp src/platform/touch_controls.cpp src/platform/button_glyphs.cpp ${_ff7cc_generated_sources} ${_ff7cc_game_overrides})
     if(ANDROID)
         # SDL's Java activity loads libmain.so and calls SDL_main (see android/).
@@ -75,7 +77,7 @@ if(FF7CC_BUILD_GAME AND EXISTS "${FF7CC_GENERATED_DIR}/funcs.h")
     else()
         add_executable(ff7cc ${_ff7cc_game_sources})
     endif()
-    target_include_directories(ff7cc PRIVATE "${FF7CC_GENERATED_DIR}" src)
+    target_include_directories(ff7cc PRIVATE "${FF7CC_GENERATED_DIR}" src "${PROJECT_SOURCE_DIR}/src")
     ff7cc_add_shader(ff7cc ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ge.slang vertex_main vertex ge_vert)
     ff7cc_add_shader(ff7cc ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ge.slang fragment_main fragment ge_frag)
     ff7cc_add_shader(ff7cc ${CMAKE_CURRENT_SOURCE_DIR}/shaders/copy.slang vertex_main vertex copy_vert)

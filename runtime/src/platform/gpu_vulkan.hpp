@@ -14,7 +14,7 @@
 
 #include "ff7cc/platform/vulkan_context.hpp"
 #include "ff7cc/runtime/ge.hpp"
-#include "gpu/button_icons.hpp"
+#include "ff7cc/gpu/button_icons.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
@@ -50,7 +50,7 @@ public:
     // GPU supports; render targets are recreated).
     void set_msaa(int samples);
     int msaa() const;
-    // The game's own button icons drawn as another gamepad's (gpu/button_icons.hpp); cached textures are rebuilt.
+    // The game's own button icons drawn as another controller's (ff7cc/gpu/button_icons.hpp); cached textures are rebuilt.
     void set_button_icons(rt::gpu::IconStyle style);
     // Whether transfer() also performs the block copy in guest memory (off when another renderer already did).
     void set_guest_copies(bool on);
