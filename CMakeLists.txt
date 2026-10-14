@@ -36,9 +36,10 @@ if(PSPRECORE_BUILD_GAME)
     include(PsprecoreGame)
 endif()
 
-# nx-foundation (github.com/AdamFull/nx-foundation): libs/foundation, unless the including project provides it.
+# nx-foundation (github.com/AdamFull/nx-foundation, submodule in libs/nx/core/foundation), unless the including
+# project provides it.
 if(NOT TARGET nx::foundation)
-    add_subdirectory(libs/foundation)
+    add_subdirectory(libs/nx)
 endif()
 add_subdirectory(libs/formats)
 add_subdirectory(libs/mips)
