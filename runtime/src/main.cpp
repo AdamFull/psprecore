@@ -2,14 +2,18 @@
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
+//       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
+//                                        up/down/left/right/l/r for 6 vblanks; for automated testing)
 
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <memory>
+#include <utility>
 #include <vector>
 
 #include "ff7cc/formats/elf.hpp"
@@ -22,6 +26,35 @@
 #include "ff7cc/runtime/memory.hpp"
 
 namespace fs = std::filesystem;
+
+namespace {
+
+struct ScriptedPress {
+    std::uint64_t vblank;
+    std::uint32_t buttons;
+};
+
+std::uint32_t button_from_name(std::string_view name) {
+    using namespace ff7cc::platform;
+    static constexpr std::pair<std::string_view, std::uint32_t> kNames[] = {
+        {"select", kSelect}, {"start", kStart},   {"up", kUp},       {"right", kRight},
+        {"down", kDown},     {"left", kLeft},     {"l", kLTrigger},  {"r", kRTrigger},
+        {"triangle", kTriangle}, {"circle", kCircle}, {"cross", kCross}, {"square", kSquare},
+    };
+    for (const auto& [n, b] : kNames)
+        if (n == name) return b;
+    throw std::runtime_error("unknown button: " + std::string(name));
+}
+
+std::uint32_t scripted_buttons(const std::vector<ScriptedPress>& presses, std::uint64_t vblank) {
+    constexpr std::uint64_t kHold = 6;
+    std::uint32_t buttons = 0;
+    for (const auto& p : presses)
+        if (vblank >= p.vblank && vblank < p.vblank + kHold) buttons |= p.buttons;
+    return buttons;
+}
+
+}  // namespace
 using namespace ff7cc;
 
 namespace {
@@ -41,6 +74,7 @@ int main(int argc, char** argv) {
         std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
         std::string screenshot_path;
         std::uint64_t max_vblanks = 0;
+        std::vector<ScriptedPress> presses;
         for (int i = 2; i < argc; ++i) {
             const std::string_view a = argv[i];
             if (a == "--trace") trace = true;
@@ -51,6 +85,10 @@ int main(int argc, char** argv) {
             } else if (a == "--screenshot-every" && i + 2 < argc) {
                 screenshot_every = std::stoull(argv[++i]);
                 screenshot_path = argv[++i];
+            }
+            else if (a == "--press" && i + 2 < argc) {
+                const std::uint64_t at = std::stoull(argv[++i]);
+                presses.push_back({at, button_from_name(argv[++i])});
             }
             else if (a == "--vblanks" && i + 1 < argc) max_vblanks = std::stoull(argv[++i]);
             else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
@@ -90,10 +128,11 @@ int main(int argc, char** argv) {
                 rt::write_png(screenshot_path, rgba.data(), w, h);
             }
         };
-        if (headless && !screenshot_path.empty())
+        if (headless)
             kernel.on_vblank = [&] {
+                rt::set_pad(scripted_buttons(presses, kernel.vblank_count()), 128, 128);
                 int w = 0, h = 0;
-                if (rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
+                if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             };
         if (!headless) {
             display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
@@ -101,7 +140,7 @@ int main(int argc, char** argv) {
             kernel.on_vblank = [&] {
                 if (!display->poll_events()) kernel.request_quit();
                 const auto pad = display->pad();
-                rt::set_pad(pad.buttons, pad.lx, pad.ly);
+                rt::set_pad(pad.buttons | scripted_buttons(presses, kernel.vblank_count()), pad.lx, pad.ly);
                 int w = 0, h = 0;
                 if (rt::read_framebuffer(frame, w, h)) {
                     display->present(frame.data(), w, h);
@@ -115,6 +154,7 @@ int main(int argc, char** argv) {
         const int code = kernel.run(kLoadBase + module.entry, static_cast<std::uint32_t>(boot_path.size() + 1), args);
         std::fprintf(stderr, "stopped after %.3f s of guest time (%llu vblanks)\n",
                      static_cast<double>(kernel.now()) / 1e6, static_cast<unsigned long long>(kernel.vblank_count()));
+        if (trace || headless) kernel.dump_threads(stderr);
         std::fflush(stderr);
         std::_Exit(code);  // guest threads may still be parked on their batons
     } catch (const std::exception& e) {

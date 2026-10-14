@@ -8,8 +8,10 @@
 // advances virtual time to the next event (timeouts, vblank), fires it, and hands the baton on again.
 
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <semaphore>
@@ -118,6 +120,7 @@ public:
     Thread* thread(int id);
     Thread& current();
     int current_id() const;
+    void dump_threads(std::FILE* out) const;  // state, wait reason and return address of every thread
 
     // ---- blocking and waking (called from HLE functions on the current guest thread) ----
     // Blocks the current thread; returns the wait result. `timeout_addr` points to a guest u32 timeout in µs
@@ -133,6 +136,9 @@ public:
     std::map<int, std::unique_ptr<T>>& objects();
     int new_id() { return next_id_++; }
     void check_callbacks();  // run pending callbacks for the current thread (CB waits)
+    // Calls guest function `entry` on the current thread (EABI args a0-a3, t0-t3) and returns v0. The caller's
+    // registers are preserved, so HLE functions can use it for guest callbacks (e.g. ring buffer fills).
+    std::uint32_t call_guest(std::uint32_t entry, std::initializer_list<std::uint32_t> args);
     int create_callback(const std::string& name, std::uint32_t entry, std::uint32_t arg);
     void notify_callback(int id, std::uint32_t arg);
 

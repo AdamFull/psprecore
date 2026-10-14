@@ -275,6 +275,34 @@ void Kernel::check_callbacks() {
     }
 }
 
+void Kernel::dump_threads(std::FILE* out) const {
+    static constexpr const char* kStates[] = {"dormant", "ready", "running", "waiting", "dead"};
+    static constexpr const char* kWaits[] = {"-", "delay", "sleep", "sema", "eventflag", "threadend", "vblank",
+                                             "fpl", "io", "ge", "audio", "other"};
+    for (const auto& [id, t] : threads_)
+        std::fprintf(out, "  thread %3d %-28s prio %3u %-8s wait %-9s obj %-5d ra %08X\n", id, t->name.c_str(),
+                     t->priority, kStates[static_cast<int>(t->state)], kWaits[static_cast<int>(t->wait)],
+                     t->wait_object, t->ctx.r[31]);
+}
+
+std::uint32_t Kernel::call_guest(std::uint32_t entry, std::initializer_list<std::uint32_t> args) {
+    Thread& t = current();
+    const Context saved = t.ctx;
+    int i = 0;
+    for (const std::uint32_t a : args)
+        if (i < 8) t.ctx.r[4 + i++] = a;
+    t.ctx.r[29] -= 0x40;
+    std::uint32_t result = 0;
+    if (const RecompFunc f = recomp_lookup(entry)) {
+        f(&t.ctx);
+        result = t.ctx.r[2];
+    } else {
+        std::fprintf(stderr, "call_guest: no function at 0x%08X\n", entry);
+    }
+    t.ctx = saved;
+    return result;
+}
+
 void Kernel::set_subintr_handler(int intr, int sub, std::uint32_t handler, std::uint32_t arg) {
     auto& s = subintrs_[{intr, sub}];
     s.handler = handler;

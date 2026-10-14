@@ -259,7 +259,23 @@ void Devctl(Context& c) {
 
 void ReturnZero(Context& c) { ret(c, 0); }
 void ReturnOne(Context& c) { ret(c, 1); }
-void UmdGetDriveStat(Context& c) { ret(c, 0x32); }  // present | ready | readable
+constexpr std::uint32_t kUmdReady = 0x32;  // present | inited | ready
+int g_umd_callback = 0;
+void UmdGetDriveStat(Context& c) { ret(c, kUmdReady); }
+// The game learns that the disc is readable from its UMD callback (it gates movie streaming on it).
+void UmdRegisterCallback(Context& c) {
+    g_umd_callback = static_cast<int>(arg(c, 0));
+    kernel().notify_callback(g_umd_callback, kUmdReady);
+    ret(c, 0);
+}
+void UmdUnRegisterCallback(Context& c) {
+    g_umd_callback = 0;
+    ret(c, 0);
+}
+void UmdActivate(Context& c) {
+    if (g_umd_callback) kernel().notify_callback(g_umd_callback, kUmdReady);
+    ret(c, 0);
+}
 
 constexpr HleBinding kBindings[] = {
     {"sceIoOpen", Open},           {"sceIoOpenAsync", OpenAsync},     {"sceIoClose", Close},
@@ -269,9 +285,9 @@ constexpr HleBinding kBindings[] = {
     {"sceIoMkdir", Mkdir},         {"sceIoRename", Rename},           {"sceIoDopen", Dopen},
     {"sceIoDread", Dread},         {"sceIoDclose", Dclose},           {"sceIoDevctl", Devctl},
     {"sceIoIoctl", ReturnZero},
-    {"sceUmdCheckMedium", ReturnOne}, {"sceUmdActivate", ReturnZero}, {"sceUmdGetDriveStat", UmdGetDriveStat},
+    {"sceUmdCheckMedium", ReturnOne}, {"sceUmdActivate", UmdActivate}, {"sceUmdGetDriveStat", UmdGetDriveStat},
     {"sceUmdWaitDriveStatCB", ReturnZero}, {"sceUmdWaitDriveStatWithTimer", ReturnZero},
-    {"sceUmdRegisterUMDCallBack", ReturnZero}, {"sceUmdUnRegisterUMDCallBack", ReturnZero},
+    {"sceUmdRegisterUMDCallBack", UmdRegisterCallback}, {"sceUmdUnRegisterUMDCallBack", UmdUnRegisterCallback},
     {"sceUmdGetErrorStat", ReturnZero},
 };
 
