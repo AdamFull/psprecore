@@ -7,7 +7,8 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::elf {
 
@@ -69,14 +70,14 @@ public:
     std::uint32_t entry() const { return entry_; }
     std::uint32_t flags() const { return flags_; }
 
-    const std::vector<Section>& sections() const { return sections_; }
-    const std::vector<Segment>& segments() const { return segments_; }
+    const nx::vector<Section>& sections() const { return sections_; }
+    const nx::vector<Segment>& segments() const { return segments_; }
     const Section* find_section(std::string_view name) const;
 
     // Raw contents of a section (empty for NOBITS).
     std::span<const std::byte> contents(const Section& section) const;
-    std::vector<Symbol> symbols() const;
-    std::vector<Relocation> relocations(const Section& section) const;
+    nx::vector<Symbol> symbols() const;
+    nx::vector<Relocation> relocations(const Section& section) const;
 
     std::span<const std::byte> data() const { return data_; }
 
@@ -84,8 +85,8 @@ private:
     std::span<const std::byte> data_;
     std::uint16_t type_ = 0, machine_ = 0;
     std::uint32_t entry_ = 0, flags_ = 0;
-    std::vector<Section> sections_;
-    std::vector<Segment> segments_;
+    nx::vector<Section> sections_;
+    nx::vector<Segment> segments_;
 };
 
 // Iterates the members of a Unix "ar" archive (GNU long-name tables supported).
@@ -93,6 +94,6 @@ struct ArchiveMember {
     std::string name;
     std::span<const std::byte> data;
 };
-std::vector<ArchiveMember> read_archive(std::span<const std::byte> data);
+nx::vector<ArchiveMember> read_archive(std::span<const std::byte> data);
 
 }  // namespace ff7cc::elf

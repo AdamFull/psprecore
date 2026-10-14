@@ -7,12 +7,9 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
-#include <map>
-#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "ff7cc/analysis/program.hpp"
 #include "ff7cc/error.hpp"
@@ -20,6 +17,8 @@
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/io/file.hpp"
 #include "ff7cc/mips/allegrex.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace fs = std::filesystem;
 using namespace ff7cc;
@@ -38,8 +37,8 @@ void usage() {
         stderr);
 }
 
-std::map<std::uint32_t, std::string> load_nids(const fs::path& path) {
-    std::map<std::uint32_t, std::string> out;
+nx::map<std::uint32_t, std::string> load_nids(const fs::path& path) {
+    nx::map<std::uint32_t, std::string> out;
     std::ifstream in(path);
     if (!in) throw IoError("cannot read NID database '" + path.string() + "'");
     for (std::string line; std::getline(in, line);) {
@@ -81,7 +80,7 @@ int cmd_info(const fs::path& path) {
     for (const auto& exp : m.exports)
         std::printf("export  %-20s %zu functions, %zu variables\n", exp.library.empty() ? "(module)" : exp.library.c_str(),
                     exp.functions.size(), exp.variables.size());
-    std::map<std::string, std::size_t> by_type;
+    nx::map<std::string, std::size_t> by_type;
     for (const auto& r : m.relocations)
         ++by_type[std::string(reloc_name(r.type)) + " seg" + std::to_string(r.offset_segment) + "->seg" +
                   std::to_string(r.address_segment)];
@@ -94,7 +93,7 @@ int cmd_imports(const fs::path& path, const fs::path& nid_path) {
     const auto data = io::read_all(path);
     const elf::File f(data);
     const auto m = prx::parse(f);
-    const auto names = nid_path.empty() ? std::map<std::uint32_t, std::string>{} : load_nids(nid_path);
+    const auto names = nid_path.empty() ? nx::map<std::uint32_t, std::string>{} : load_nids(nid_path);
     std::size_t named = 0, total = 0;
     std::puts("library\tnid\tstub\tname");
     for (const auto& imp : m.imports) {
@@ -111,7 +110,7 @@ int cmd_imports(const fs::path& path, const fs::path& nid_path) {
 }
 
 int cmd_nids(const fs::path& dir, const fs::path& out_path) {
-    std::map<std::pair<std::string, std::uint32_t>, std::string> db;
+    nx::map<std::pair<std::string, std::uint32_t>, std::string> db;
     for (const auto& e : fs::directory_iterator(dir)) {
         if (!e.is_regular_file() || e.path().extension() != ".a") continue;
         try {
@@ -155,14 +154,14 @@ int cmd_symbols(const fs::path& path, const fs::path& nid_path, const fs::path& 
     auto functions = analysis::discover_functions(program);
     const auto registrations = analysis::find_registrations(program, functions);
 
-    const auto nids = nid_path.empty() ? std::map<std::uint32_t, std::string>{} : load_nids(nid_path);
-    std::map<std::uint32_t, std::string> import_names;
+    const auto nids = nid_path.empty() ? nx::map<std::uint32_t, std::string>{} : load_nids(nid_path);
+    nx::map<std::uint32_t, std::string> import_names;
     for (const auto& imp : program.module().imports)
         for (const auto& fn : imp.functions)
             if (const auto it = nids.find(fn.nid); it != nids.end()) import_names[fn.stub] = it->second;
 
-    std::map<std::uint32_t, std::size_t> per_registrar;
-    std::map<std::string, std::set<std::uint32_t>> handlers_by_name;
+    nx::map<std::uint32_t, std::size_t> per_registrar;
+    nx::map<std::string, nx::set<std::uint32_t>> handlers_by_name;
     for (const auto& r : registrations) {
         ++per_registrar[r.registrar];
         handlers_by_name[r.name].insert(r.handler);
@@ -180,7 +179,7 @@ int cmd_symbols(const fs::path& path, const fs::path& nid_path, const fs::path& 
             if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') c = '_';
         return s;
     };
-    std::map<std::uint32_t, std::string> handler_names;
+    nx::map<std::uint32_t, std::string> handler_names;
     for (const auto& r : registrations) {
         std::string name = prefix_for(r.registrar) + identifier(r.name);
         if (handlers_by_name[r.name].size() > 1) {
@@ -191,7 +190,7 @@ int cmd_symbols(const fs::path& path, const fs::path& nid_path, const fs::path& 
         handler_names.try_emplace(r.handler, name);
     }
 
-    std::map<std::string, std::size_t> by_origin;
+    nx::map<std::string, std::size_t> by_origin;
     std::size_t named = 0;
     std::ofstream out(out_path, std::ios::binary);
     if (!out) throw IoError("cannot write '" + out_path.string() + "'");
@@ -253,7 +252,7 @@ int cmd_disasm(const fs::path& path, std::string_view section_name) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const std::vector<std::string_view> args(argv + 1, argv + argc);
+    const nx::vector<std::string_view> args(argv + 1, argv + argc);
     if (args.empty() || args[0] == "-h" || args[0] == "--help") {
         usage();
         return args.empty() ? 2 : 0;

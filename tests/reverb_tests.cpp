@@ -1,25 +1,25 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
-#include <vector>
 
 #include "audio/reverb.hpp"
 #include "test_main.hpp"
+#include "core/foundation/core/foundation.h"
 
 using ff7cc::rt::audio::Reverb;
 
 namespace {
 
 // Feeds `send` through the reverb in grains of 256 frames; returns the wet output.
-std::vector<std::int32_t> run(Reverb& reverb, const std::vector<std::int32_t>& send) {
-    std::vector<std::int32_t> out(send.size(), 0);
+nx::vector<std::int32_t> run(Reverb& reverb, const nx::vector<std::int32_t>& send) {
+    nx::vector<std::int32_t> out(send.size(), 0);
     const int frames = static_cast<int>(send.size() / 2);
     for (int at = 0; at < frames; at += 256)
         reverb.process(send.data() + 2 * at, out.data() + 2 * at, std::min(256, frames - at), 0x1000, 0x1000);
     return out;
 }
 
-double energy(const std::vector<std::int32_t>& v, std::size_t from, std::size_t to) {
+double energy(const nx::vector<std::int32_t>& v, std::size_t from, std::size_t to) {
     double e = 0;
     for (std::size_t i = from; i < to; ++i) e += static_cast<double>(v[i]) * v[i];
     return e;
@@ -30,7 +30,7 @@ double energy(const std::vector<std::int32_t>& v, std::size_t from, std::size_t 
 TEST_CASE("reverb: off adds nothing") {
     Reverb reverb;
     reverb.set_type(0);
-    std::vector<std::int32_t> send(44100 * 2, 10000);
+    nx::vector<std::int32_t> send(44100 * 2, 10000);
     const auto out = run(reverb, send);
     CHECK(energy(out, 0, out.size()) == 0.0);
 }
@@ -39,7 +39,7 @@ TEST_CASE("reverb: an impulse gives a delayed, decaying tail") {
     for (int type = 1; type <= 6; ++type) {
         Reverb reverb;
         reverb.set_type(type);
-        std::vector<std::int32_t> send(44100 * 2 * 3, 0);  // 3 s
+        nx::vector<std::int32_t> send(44100 * 2 * 3, 0);  // 3 s
         send[0] = send[1] = send[2] = send[3] = 30000;
         const auto out = run(reverb, send);
         const std::size_t second = 44100 * 2;
@@ -53,7 +53,7 @@ TEST_CASE("reverb: an impulse gives a delayed, decaying tail") {
 TEST_CASE("reverb: full-scale noise stays bounded") {
     Reverb reverb;
     reverb.set_type(5);  // hall: the longest tail
-    std::vector<std::int32_t> send(44100 * 2 * 2);
+    nx::vector<std::int32_t> send(44100 * 2 * 2);
     std::srand(1);
     for (auto& s : send) s = (std::rand() % 65536) - 32768;
     const auto out = run(reverb, send);

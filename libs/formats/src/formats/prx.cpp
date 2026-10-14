@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
-#include <map>
 
 #include "ff7cc/error.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::prx {
 
@@ -19,7 +19,7 @@ T load(std::span<const std::byte> data, std::size_t at) {
 }
 
 // Module-relative virtual address -> file offset (file-backed part of a loadable segment only).
-std::size_t file_offset(const std::vector<elf::Segment>& segments, std::uint32_t vaddr, std::size_t size = 1) {
+std::size_t file_offset(const nx::vector<elf::Segment>& segments, std::uint32_t vaddr, std::size_t size = 1) {
     for (const auto& s : segments) {
         if (s.type != 1) continue;  // PT_LOAD
         if (vaddr >= s.vaddr && vaddr - s.vaddr + size <= s.filesz) return s.offset + (vaddr - s.vaddr);
@@ -27,7 +27,7 @@ std::size_t file_offset(const std::vector<elf::Segment>& segments, std::uint32_t
     throw FormatError("address 0x" + std::to_string(vaddr) + " is not backed by the module file");
 }
 
-std::string read_c_string(const elf::File& f, const std::vector<elf::Segment>& segs, std::uint32_t vaddr) {
+std::string read_c_string(const elf::File& f, const nx::vector<elf::Segment>& segs, std::uint32_t vaddr) {
     const auto data = f.data();
     std::size_t at = file_offset(segs, vaddr);
     std::string s;
@@ -122,11 +122,11 @@ Module parse(const elf::File& file) {
     return m;
 }
 
-std::vector<std::byte> load_image(const elf::File& file, const Module& module, std::uint32_t base) {
+nx::vector<std::byte> load_image(const elf::File& file, const Module& module, std::uint32_t base) {
     std::uint32_t end = 0;
     for (const auto& s : module.segments)
         if (s.type == 1) end = std::max(end, s.vaddr + s.memsz);
-    std::vector<std::byte> image(end);
+    nx::vector<std::byte> image(end);
     for (const auto& s : module.segments) {
         if (s.type != 1) continue;
         const auto src = file.data().subspan(s.offset, s.filesz);
@@ -146,7 +146,7 @@ std::vector<std::byte> load_image(const elf::File& file, const Module& module, s
     const auto put = [&](std::uint32_t at, std::uint32_t v) { std::memcpy(image.data() + at, &v, 4); };
 
     // HI16 entries are resolved by the next LO16 (the full address needs both halves).
-    std::vector<std::uint32_t> pending_hi;
+    nx::vector<std::uint32_t> pending_hi;
     for (const auto& r : module.relocations) {
         const std::uint32_t at = seg_base(r.offset_segment) + r.offset;
         const std::uint32_t delta = base + seg_base(r.address_segment);
@@ -178,8 +178,8 @@ std::vector<std::byte> load_image(const elf::File& file, const Module& module, s
     return image;
 }
 
-std::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive) {
-    std::vector<NidName> out;
+nx::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive) {
+    nx::vector<NidName> out;
     for (const auto& member : elf::read_archive(archive)) {
         if (member.data.size() < 4 || std::memcmp(member.data.data(), "\x7f" "ELF", 4) != 0) continue;
         const elf::File obj(member.data);
@@ -188,7 +188,7 @@ std::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive) 
         const auto nids = obj.contents(*nid_section);
 
         std::string library;
-        std::vector<elf::Symbol> functions;
+        nx::vector<elf::Symbol> functions;
         for (const auto& sym : obj.symbols()) {
             if (sym.name.starts_with("__stub_module_") && library.empty()) library = sym.name.substr(14);
             if (sym.binding() == 1 && sym.section != 0 && sym.section < obj.sections().size() &&

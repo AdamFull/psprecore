@@ -1,34 +1,34 @@
 #include <cstring>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "ff7cc/error.hpp"
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "test_main.hpp"
+#include "core/foundation/core/foundation.h"
 
 using namespace ff7cc;
 
 namespace {
 
-void put32(std::vector<std::byte>& v, std::size_t at, std::uint32_t x) {
+void put32(nx::vector<std::byte>& v, std::size_t at, std::uint32_t x) {
     if (v.size() < at + 4) v.resize(at + 4);
     std::memcpy(v.data() + at, &x, 4);
 }
-void put16(std::vector<std::byte>& v, std::size_t at, std::uint16_t x) {
+void put16(nx::vector<std::byte>& v, std::size_t at, std::uint16_t x) {
     if (v.size() < at + 2) v.resize(at + 2);
     std::memcpy(v.data() + at, &x, 2);
 }
-std::uint32_t get32(const std::vector<std::byte>& v, std::size_t at) {
+std::uint32_t get32(const nx::vector<std::byte>& v, std::size_t at) {
     std::uint32_t x;
     std::memcpy(&x, v.data() + at, 4);
     return x;
 }
 
 // Minimal ELF32 with one PT_LOAD segment holding `words` at vaddr 0, no sections.
-std::vector<std::byte> tiny_elf(const std::vector<std::uint32_t>& words) {
-    std::vector<std::byte> f(52 + 32);
+nx::vector<std::byte> tiny_elf(const nx::vector<std::uint32_t>& words) {
+    nx::vector<std::byte> f(52 + 32);
     std::memcpy(f.data(), "\x7f" "ELF\x01\x01\x01", 7);
     put16(f, 16, elf::kTypePrx);
     put16(f, 18, elf::kMachineMips);
@@ -45,8 +45,8 @@ std::vector<std::byte> tiny_elf(const std::vector<std::uint32_t>& words) {
     return f;
 }
 
-std::vector<std::byte> bytes(std::string_view s) {
-    std::vector<std::byte> out(s.size());
+nx::vector<std::byte> bytes(std::string_view s) {
+    nx::vector<std::byte> out(s.size());
     std::memcpy(out.data(), s.data(), s.size());
     return out;
 }

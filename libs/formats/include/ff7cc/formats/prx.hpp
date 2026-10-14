@@ -10,9 +10,9 @@
 #include <cstdint>
 #include <span>
 #include <string>
-#include <vector>
 
 #include "ff7cc/formats/elf.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::prx {
 
@@ -33,8 +33,8 @@ struct Import {
         std::uint32_t nid = 0;
         std::uint32_t stub = 0;  // address of the 8-byte syscall stub in the module
     };
-    std::vector<Function> functions;
-    std::vector<std::uint32_t> variable_nids;
+    nx::vector<Function> functions;
+    nx::vector<std::uint32_t> variable_nids;
 };
 
 struct Export {
@@ -45,8 +45,8 @@ struct Export {
         std::uint32_t nid = 0;
         std::uint32_t address = 0;
     };
-    std::vector<Entry> functions;
-    std::vector<Entry> variables;
+    nx::vector<Entry> functions;
+    nx::vector<Entry> variables;
 };
 
 struct Module {
@@ -55,10 +55,10 @@ struct Module {
     std::uint16_t version = 0;
     std::uint32_t gp = 0;
     std::uint32_t entry = 0;
-    std::vector<elf::Segment> segments;
-    std::vector<Import> imports;
-    std::vector<Export> exports;
-    std::vector<Relocation> relocations;
+    nx::vector<elf::Segment> segments;
+    nx::vector<Import> imports;
+    nx::vector<Export> exports;
+    nx::vector<Relocation> relocations;
 };
 
 // Parses a decrypted PRX (ELF type 0xFFA0) such as BOOT.BIN. Addresses are module-relative (base 0).
@@ -68,7 +68,7 @@ Module parse(const elf::File& file);
 std::uint32_t read_word(const elf::File& file, const Module& module, std::uint32_t vaddr);
 
 // Returns a copy of the loadable image (all segments, BSS zero-filled) relocated to `base`, starting at `base`.
-std::vector<std::byte> load_image(const elf::File& file, const Module& module, std::uint32_t base);
+nx::vector<std::byte> load_image(const elf::File& file, const Module& module, std::uint32_t base);
 
 // NID -> function name database, built from PSPSDK-style stub libraries (lib*.a).
 struct NidName {
@@ -77,6 +77,6 @@ struct NidName {
     std::string name;
 };
 // Extracts NID/name pairs from one stub archive; members without a .rodata.sceNid section are ignored.
-std::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive);
+nx::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive);
 
 }  // namespace ff7cc::prx

@@ -5,7 +5,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <span>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::io {
 
@@ -47,7 +48,7 @@ private:
     std::filesystem::path path_;
 };
 
-std::vector<std::byte> read_all(const std::filesystem::path& path);
+nx::vector<std::byte> read_all(const std::filesystem::path& path);
 void write_all(const std::filesystem::path& path, std::span<const std::byte> data);
 
 }  // namespace ff7cc::io

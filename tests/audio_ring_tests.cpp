@@ -1,8 +1,8 @@
 #include <cstdint>
-#include <vector>
 
 #include "platform/audio_ring.hpp"
 #include "test_main.hpp"
+#include "core/foundation/core/foundation.h"
 
 using ff7cc::platform::AudioRing;
 
@@ -10,14 +10,14 @@ namespace {
 
 constexpr std::size_t kPeriod = 441;  // 10 ms device callbacks
 
-std::vector<std::int16_t> constant(std::size_t frames, std::int16_t value) {
-    return std::vector<std::int16_t>(frames * 2, value);
+nx::vector<std::int16_t> constant(std::size_t frames, std::int16_t value) {
+    return nx::vector<std::int16_t>(frames * 2, value);
 }
 
 // Runs `seconds` of a producer pushing `chunk` frames every `chunk / rate` seconds of device time (rate 1.0 =
 // exactly the device clock) against 10 ms device callbacks; returns the output.
-std::vector<std::int32_t> run(AudioRing& ring, double seconds, std::size_t chunk, double rate, std::int16_t value) {
-    std::vector<std::int32_t> out;
+nx::vector<std::int32_t> run(AudioRing& ring, double seconds, std::size_t chunk, double rate, std::int16_t value) {
+    nx::vector<std::int32_t> out;
     const auto pcm = constant(chunk, value);
     double produced = 0.0;  // in device frames
     const auto callbacks = static_cast<std::size_t>(seconds * 100.0);
@@ -26,7 +26,7 @@ std::vector<std::int32_t> run(AudioRing& ring, double seconds, std::size_t chunk
             ring.push(pcm.data(), chunk);
             produced += static_cast<double>(chunk) / rate;
         }
-        std::vector<std::int32_t> acc(kPeriod * 2, 0);
+        nx::vector<std::int32_t> acc(kPeriod * 2, 0);
         ring.mix_into(acc.data(), kPeriod);
         out.insert(out.end(), acc.begin(), acc.end());
     }
@@ -39,7 +39,7 @@ TEST_CASE("audio ring: a stream starts once the cushion is queued") {
     AudioRing ring;
     const auto pcm = constant(ring.target - 1, 100);
     ring.push(pcm.data(), pcm.size() / 2);
-    std::vector<std::int32_t> acc(kPeriod * 2, 0);
+    nx::vector<std::int32_t> acc(kPeriod * 2, 0);
     ring.mix_into(acc.data(), kPeriod);
     CHECK(acc[0] == 0 && ring.queued() == ring.target - 1);
     const auto one = constant(1, 100);
@@ -53,7 +53,7 @@ TEST_CASE("audio ring: a gap is silence and the stream primes again") {
     AudioRing ring;
     const auto pcm = constant(ring.target, 7);
     ring.push(pcm.data(), ring.target);
-    std::vector<std::int32_t> acc;
+    nx::vector<std::int32_t> acc;
     for (int i = 0; i < 10; ++i) {
         acc.assign(kPeriod * 2, 0);
         ring.mix_into(acc.data(), kPeriod);
@@ -87,7 +87,7 @@ TEST_CASE("audio ring: a burst after a stall is cut back to the cushion") {
     AudioRing ring;
     const auto pcm = constant(5 * ring.target, 1);
     ring.push(pcm.data(), 5 * ring.target);
-    std::vector<std::int32_t> acc(kPeriod * 2, 0);
+    nx::vector<std::int32_t> acc(kPeriod * 2, 0);
     ring.mix_into(acc.data(), kPeriod);
     CHECK(ring.skipped_frames.load() == 4 * ring.target);
     CHECK(ring.queued() == ring.target - kPeriod);

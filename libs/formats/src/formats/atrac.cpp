@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "core/foundation/core/foundation.h"
+
 namespace ff7cc::atrac {
 
 namespace {
@@ -20,12 +22,12 @@ std::uint16_t u16(std::span<const std::byte> d, std::size_t at) {
     return v;
 }
 
-void put(std::vector<std::byte>& out, const void* p, std::size_t n) {
+void put(nx::vector<std::byte>& out, const void* p, std::size_t n) {
     const auto* b = static_cast<const std::byte*>(p);
     out.insert(out.end(), b, b + n);
 }
-void put32(std::vector<std::byte>& out, std::uint32_t v) { put(out, &v, 4); }
-void put16(std::vector<std::byte>& out, std::uint16_t v) { put(out, &v, 2); }
+void put32(nx::vector<std::byte>& out, std::uint32_t v) { put(out, &v, 4); }
+void put16(nx::vector<std::byte>& out, std::uint16_t v) { put(out, &v, 2); }
 
 }  // namespace
 
@@ -73,9 +75,9 @@ bool parse(std::span<const std::byte> d, Info& out) {
     return have_fmt && have_data && out.block_align != 0;
 }
 
-std::vector<std::byte> make_atrac3plus_riff(std::span<const std::byte> frames, std::uint16_t codec_params, int channels) {
+nx::vector<std::byte> make_atrac3plus_riff(std::span<const std::byte> frames, std::uint16_t codec_params, int channels) {
     const std::uint32_t frame_bytes = ((codec_params & 0x3FFu) + 1) * 8;
-    std::vector<std::byte> out;
+    nx::vector<std::byte> out;
     out.reserve(frames.size() + 128);
     put(out, "RIFF", 4);
     put32(out, 0);  // patched below

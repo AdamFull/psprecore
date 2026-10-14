@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "ff7cc/error.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::elf {
 
@@ -56,7 +57,7 @@ File::File(std::span<const std::byte> data) : data_(data) {
                                     load<std::uint32_t>(data, at + 24)});
     }
 
-    std::vector<std::uint32_t> name_offsets;
+    nx::vector<std::uint32_t> name_offsets;
     for (std::size_t i = 0; i < shnum; ++i) {
         const std::size_t at = shoff + i * shentsize;
         name_offsets.push_back(load<std::uint32_t>(data, at));
@@ -88,8 +89,8 @@ std::span<const std::byte> File::contents(const Section& section) const {
     return slice(data_, section.offset, section.size);
 }
 
-std::vector<Symbol> File::symbols() const {
-    std::vector<Symbol> out;
+nx::vector<Symbol> File::symbols() const {
+    nx::vector<Symbol> out;
     for (const auto& s : sections_) {
         if (s.type != kSectionSymtab) continue;
         const auto table = contents(s);
@@ -107,19 +108,19 @@ std::vector<Symbol> File::symbols() const {
     return out;
 }
 
-std::vector<Relocation> File::relocations(const Section& section) const {
+nx::vector<Relocation> File::relocations(const Section& section) const {
     if (section.type != kSectionRel && section.type != kSectionPspRel)
         throw FormatError("section '" + section.name + "' is not a REL relocation section");
     const auto table = contents(section);
-    std::vector<Relocation> out;
+    nx::vector<Relocation> out;
     for (std::size_t at = 0; at + 8 <= table.size(); at += 8)
         out.push_back(Relocation{load<std::uint32_t>(table, at), load<std::uint32_t>(table, at + 4)});
     return out;
 }
 
-std::vector<ArchiveMember> read_archive(std::span<const std::byte> data) {
+nx::vector<ArchiveMember> read_archive(std::span<const std::byte> data) {
     if (data.size() < 8 || std::memcmp(data.data(), "!<arch>\n", 8) != 0) throw FormatError("not an ar archive");
-    std::vector<ArchiveMember> out;
+    nx::vector<ArchiveMember> out;
     std::span<const std::byte> long_names;
     for (std::size_t at = 8; at + 60 <= data.size();) {
         const auto field = [&](std::size_t off, std::size_t len) {

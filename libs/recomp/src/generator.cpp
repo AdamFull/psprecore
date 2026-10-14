@@ -3,10 +3,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <set>
 
 #include "ff7cc/error.hpp"
 #include "ff7cc/mips/allegrex.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::recomp {
 
@@ -171,8 +172,8 @@ std::string simple(const Instruction& in, std::uint32_t pc) {
 
 }  // namespace
 
-Generator::Generator(const analysis::Program& program, std::vector<std::byte> image,
-                     std::vector<analysis::Function> functions, Options options)
+Generator::Generator(const analysis::Program& program, nx::vector<std::byte> image,
+                     nx::vector<analysis::Function> functions, Options options)
     : program_(program), image_(std::move(image)), functions_(std::move(functions)), options_(options) {
     for (std::size_t i = 0; i < functions_.size(); ++i) by_start_[options_.base + functions_[i].start] = i;
     for (const auto& imp : program_.module().imports)
@@ -214,15 +215,15 @@ std::string Generator::function_source(const analysis::Function& fn) {
     };
 
     // Pass 1: labels and jump tables.
-    std::set<std::uint32_t> labels;
-    std::map<std::uint32_t, std::vector<std::uint32_t>> tables;
+    nx::set<std::uint32_t> labels;
+    nx::map<std::uint32_t, nx::vector<std::uint32_t>> tables;
     for (std::uint32_t pc = begin; pc < end; pc += 4) {
         const auto in = decode(pc);
         if (in.is_branch() && inside(in.branch_target())) labels.insert(in.branch_target());
         if (in.op == Op::J && inside(in.jump_target())) labels.insert(in.jump_target());
         if (in.op == Op::Jr && in.rs() != kRa) {
             if (const auto jt = jump_tables_.find(pc); jt != jump_tables_.end()) {
-                std::vector<std::uint32_t> t;
+                nx::vector<std::uint32_t> t;
                 for (auto target : jt->second)
                     if (inside(target)) t.push_back(target);
                     else warn(pc, "jump table entry outside the function");
@@ -304,7 +305,7 @@ std::string Generator::function_source(const analysis::Function& fn) {
                 } else if (const auto t = tables.find(pc); t != tables.end()) {
                     ++stats_.jump_tables;
                     code = "const uint32_t target = " + R(in.rs()) + ";\n        " + delay + "\n        switch (target) {\n";
-                    std::set<std::uint32_t> seen;
+                    nx::set<std::uint32_t> seen;
                     for (auto target : t->second)
                         if (seen.insert(target).second) code += "        case " + hex(target) + ": goto " + label(target) + ";\n";
                     code += "        default: recomp_trap(ctx, " + hex(pc) + ", target); return;\n        }";

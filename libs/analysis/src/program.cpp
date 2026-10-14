@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <set>
 
 #include "ff7cc/error.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::analysis {
 
@@ -97,7 +98,7 @@ const prx::Relocation* Program::relocation_at(std::uint32_t addr) const {
     return it == reloc_by_addr_.end() ? nullptr : &module_.relocations[it->second];
 }
 
-std::map<std::uint32_t, JumpTable> find_jump_tables(const Program& p) {
+nx::map<std::uint32_t, JumpTable> find_jump_tables(const Program& p) {
     constexpr std::uint32_t kWindow = 24 * 4;  // how far back to look for the table load / bounds check
 
     // Constant value of `reg` just before `pc`, following lui/addiu/ori/addu chains. For addu, the constant
@@ -130,7 +131,7 @@ std::map<std::uint32_t, JumpTable> find_jump_tables(const Program& p) {
     struct Candidate {
         std::uint32_t jr, table, limit;
     };
-    std::vector<Candidate> candidates;
+    nx::vector<Candidate> candidates;
     for (std::uint32_t pc = p.text_begin(); pc < p.text_end(); pc += 4) {
         const auto jr = p.insn(pc);
         if (jr.op != Op::Jr || jr.rs() == kRa) continue;
@@ -179,9 +180,9 @@ std::map<std::uint32_t, JumpTable> find_jump_tables(const Program& p) {
     }
 
     // Pass 2: entries, never running into the next table.
-    std::set<std::uint32_t> starts;
+    nx::set<std::uint32_t> starts;
     for (const auto& c : candidates) starts.insert(c.table);
-    std::map<std::uint32_t, JumpTable> tables;
+    nx::map<std::uint32_t, JumpTable> tables;
     for (const auto& c : candidates) {
         JumpTable jt{c.jr, c.table, {}};
         for (std::uint32_t i = 0; c.limit == 0 || i < c.limit; ++i) {
@@ -198,8 +199,8 @@ std::map<std::uint32_t, JumpTable> find_jump_tables(const Program& p) {
     return tables;
 }
 
-std::vector<Function> discover_functions(const Program& p) {
-    std::map<std::uint32_t, Function> funcs;
+nx::vector<Function> discover_functions(const Program& p) {
+    nx::map<std::uint32_t, Function> funcs;
     const auto seed = [&](std::uint32_t addr, Function::Origin origin, std::string name = {}) {
         if (!p.in_text(addr) || addr % 4) return;
         auto [it, inserted] = funcs.try_emplace(addr, Function{addr, 0, std::move(name), origin});
@@ -243,7 +244,7 @@ std::vector<Function> discover_functions(const Program& p) {
         return prev.op == Op::Jr || prev.op == Op::J ||
                (prev.op == Op::Beq && prev.rs() == 0 && prev.rt() == 0);
     };
-    std::vector<std::uint32_t> pointers;
+    nx::vector<std::uint32_t> pointers;
     std::uint32_t hi_value = 0;
     for (const auto& r : p.module().relocations) {
         const std::uint32_t at = p.segment_base(r.offset_segment) + r.offset;
@@ -254,7 +255,7 @@ std::vector<Function> discover_functions(const Program& p) {
         if (r.type == prx::kRelLo16 && r.address_segment == 0)
             pointers.push_back(hi_value + static_cast<std::uint32_t>(static_cast<std::int16_t>(*w & 0xFFFF)));
     }
-    std::set<std::uint32_t> case_labels;
+    nx::set<std::uint32_t> case_labels;
     for (const auto& [_, jt] : find_jump_tables(p)) case_labels.insert(jt.targets.begin(), jt.targets.end());
     for (auto ptr : pointers)
         if (p.in_text(ptr) && ptr % 4 == 0 && !case_labels.contains(ptr) && looks_like_start(ptr))
@@ -263,10 +264,12 @@ std::vector<Function> discover_functions(const Program& p) {
     // Gap filling: a function ends after `jr ra` + delay slot when no earlier branch jumps past it and no
     // computed jump (switch) precedes it; the next non-nop instruction then starts a new function.
     seed(p.text_begin(), Function::Origin::Gap);
-    for (auto it = funcs.begin(); it != funcs.end(); ++it) {
-        const std::uint32_t start = it->first;
-        const auto next_it = std::next(it);
+    // Walked by key: seed() inserts into funcs, which invalidates iterators (nx::map is a B-tree).
+    for (auto at = funcs.begin(); at != funcs.end();) {
+        const std::uint32_t start = at->first;
+        const auto next_it = std::next(at);
         const std::uint32_t limit = next_it == funcs.end() ? p.text_end() : next_it->first;
+        at = funcs.end();  // not used past this point: the scan below may insert
         std::uint32_t furthest = 0;
         bool computed_jump = false;
         for (std::uint32_t pc = start; pc < limit; pc += 4) {
@@ -278,19 +281,20 @@ std::vector<Function> discover_functions(const Program& p) {
             if (!is_jr_ra(in) || computed_jump || furthest > pc + 4) continue;
             std::uint32_t next = pc + 8;
             while (next < limit && p.word(next).value_or(1) == 0) next += 4;  // nop padding
-            if (next < limit) seed(next, Function::Origin::Gap);  // becomes std::next(it), scanned next
+            if (next < limit) seed(next, Function::Origin::Gap);  // the next function after start, scanned next
             break;
         }
+        at = funcs.upper_bound(start);
     }
 
-    std::vector<Function> out;
+    nx::vector<Function> out;
     for (auto& [a, f] : funcs) out.push_back(std::move(f));
     for (std::size_t i = 0; i < out.size(); ++i) out[i].end = i + 1 < out.size() ? out[i + 1].start : p.text_end();
     return out;
 }
 
-std::vector<Registration> find_registrations(const Program& p, const std::vector<Function>& functions) {
-    std::vector<Registration> out;
+nx::vector<Registration> find_registrations(const Program& p, const nx::vector<Function>& functions) {
+    nx::vector<Registration> out;
     for (const auto& f : functions) {
         if (f.origin == Function::Origin::Import) continue;
         std::array<Value, 32> regs{};

@@ -8,11 +8,9 @@
 #include <fstream>
 #include <iterator>
 #include <regex>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "ff7cc/analysis/program.hpp"
 #include "ff7cc/error.hpp"
@@ -20,6 +18,7 @@
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/io/file.hpp"
 #include "ff7cc/recomp/generator.hpp"
+#include "core/foundation/containers/map.h"
 
 namespace fs = std::filesystem;
 using namespace ff7cc;
@@ -33,8 +32,8 @@ void write_text(const fs::path& path, const std::string& text) {
 }  // namespace
 
 // Addresses of GAME_FUNC(XXXXXXXX, name) replacements in the C/C++ sources under `dir`.
-std::set<std::uint32_t> scan_overrides(const fs::path& dir) {
-    std::set<std::uint32_t> out;
+nx::set<std::uint32_t> scan_overrides(const fs::path& dir) {
+    nx::set<std::uint32_t> out;
     const std::regex pattern(R"(GAME_FUNC\s*\(\s*([0-9A-Fa-f]{8})\s*,)");
     for (const auto& entry : fs::recursive_directory_iterator(dir)) {
         const auto ext = entry.path().extension().string();

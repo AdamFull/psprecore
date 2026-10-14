@@ -4,6 +4,7 @@
 #include <array>
 
 #include "ff7cc/error.hpp"
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::io {
 
@@ -119,7 +120,7 @@ void File::write_zeros(std::uint64_t count) {
 }
 
 void File::copy_from(File& src, std::uint64_t src_offset, std::uint64_t count) {
-    std::vector<std::byte> buffer(static_cast<std::size_t>(std::min<std::uint64_t>(count, kCopyChunk)));
+    nx::vector<std::byte> buffer(static_cast<std::size_t>(std::min<std::uint64_t>(count, kCopyChunk)));
     src.seek(src_offset);
     while (count > 0) {
         const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(count, buffer.size()));
@@ -129,9 +130,9 @@ void File::copy_from(File& src, std::uint64_t src_offset, std::uint64_t count) {
     }
 }
 
-std::vector<std::byte> read_all(const std::filesystem::path& path) {
+nx::vector<std::byte> read_all(const std::filesystem::path& path) {
     File f(path, File::Mode::Read);
-    std::vector<std::byte> data(static_cast<std::size_t>(f.size()));
+    nx::vector<std::byte> data(static_cast<std::size_t>(f.size()));
     f.read_exact(data);
     return data;
 }

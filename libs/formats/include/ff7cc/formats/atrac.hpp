@@ -10,7 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::atrac {
 
@@ -28,7 +29,7 @@ struct Info {
     std::uint16_t codec_params = 0;        // ATRAC3plus: frame size code (bytes = ((p & 0x3FF) + 1) * 8)
     std::uint32_t total_samples = 0;       // fact[0]
     std::uint32_t delay = 0;               // fact[1]
-    std::vector<Loop> loops;               // smpl chunk
+    nx::vector<Loop> loops;               // smpl chunk
     std::uint32_t data_offset = 0, data_size = 0;
 
     int samples_per_frame() const { return codec == Codec::Atrac3Plus ? 2048 : 1024; }
@@ -39,6 +40,6 @@ struct Info {
 bool parse(std::span<const std::byte> file, Info& out);
 
 // Builds a RIFF ATRAC3plus file from raw frames (e.g. a movie's audio stream) so ordinary decoders accept it.
-std::vector<std::byte> make_atrac3plus_riff(std::span<const std::byte> frames, std::uint16_t codec_params, int channels);
+nx::vector<std::byte> make_atrac3plus_riff(std::span<const std::byte> frames, std::uint16_t codec_params, int channels);
 
 }  // namespace ff7cc::atrac

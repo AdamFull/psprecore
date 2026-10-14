@@ -4,14 +4,14 @@
 // recovery of names from the game's own registration calls.
 
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/mips/allegrex.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::analysis {
 
@@ -35,9 +35,9 @@ public:
 
 private:
     prx::Module module_;
-    std::vector<std::byte> image_;  // unrelocated loadable image, BSS zero-filled
+    nx::vector<std::byte> image_;  // unrelocated loadable image, BSS zero-filled
     std::uint32_t text_begin_ = 0, text_end_ = 0;
-    std::map<std::uint32_t, std::size_t> reloc_by_addr_;
+    nx::map<std::uint32_t, std::size_t> reloc_by_addr_;
 };
 
 struct Function {
@@ -53,13 +53,13 @@ struct Function {
 struct JumpTable {
     std::uint32_t jr = 0;     // address of the jr instruction
     std::uint32_t table = 0;  // address of the table
-    std::vector<std::uint32_t> targets;
+    nx::vector<std::uint32_t> targets;
 };
-std::map<std::uint32_t, JumpTable> find_jump_tables(const Program& program);
+nx::map<std::uint32_t, JumpTable> find_jump_tables(const Program& program);
 
 // Every instruction of .text ends up in exactly one function (sorted by start).
 // Jump-table targets are never treated as function starts.
-std::vector<Function> discover_functions(const Program& program);
+nx::vector<Function> discover_functions(const Program& program);
 
 struct Registration {
     std::uint32_t call_site = 0;  // address of the jal
@@ -70,6 +70,6 @@ struct Registration {
 
 // Calls of the form f("Name", handler, ...) — string in a0 and code pointer in a1 — found by simulating
 // constant loads (lui/addiu/ori + relocations) linearly through each function.
-std::vector<Registration> find_registrations(const Program& program, const std::vector<Function>& functions);
+nx::vector<Registration> find_registrations(const Program& program, const nx::vector<Function>& functions);
 
 }  // namespace ff7cc::analysis

@@ -3,12 +3,11 @@
 // Allegrex -> C17 translator (see docs/recompiler.md).
 
 #include <cstdint>
-#include <map>
-#include <set>
 #include <string>
-#include <vector>
 
 #include "ff7cc/analysis/program.hpp"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/containers/map.h"
 
 namespace ff7cc::recomp {
 
@@ -16,7 +15,7 @@ struct Options {
     std::uint32_t base = 0x08804000;  // load address the code is translated for
     // Functions replaced by hand-written code (GAME_FUNC in game/): their translation is emitted as
     // f_XXXXXXXX_orig, and every call and the lookup table reach the replacement f_XXXXXXXX.
-    std::set<std::uint32_t> overrides;
+    nx::set<std::uint32_t> overrides;
 };
 
 struct Stats {
@@ -26,13 +25,13 @@ struct Stats {
     std::size_t tail_calls = 0;
     std::size_t null_calls = 0;  // jal 0x0 to unlinked weak symbols
     std::size_t overrides = 0;   // functions emitted as _orig because game/ replaces them
-    std::vector<std::string> warnings;  // unexpected control flow, each with its address
+    nx::vector<std::string> warnings;  // unexpected control flow, each with its address
 };
 
 class Generator {
 public:
     // `image` is the module relocated to options.base (prx::load_image).
-    Generator(const analysis::Program& program, std::vector<std::byte> image, std::vector<analysis::Function> functions,
+    Generator(const analysis::Program& program, nx::vector<std::byte> image, nx::vector<analysis::Function> functions,
               Options options);
 
     // C source of one function (module-relative start).
@@ -42,7 +41,7 @@ public:
     // Address -> function table and recomp_lookup().
     std::string lookup_source() const;
 
-    const std::vector<analysis::Function>& functions() const { return functions_; }
+    const nx::vector<analysis::Function>& functions() const { return functions_; }
     const Stats& stats() const { return stats_; }
 
 private:
@@ -51,12 +50,12 @@ private:
     bool is_function_start(std::uint32_t abs) const;
 
     const analysis::Program& program_;
-    std::vector<std::byte> image_;
-    std::vector<analysis::Function> functions_;
+    nx::vector<std::byte> image_;
+    nx::vector<analysis::Function> functions_;
     Options options_;
-    std::map<std::uint32_t, std::size_t> by_start_;      // absolute start -> index in functions_
-    std::map<std::uint32_t, std::uint32_t> import_nids_;  // absolute stub address -> NID
-    std::map<std::uint32_t, std::vector<std::uint32_t>> jump_tables_;  // absolute jr -> absolute targets
+    nx::map<std::uint32_t, std::size_t> by_start_;      // absolute start -> index in functions_
+    nx::map<std::uint32_t, std::uint32_t> import_nids_;  // absolute stub address -> NID
+    nx::map<std::uint32_t, nx::vector<std::uint32_t>> jump_tables_;  // absolute jr -> absolute targets
     Stats stats_;
 };
 

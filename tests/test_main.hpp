@@ -5,7 +5,8 @@
 #include <cstdio>
 #include <functional>
 #include <string>
-#include <vector>
+
+#include "core/foundation/core/foundation.h"
 
 namespace ff7cc::test {
 
@@ -14,8 +15,8 @@ struct Case {
     std::function<void()> fn;
 };
 
-inline std::vector<Case>& registry() {
-    static std::vector<Case> cases;
+inline nx::vector<Case>& registry() {
+    static nx::vector<Case> cases;
     return cases;
 }
 
