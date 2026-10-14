@@ -6,6 +6,8 @@
 //                                        changes; headless always uses the software renderer;
 //                                        compare runs both and screenshots show reference | Vulkan | difference)
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
+//       [--profile VBLANK]              (Windows: samples where the host spends its time from VBLANK on and prints
+//                                        the hottest functions at exit)
 //       [--ge-bench VBLANK]             (captures the draws of the vblanks after VBLANK, times vertex decoding and
 //                                        transform on them in a loop, prints the result and quits)
 //       [--record FILE] [--replay FILE]  (controller input and save picker answers per vblank; a replay
@@ -66,6 +68,7 @@
 #include "platform/settings.hpp"
 #include "gpu/soft_renderer.hpp"
 #include "gpu/vertex_pipeline.hpp"
+#include "platform/sampling_profiler.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
@@ -407,7 +410,7 @@ int main(int argc, char** argv) {
         bool touch = false;
 #endif
         std::uint64_t max_vblanks = 0;
-        std::uint64_t ge_dump_vblank = 0, ge_bench_vblank = 0;
+        std::uint64_t ge_dump_vblank = 0, ge_bench_vblank = 0, profile_vblank = 0;
         std::uint64_t state_hash_every = 0;
         std::uint64_t ram_dump_vblank = 0;
         std::string ram_dump_path;
@@ -464,6 +467,7 @@ int main(int argc, char** argv) {
             else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
             else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = std::stoull(argv[++i]);
             else if (a == "--ge-bench" && i + 1 < argc) ge_bench_vblank = std::stoull(argv[++i]);
+            else if (a == "--profile" && i + 1 < argc) profile_vblank = std::stoull(argv[++i]);
             else if (a == "--state-hash" && i + 1 < argc) state_hash_every = std::stoull(argv[++i]);
             else if (a == "--ram-dump" && i + 2 < argc) {
                 ram_dump_vblank = std::stoull(argv[++i]);
@@ -597,7 +601,9 @@ int main(int argc, char** argv) {
             std::vector<std::uint8_t> bytes;
         };
         std::vector<BenchDraw> bench_draws;
+        std::unique_ptr<platform::SamplingProfiler> profiler;
         const auto bench_tick = [&] {
+            if (profile_vblank && kernel.vblank_count() == profile_vblank) profiler = std::make_unique<platform::SamplingProfiler>();
             if (!ge_bench_vblank) return;
             const std::uint64_t vblank = kernel.vblank_count();
             if (vblank == ge_bench_vblank) {
@@ -878,6 +884,7 @@ int main(int argc, char** argv) {
         const int code = kernel.run(kLoadBase + module.entry, static_cast<std::uint32_t>(boot_path.size() + 1), args);
         std::fprintf(stderr, "stopped after %.3f s of guest time (%llu vblanks)\n",
                      static_cast<double>(kernel.now()) / 1e6, static_cast<unsigned long long>(kernel.vblank_count()));
+        if (profiler) profiler->report(stderr);
         if (recorder) recorder->flush();
         if (recorder_in) recorder_in->flush();
         if (trace || headless) kernel.dump_threads(stderr);
