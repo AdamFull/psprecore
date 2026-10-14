@@ -7,10 +7,12 @@
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
 //       [--record FILE] [--replay FILE]  (controller input and save picker answers per vblank; a replay
 //                                        reproduces the run, then live input takes over)
+//       [--ram-dump VBLANK FILE]        (writes user RAM, 0x08800000-0x0A000000, at VBLANK)
 //       [--state-hash N]                (prints a hash of user RAM every N vblanks: determinism checks)
 //       [--clock UNIX]                  (guest wall clock at boot; default: now, or the recording's)
 //       [--saves DIR]                   (save data folder; default: saves/ next to the settings; recordings
 //                                        snapshot it to <file>.saves and replays run on a copy of that)
+//       [--mods DIR]                    (mod folders, each with pkg/NNNNN.* entry replacements; default ./mods)
 //       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
 //       [--touch]                       (show the on-screen touch controls from the start; default on Android)
 //       [--perf]                        (prints host time per 300 vblanks and display frames)
@@ -350,10 +352,23 @@ int main(int argc, char** argv) {
     const bool explicit_dir = argc >= 2 && std::string_view(argv[1]).substr(0, 2) != "--";
     const int first_option = explicit_dir ? 2 : 1;
     const fs::path game_dir = explicit_dir ? fs::path(argv[1]) : data_dir / "Crisis Core - Final Fantasy VII EU";
-    if (!fs::exists(game_dir / "PSP_GAME" / "SYSDIR" / "BOOT.BIN")) {
-        const std::string message = "Copy your extracted game folder (with PSP_GAME inside) and the cooked folder to:\n\n" +
-                                    data_dir.string() + "\n\nExpected: " + game_dir.string();
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Game files not found", message.c_str(), nullptr);
+    // Probe without exceptions: a folder created by `adb push` before the app's first start belongs to the shell
+    // user, and the app is then denied access to it.
+    std::error_code probe_error;
+    const bool found = fs::exists(game_dir / "PSP_GAME" / "SYSDIR" / "BOOT.BIN", probe_error);
+    if (!found) {
+        const bool denied = probe_error == std::errc::permission_denied;
+        const std::string message =
+            denied ? "The app is not allowed to read:\n\n" + game_dir.string() +
+                         "\n\nThe folder was probably created before the app's first start (for example by adb push), so it "
+                         "belongs to another user. Uninstall the app (this deletes its files folder), install it again, start "
+                         "it once, then copy the game files. scripts/build-android.ps1 -InstallData does this in the right order."
+                   : "Copy your extracted game folder (with PSP_GAME inside) and the cooked folder to:\n\n" + data_dir.string() +
+                         "\n\nExpected: " + game_dir.string() +
+                         "\n\nscripts/build-android.ps1 -InstallData can copy them from your PC.";
+        std::fprintf(stderr, "%s\n", message.c_str());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, denied ? "Game files not readable" : "Game files not found",
+                                 message.c_str(), nullptr);
         return 1;
     }
 #else
@@ -382,7 +397,9 @@ int main(int argc, char** argv) {
         std::uint64_t max_vblanks = 0;
         std::uint64_t ge_dump_vblank = 0;
         std::uint64_t state_hash_every = 0;
-        fs::path record_path, replay_path, saves_dir;
+        std::uint64_t ram_dump_vblank = 0;
+        std::string ram_dump_path;
+        fs::path record_path, replay_path, saves_dir, mods_dir;
         std::int64_t clock_base = static_cast<std::int64_t>(std::time(nullptr));
         bool clock_given = false;
         std::vector<ScriptedPress> presses;
@@ -433,9 +450,14 @@ int main(int argc, char** argv) {
             else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
             else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = std::stoull(argv[++i]);
             else if (a == "--state-hash" && i + 1 < argc) state_hash_every = std::stoull(argv[++i]);
+            else if (a == "--ram-dump" && i + 2 < argc) {
+                ram_dump_vblank = std::stoull(argv[++i]);
+                ram_dump_path = argv[++i];
+            }
             else if (a == "--record" && i + 1 < argc) record_path = argv[++i];
             else if (a == "--replay" && i + 1 < argc) replay_path = argv[++i];
             else if (a == "--saves" && i + 1 < argc) saves_dir = argv[++i];
+            else if (a == "--mods" && i + 1 < argc) mods_dir = argv[++i];
             else if (a == "--clock" && i + 1 < argc) {
                 clock_base = std::stoll(argv[++i]);
                 clock_given = true;
@@ -474,6 +496,7 @@ int main(int argc, char** argv) {
             if (fs::exists(saves)) fs::copy(saves, snapshot, fs::copy_options::recursive);
         }
         rt::set_storage(game_dir, saves);
+        rt::set_mods(mods_dir.empty() ? data_dir / "mods" : mods_dir);
 
         // Input recording / replay. A replay also fixes the guest clock to the recording's.
         std::unique_ptr<InputReplay> replay;
@@ -495,6 +518,13 @@ int main(int argc, char** argv) {
         // Per vblank: applies due save picker answers and replayed input; records what the game sees.
         const auto input_step = [&](std::uint32_t& buttons, std::uint8_t& lx, std::uint8_t& ly) {
             const std::uint64_t vblank = kernel.vblank_count();
+            if (!ram_dump_path.empty() && vblank == ram_dump_vblank) {  // debugging: user RAM to a file
+                std::FILE* f = std::fopen(ram_dump_path.c_str(), "wb");
+                if (f) {
+                    std::fwrite(memory.ptr(0x08800000), 1, 0x01800000, f);
+                    std::fclose(f);
+                }
+            }
             if (state_hash_every && vblank % state_hash_every == 0) {  // determinism checks: user RAM (24 MiB)
                 std::uint64_t h = 0xCBF29CE484222325ull;
                 const auto* p = reinterpret_cast<const std::uint64_t*>(memory.ptr(0x08800000));

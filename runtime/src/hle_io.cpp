@@ -4,6 +4,7 @@
 // through the raw UMD block devices (umd0:/umd1:): seeks are absolute sectors and reads are sector counts.
 // sceIoGetstat reports discimg.pkg at kPkgLbn, the LBN PPSSPP assigns, so logs stay comparable.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -11,7 +12,10 @@
 #include <map>
 #include <string>
 #include <system_error>
+#include <vector>
 
+#include "ff7cc/formats/pkg.hpp"
+#include "ff7cc/io/file.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
@@ -31,6 +35,8 @@ GuestMemory& mem() { return kernel().memory(); }
 
 struct OpenFile {
     std::fstream stream;
+    const std::vector<char>* memory = nullptr;  // served from memory (the patched discimg.fse)
+    std::uint64_t memory_pos = 0;
     bool block = false;        // umd0:/umd1:
     std::uint64_t sector = 0;  // block devices: current absolute LBN
     std::int64_t async_result = 0;
@@ -47,6 +53,43 @@ struct OpenDir {
 std::map<int, OpenDir> g_dirs;
 
 std::fstream g_pkg;  // discimg.pkg for block reads
+std::uint64_t g_pkg_sectors = 0;
+
+// Mod overlay (set_mods): a virtual archive with every entry in its original order, as a repacked archive would
+// have them (the original is laid out contiguously, so without mods the layout is identical). Entries after a
+// resized one move; the game finds files only through discimg.fse, which it is given patched. Keeping the order
+// matters: the game treats files by position (moving a module past the movies changes how it is loaded).
+struct VirtualEntry {
+    std::uint64_t sector = 0, sectors = 0;  // virtual position, relative to the start of discimg.pkg
+    std::uint64_t source_sector = 0;        // original position (unmodified entries)
+    fs::path mod;                           // replacement file, if any
+};
+std::vector<VirtualEntry> g_virtual;  // empty when no mod replaces anything
+std::vector<char> g_patched_fse;
+
+// Reads `count` sectors of the virtual archive starting at `first` (relative to its start) into `out`.
+void read_virtual(std::uint64_t first, std::uint64_t count, char* out) {
+    auto it = std::upper_bound(g_virtual.begin(), g_virtual.end(), first,
+                               [](std::uint64_t s, const VirtualEntry& e) { return s < e.sector; });
+    if (it != g_virtual.begin()) --it;
+    for (std::uint64_t s = first, end = first + count; s < end && it != g_virtual.end(); ++it) {
+        if (it->sectors == 0 || it->sector + it->sectors <= s) continue;
+        if (it->sector >= end) break;
+        const std::uint64_t from = std::max(s, it->sector), to = std::min(end, it->sector + it->sectors);
+        char* dst = out + (from - first) * kSector;
+        const auto bytes = static_cast<std::streamsize>((to - from) * kSector);
+        if (it->mod.empty()) {
+            g_pkg.clear();
+            g_pkg.seekg(static_cast<std::streamoff>((it->source_sector + from - it->sector) * kSector));
+            g_pkg.read(dst, bytes);
+        } else {
+            std::ifstream mod(it->mod, std::ios::binary);
+            mod.seekg(static_cast<std::streamoff>((from - it->sector) * kSector));
+            mod.read(dst, bytes);  // the last sector is zero-padded
+        }
+        s = to;
+    }
+}
 
 std::string lower(std::string s) {
     for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -72,7 +115,9 @@ bool is_block_device(const std::string& guest) {
 
 std::int64_t block_read(OpenFile& f, std::uint32_t buffer, std::uint32_t sectors) {
     std::vector<char> data(static_cast<std::size_t>(sectors) * kSector, 0);
-    if (f.sector >= kPkgLbn && g_pkg) {
+    if (f.sector >= kPkgLbn && !g_virtual.empty()) {
+        read_virtual(f.sector - kPkgLbn, sectors, data.data());
+    } else if (f.sector >= kPkgLbn && g_pkg) {
         g_pkg.clear();
         g_pkg.seekg(static_cast<std::streamoff>((f.sector - kPkgLbn) * kSector));
         g_pkg.read(data.data(), static_cast<std::streamsize>(data.size()));
@@ -87,6 +132,12 @@ std::int64_t do_read(int fd, std::uint32_t buffer, std::uint32_t size) {
     if (it == g_files.end()) return static_cast<std::int32_t>(kErrorBadFile);
     OpenFile& f = it->second;
     if (f.block) return block_read(f, buffer, size);
+    if (f.memory) {
+        const std::uint64_t n = std::min<std::uint64_t>(size, f.memory->size() - std::min<std::uint64_t>(f.memory_pos, f.memory->size()));
+        std::memcpy(mem().ptr(buffer), f.memory->data() + f.memory_pos, n);
+        f.memory_pos += n;
+        return static_cast<std::int64_t>(n);
+    }
     f.stream.read(reinterpret_cast<char*>(mem().ptr(buffer)), size);
     const auto n = f.stream.gcount();
     f.stream.clear();
@@ -100,6 +151,12 @@ std::int64_t do_seek(int fd, std::int64_t offset, int whence) {
     if (f.block) {
         f.sector = whence == 0 ? static_cast<std::uint64_t>(offset) : f.sector + offset;
         return static_cast<std::int64_t>(f.sector);
+    }
+    if (f.memory) {
+        const std::int64_t base = whence == 0 ? 0 : whence == 1 ? static_cast<std::int64_t>(f.memory_pos)
+                                                                : static_cast<std::int64_t>(f.memory->size());
+        f.memory_pos = static_cast<std::uint64_t>(std::max<std::int64_t>(0, base + offset));
+        return static_cast<std::int64_t>(f.memory_pos);
     }
     f.stream.clear();
     f.stream.seekg(offset, whence == 0 ? std::ios::beg : whence == 1 ? std::ios::cur : std::ios::end);
@@ -115,6 +172,12 @@ int do_open(const std::string& path, std::uint32_t flags) {
     } else {
         const fs::path host = host_path(path);
         if (host.empty()) return static_cast<int>(kErrorNotFound);
+        if (!g_patched_fse.empty() && lower(host.filename().string()) == "discimg.fse") {
+            f.memory = &g_patched_fse;
+            const int fd = g_next_fd++;
+            g_files.emplace(fd, std::move(f));
+            return fd;
+        }
         std::ios::openmode mode = std::ios::binary;
         if (flags & 0x0001) mode |= std::ios::in;    // PSP_O_RDONLY
         if (flags & 0x0002) mode |= std::ios::out;   // PSP_O_WRONLY
@@ -302,6 +365,55 @@ void set_storage(const fs::path& game_dir, const fs::path& save_dir) {
     g_save_dir = save_dir;
     g_pkg.open(game_dir / "PSP_GAME" / "USRDIR" / "discimg.pkg", std::ios::in | std::ios::binary);
     if (!g_pkg) std::fprintf(stderr, "warning: discimg.pkg not found under %s\n", game_dir.string().c_str());
+    std::error_code ec;
+    const auto pkg_size = fs::file_size(game_dir / "PSP_GAME" / "USRDIR" / "discimg.pkg", ec);
+    g_pkg_sectors = ec ? 0 : (pkg_size + kSector - 1) / kSector;
+}
+
+void set_mods(const fs::path& mods_dir) {
+    g_virtual.clear();
+    g_patched_fse.clear();
+    std::error_code ec;
+    if (!fs::is_directory(mods_dir, ec)) return;
+    std::vector<fs::path> mods;
+    for (const auto& d : fs::directory_iterator(mods_dir, ec))
+        if (d.is_directory() && fs::is_directory(d.path() / "pkg")) mods.push_back(d.path());
+    std::sort(mods.begin(), mods.end());
+    std::map<std::size_t, fs::path> replaced;  // entry -> file (later mods win)
+    for (const auto& m : mods)
+        for (const auto& f : fs::directory_iterator(m / "pkg", ec)) {
+            const std::string stem = f.path().stem().string();
+            if (!f.is_regular_file() || stem.empty() || stem.find_first_not_of("0123456789") != std::string::npos) continue;
+            replaced[std::stoul(stem)] = f.path();
+        }
+    if (replaced.empty()) return;
+
+    const fs::path fse_path = g_game_dir / "PSP_GAME" / "USRDIR" / "discimg.fse";
+    const auto fse = io::read_all(fse_path);
+    auto entries = pkg::parse_index(fse);
+    for (const auto& [index, path] : replaced)
+        if (index >= entries.size())
+            std::fprintf(stderr, "mods: %s replaces entry %zu, but the archive has %zu entries\n", path.string().c_str(),
+                         index, entries.size());
+    std::uint64_t next = 0;
+    g_virtual.reserve(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        VirtualEntry v;
+        v.sector = next;
+        v.source_sector = entries[i].sector;
+        if (const auto it = replaced.find(i); it != replaced.end()) {
+            v.mod = it->second;
+            entries[i].size = static_cast<std::uint32_t>(fs::file_size(v.mod));
+        }
+        v.sectors = (std::uint64_t{entries[i].size} + kSector - 1) / kSector;
+        entries[i].sector = static_cast<std::uint32_t>(next);
+        next += v.sectors;
+        g_virtual.push_back(std::move(v));
+    }
+    const auto patched = pkg::serialize_index(entries);
+    g_patched_fse.assign(reinterpret_cast<const char*>(patched.data()), reinterpret_cast<const char*>(patched.data()) + patched.size());
+    std::fprintf(stderr, "mods: %zu archive entries replaced from %zu mod folders in %s\n", replaced.size(), mods.size(),
+                 mods_dir.string().c_str());
 }
 
 const fs::path& save_dir() { return g_save_dir; }
