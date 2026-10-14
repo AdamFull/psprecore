@@ -44,6 +44,8 @@ public:
     void set_ui(std::function<void()> ui);
     // Presents the last frame again with the overlay (while the game is paused); false while minimised.
     bool present_again();
+    // Drops the reference to the last image given to present_image (before its owner destroys it).
+    void forget_last_image();
     // True once per press of Escape/F1 or the gamepad Guide button (or both stick clicks).
     bool take_menu_request();
     void set_fullscreen(bool on);

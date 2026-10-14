@@ -26,7 +26,8 @@ Settings Settings::load(const std::filesystem::path& path) {
         const auto eq = line.find('=');
         if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
         const std::string_view key = std::string_view(line).substr(0, eq), value = std::string_view(line).substr(eq + 1);
-        if (key == "scale") s.scale = std::clamp(to_int(value, s.scale), 1, 8);
+        if (key == "renderer") s.software_renderer = value == "software";
+        else if (key == "scale") s.scale = std::clamp(to_int(value, s.scale), 1, 8);
         else if (key == "fullscreen") s.fullscreen = to_int(value, 0) != 0;
         else if (key == "volume") s.volume = std::clamp(to_int(value, s.volume), 0, 100);
         else if (key == "frame_limit") s.frame_limit = to_int(value, 1) != 0;
@@ -38,6 +39,7 @@ Settings Settings::load(const std::filesystem::path& path) {
 bool Settings::save(const std::filesystem::path& path) const {
     std::ofstream out(path, std::ios::trunc);
     out << "# FF7CCRECOMP settings\n"
+        << "renderer=" << (software_renderer ? "software" : "vulkan") << '\n'
         << "scale=" << scale << '\n'
         << "fullscreen=" << int{fullscreen} << '\n'
         << "volume=" << volume << '\n'

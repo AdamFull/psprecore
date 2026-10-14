@@ -19,7 +19,8 @@ public:
     struct Hooks {
         std::function<void(const Settings&)> apply;  // called whenever a setting changes
         std::function<void()> quit;
-        bool gpu_renderer = true;                    // the scale setting only applies to the Vulkan renderer
+        bool renderer_choice = true;                 // false: fixed by the command line (--renderer)
+        bool gpu_renderer = true;                    // the renderer in use when the choice is fixed
     };
     Overlay(Display& display, Settings& settings, Hooks hooks);
     ~Overlay();

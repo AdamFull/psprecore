@@ -2,7 +2,8 @@
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
-//       [--renderer vulkan|soft|compare] [--scale N]   (window only; headless always uses the software renderer;
+//       [--renderer vulkan|soft|compare] [--scale N]   (window only, default: the setting, which the pause menu
+//                                        changes; headless always uses the software renderer;
 //                                        compare runs both and screenshots show reference | Vulkan | difference)
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
 //       [--record FILE] [--replay FILE]  (controller input and save picker answers per vblank; a replay
@@ -23,7 +24,8 @@
 //       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
 //                                        up/down/left/right/l/r for 6 vblanks; for automated testing)
 //       [--ui VBLANK ACTION]...         (scripted overlay input: menu, enter, escape, up, down, space,
-//                                        tap:X,Y for a touch at window-normalised coordinates)
+//                                        tap:X,Y for a touch at window-normalised coordinates,
+//                                        renderer:vulkan / renderer:software as if chosen in the menu)
 //       [--window-shot VBLANK out.png]  (captures the window, overlay included; a pause menu opened by --ui
 //                                        closes itself after this capture so the run can continue)
 
@@ -386,7 +388,7 @@ int main(int argc, char** argv) {
         std::string screenshot_path;
         std::string audio_dump;
         fs::path cooked_dir;
-        std::string renderer = "vulkan";
+        std::string renderer;  // empty: the setting (Vulkan or software, switchable in the pause menu)
         int scale = 0;  // 0: from the settings file
         fs::path settings_path = data_dir / "ff7cc.ini";
         bool no_audio = false, unthrottled = false, perf = false, mute = false;
@@ -635,17 +637,23 @@ int main(int argc, char** argv) {
         if (!headless) {
             display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
             display->set_touch_controls(touch);
-            const bool gpu = renderer != "soft";
+            // The renderer can change at run time (pause menu) unless the command line fixed it.
+            const bool renderer_choice = renderer.empty();
+            if (renderer_choice) renderer = settings.software_renderer ? "soft" : "vulkan";
+            bool gpu = renderer != "soft";
+            bool switch_renderer = false;
             const auto apply = [&](const platform::Settings& s) {
                 if (vulkan_renderer) vulkan_renderer->set_scale(s.scale);
                 if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
                 if (audio) audio->set_volume(mute ? 0.0f : static_cast<float>(s.volume) / 100.0f);
                 kernel.realtime = s.frame_limit && !unthrottled;
+                if (renderer_choice) switch_renderer = s.software_renderer == gpu;  // applied when the menu closes
             };
             apply(settings);
             platform::Overlay::Hooks hooks;
             hooks.apply = apply;
             hooks.quit = [&] { kernel.request_quit(); };
+            hooks.renderer_choice = renderer_choice;
             hooks.gpu_renderer = gpu;
             overlay = std::make_unique<platform::Overlay>(*display, settings, std::move(hooks));
             display->set_ui([&] { overlay->draw(); });
@@ -671,8 +679,10 @@ int main(int argc, char** argv) {
                 if (settings != before && !settings.save(settings_path))
                     std::fprintf(stderr, "could not write %s\n", settings_path.string().c_str());
             };
-            if (gpu) {
+            {
                 rt::set_ge_renderer_factory([&](rt::GuestMemory& mem) {
+                    vulkan_renderer = nullptr;
+                    if (!gpu) return rt::gpu::make_soft_renderer(mem);
                     auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale,
                                                                           data_dir / "vulkan_pipelines.bin");
                     vulkan_renderer = r.get();
@@ -703,7 +713,7 @@ int main(int argc, char** argv) {
                     }
                 });
             }
-            kernel.on_vblank = [&, gpu, pause, arm_window_shot] {
+            kernel.on_vblank = [&, pause, arm_window_shot] {
                 perf_tick();
                 const std::uint64_t vblank = kernel.vblank_count();
                 if (ge_dump_vblank && vblank == ge_dump_vblank) rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
@@ -715,6 +725,10 @@ int main(int argc, char** argv) {
                     else if (u.action == "up") display->inject_key(SDLK_UP);
                     else if (u.action == "down") display->inject_key(SDLK_DOWN);
                     else if (u.action == "space") display->inject_key(SDLK_SPACE);
+                    else if (u.action == "renderer:vulkan" || u.action == "renderer:software") {
+                        settings.software_renderer = u.action == "renderer:software";
+                        apply(settings);
+                    }
                     else if (u.action.starts_with("tap:")) {  // tap:X,Y in window-normalised coordinates
                         const auto comma = u.action.find(',');
                         if (comma != std::string::npos)
@@ -733,6 +747,14 @@ int main(int argc, char** argv) {
                 }
                 if (display->take_menu_request()) overlay->handle_menu_request();
                 if (overlay->menu_open()) pause();
+                if (switch_renderer) {
+                    switch_renderer = false;
+                    gpu = !gpu;
+                    renderer = gpu ? "vulkan" : "soft";
+                    display->forget_last_image();
+                    rt::reset_ge_renderer();
+                    std::fprintf(stderr, "renderer: %s\n", gpu ? "Vulkan" : "software");
+                }
                 if (window_shot_armed) arm_window_shot();
                 const auto pad = overlay->wants_input() ? platform::PadState{} : display->pad();
                 std::uint32_t buttons = pad.buttons | scripted_buttons(presses, kernel.vblank_count());

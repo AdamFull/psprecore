@@ -105,7 +105,12 @@ void Overlay::draw_menu() {
         Settings s = settings_;
         ImGui::SeparatorText("Display");
         ImGui::PushItemWidth(width * 0.55f);
-        if (hooks_.gpu_renderer) {
+        if (hooks_.renderer_choice) {
+            int choice = s.software_renderer ? 1 : 0;
+            ImGui::Combo("Renderer", &choice, "Vulkan\0Software (reference)\0");
+            s.software_renderer = choice == 1;
+        }
+        if (hooks_.renderer_choice ? !s.software_renderer : hooks_.gpu_renderer) {
             ImGui::SliderInt("Resolution", &s.scale, 1, 8, "%dx");
             ImGui::SameLine();
             ImGui::TextDisabled("%dx%d", 480 * s.scale, 272 * s.scale);

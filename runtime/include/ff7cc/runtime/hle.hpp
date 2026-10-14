@@ -59,6 +59,8 @@ std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size);  /
 
 // GE renderer used for display lists (call before the game starts; default: the software renderer).
 void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory);
+// Replaces the GE renderer with a new one from the factory (between frames; e.g. the renderer setting changed).
+void reset_ge_renderer();
 // Called on every framebuffer flip (sceDisplaySetFrameBuf) with the address, stride and pixel format.
 void set_flip_handler(std::function<void(std::uint32_t address, std::uint32_t stride, std::uint32_t format)> handler);
 

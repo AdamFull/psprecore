@@ -166,6 +166,12 @@ void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMe
     g_renderer_factory = std::move(factory);
 }
 
+void reset_ge_renderer() {
+    if (!g_display.ge) return;  // created on first use
+    g_display.ge->set_renderer(nullptr);  // the old one goes first (GPU resources)
+    g_display.ge->set_renderer(g_renderer_factory ? g_renderer_factory(mem()) : gpu::make_soft_renderer(mem()));
+}
+
 void set_flip_handler(std::function<void(std::uint32_t, std::uint32_t, std::uint32_t)> handler) {
     g_flip_handler = std::move(handler);
 }

@@ -8,6 +8,7 @@
 namespace ff7cc::platform {
 
 struct Settings {
+    bool software_renderer = false;  // the software (reference) renderer instead of Vulkan
     int scale = 2;            // Vulkan renderer internal resolution (multiples of 480x272)
     bool fullscreen = false;
     int volume = 100;         // master volume, percent

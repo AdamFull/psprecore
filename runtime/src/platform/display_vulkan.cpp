@@ -873,6 +873,8 @@ void Display::present_image(VkImage image, int width, int height) {
     d.blit_and_present(image, width, height, {});
 }
 
+void Display::forget_last_image() { impl_->last_source = VK_NULL_HANDLE; }
+
 bool Display::present_again() {
     auto& d = *impl_;
     if (!d.last_source || !d.begin_present()) return false;
