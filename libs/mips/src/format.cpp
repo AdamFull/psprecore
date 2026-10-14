@@ -3,9 +3,10 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <string>
 
 #include "ff7cc/mips/allegrex.hpp"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
 namespace ff7cc::mips {
 
@@ -27,18 +28,18 @@ constexpr const char* kVcst[32] = {
     "VFPU_30",       "VFPU_31"};
 constexpr char kSizeChar[5] = {'?', 's', 'p', 't', 'q'};
 
-std::string hex(std::uint32_t v) {
+nx::string hex(std::uint32_t v) {
     char buf[16];
     std::snprintf(buf, sizeof buf, "0x%x", v);
     return buf;
 }
 
-std::string fpr(std::uint32_t r) { return "$f" + std::to_string(r); }
+nx::string fpr(std::uint32_t r) { return "$f" + nx::format("{}", r); }
 
-std::string mem(std::int32_t off, std::uint32_t base) { return std::to_string(off) + "(" + kGpr[base] + ")"; }
+nx::string mem(std::int32_t off, std::uint32_t base) { return nx::format("{}", off) + "(" + kGpr[base] + ")"; }
 
 // VFPU register name: S (single), C/R (column/row vector), M/E (matrix / transposed matrix).
-std::string vreg(std::uint32_t r, int size, bool matrix = false) {
+nx::string vreg(std::uint32_t r, int size, bool matrix = false) {
     const unsigned m = (r >> 2) & 7, i = r & 3;
     const bool transposed = (r >> 5) & 1;
     char kind;
@@ -70,7 +71,7 @@ std::string vreg(std::uint32_t r, int size, bool matrix = false) {
     return buf;
 }
 
-std::string half_float(std::uint16_t h) {
+nx::string half_float(std::uint16_t h) {
     const int sign = h >> 15, exp = (h >> 10) & 31, frac = h & 0x3FF;
     float f;
     if (exp == 0) f = static_cast<float>(frac) / 1024.0f / 16384.0f;
@@ -85,10 +86,10 @@ std::string half_float(std::uint16_t h) {
     return buf;
 }
 
-std::string prefix_lanes(std::uint32_t w, bool dest) {
+nx::string prefix_lanes(std::uint32_t w, bool dest) {
     static constexpr const char* kSwz[4] = {"x", "y", "z", "w"};
     static constexpr const char* kConst[8] = {"0", "1", "2", "1/2", "3", "1/3", "1/4", "1/6"};
-    std::string out;
+    nx::string out;
     for (int lane = 0; lane < 4; ++lane) {
         if (lane) out += ',';
         if (dest) {
@@ -102,17 +103,17 @@ std::string prefix_lanes(std::uint32_t w, bool dest) {
         const bool abs = (w >> (8 + lane)) & 1, cst = (w >> (12 + lane)) & 1, neg = (w >> (16 + lane)) & 1;
         if (neg) out += '-';
         if (cst) out += kConst[swz + (abs ? 4 : 0)];
-        else if (abs) out += std::string("|") + kSwz[swz] + "|";
+        else if (abs) out += nx::string("|") + kSwz[swz] + "|";
         else out += kSwz[swz];
     }
     return out;
 }
 
-std::string rot_lanes(std::uint32_t w, int size) {
+nx::string rot_lanes(std::uint32_t w, int size) {
     const auto imm = (w >> 16) & 31;
     const auto sin_pos = (imm >> 2) & 3, cos_pos = imm & 3;
     const bool neg = imm & 16;
-    std::string out = "[";
+    nx::string out = "[";
     for (int lane = 0; lane < size; ++lane) {
         if (lane) out += ',';
         if (static_cast<unsigned>(lane) == cos_pos) out += 'c';
@@ -124,35 +125,35 @@ std::string rot_lanes(std::uint32_t w, int size) {
 
 }  // namespace
 
-std::string format(const Instruction& in) {
+nx::string format(const Instruction& in) {
     const auto w = in.word;
     const auto rs = in.rs(), rt = in.rt(), rd = in.rd(), sa = in.sa();
     const int sz = in.vsize();
-    std::string m;     // mnemonic
-    std::string args;  // operands
-    const auto set = [&](std::string mn, std::string a = {}) {
+    nx::string m;     // mnemonic
+    nx::string args;  // operands
+    const auto set = [&](nx::string mn, nx::string a = {}) {
         m = std::move(mn);
         args = std::move(a);
     };
-    const auto vsuffix = [&](const char* base, int size) { return std::string(base) + "." + kSizeChar[size]; };
-    const auto r3 = [&](const char* mn) { set(mn, std::string(kGpr[rd]) + "," + kGpr[rs] + "," + kGpr[rt]); };
+    const auto vsuffix = [&](const char* base, int size) { return nx::string(base) + "." + kSizeChar[size]; };
+    const auto r3 = [&](const char* mn) { set(mn, nx::string(kGpr[rd]) + "," + kGpr[rs] + "," + kGpr[rt]); };
     const auto br = [&]() { return hex(in.branch_target()); };
 
     switch (in.op) {
         case Op::Invalid: set("(bad)"); break;
         case Op::Sll:
             if (w == 0) set("nop");
-            else set("sll", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa));
+            else set("sll", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa));
             break;
-        case Op::Srl: set("srl", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa)); break;
-        case Op::Rotr: set("ror", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa)); break;
-        case Op::Sra: set("sra", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa)); break;
-        case Op::Sllv: set("sllv", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
-        case Op::Srlv: set("srlv", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
-        case Op::Rotrv: set("rorv", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
-        case Op::Srav: set("srav", std::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
+        case Op::Srl: set("srl", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa)); break;
+        case Op::Rotr: set("ror", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa)); break;
+        case Op::Sra: set("sra", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + hex(sa)); break;
+        case Op::Sllv: set("sllv", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
+        case Op::Srlv: set("srlv", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
+        case Op::Rotrv: set("rorv", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
+        case Op::Srav: set("srav", nx::string(kGpr[rd]) + "," + kGpr[rt] + "," + kGpr[rs]); break;
         case Op::Jr: set("jr", kGpr[rs]); break;
-        case Op::Jalr: set("jalr", rd == 31 ? std::string(kGpr[rs]) : std::string(kGpr[rd]) + "," + kGpr[rs]); break;
+        case Op::Jalr: set("jalr", rd == 31 ? nx::string(kGpr[rs]) : nx::string(kGpr[rd]) + "," + kGpr[rs]); break;
         case Op::Movz: r3("movz"); break;
         case Op::Movn: r3("movn"); break;
         case Op::Syscall: set("syscall", (w >> 6) & 0xFFFFF ? hex((w >> 6) & 0xFFFFF) : ""); break;
@@ -162,32 +163,32 @@ std::string format(const Instruction& in) {
         case Op::Mthi: set("mthi", kGpr[rs]); break;
         case Op::Mflo: set("mflo", kGpr[rd]); break;
         case Op::Mtlo: set("mtlo", kGpr[rs]); break;
-        case Op::Clz: set("clz", std::string(kGpr[rd]) + "," + kGpr[rs]); break;
-        case Op::Clo: set("clo", std::string(kGpr[rd]) + "," + kGpr[rs]); break;
-        case Op::Mult: set("mult", std::string(kGpr[rs]) + "," + kGpr[rt]); break;
-        case Op::Multu: set("multu", std::string(kGpr[rs]) + "," + kGpr[rt]); break;
-        case Op::Div: set("div", std::string("zero,") + kGpr[rs] + "," + kGpr[rt]); break;
-        case Op::Divu: set("divu", std::string("zero,") + kGpr[rs] + "," + kGpr[rt]); break;
-        case Op::Madd: set("madd", std::string(kGpr[rs]) + "," + kGpr[rt]); break;
-        case Op::Maddu: set("maddu", std::string(kGpr[rs]) + "," + kGpr[rt]); break;
-        case Op::Msub: set("msub", std::string(kGpr[rs]) + "," + kGpr[rt]); break;
-        case Op::Msubu: set("msubu", std::string(kGpr[rs]) + "," + kGpr[rt]); break;
+        case Op::Clz: set("clz", nx::string(kGpr[rd]) + "," + kGpr[rs]); break;
+        case Op::Clo: set("clo", nx::string(kGpr[rd]) + "," + kGpr[rs]); break;
+        case Op::Mult: set("mult", nx::string(kGpr[rs]) + "," + kGpr[rt]); break;
+        case Op::Multu: set("multu", nx::string(kGpr[rs]) + "," + kGpr[rt]); break;
+        case Op::Div: set("div", nx::string("zero,") + kGpr[rs] + "," + kGpr[rt]); break;
+        case Op::Divu: set("divu", nx::string("zero,") + kGpr[rs] + "," + kGpr[rt]); break;
+        case Op::Madd: set("madd", nx::string(kGpr[rs]) + "," + kGpr[rt]); break;
+        case Op::Maddu: set("maddu", nx::string(kGpr[rs]) + "," + kGpr[rt]); break;
+        case Op::Msub: set("msub", nx::string(kGpr[rs]) + "," + kGpr[rt]); break;
+        case Op::Msubu: set("msubu", nx::string(kGpr[rs]) + "," + kGpr[rt]); break;
         case Op::Add: r3("add"); break;
         case Op::Addu:
-            if (rt == 0) set("move", std::string(kGpr[rd]) + "," + kGpr[rs]);
+            if (rt == 0) set("move", nx::string(kGpr[rd]) + "," + kGpr[rs]);
             else r3("addu");
             break;
         case Op::Sub:
-            if (rs == 0) set("neg", std::string(kGpr[rd]) + "," + kGpr[rt]);
+            if (rs == 0) set("neg", nx::string(kGpr[rd]) + "," + kGpr[rt]);
             else r3("sub");
             break;
         case Op::Subu:
-            if (rs == 0) set("negu", std::string(kGpr[rd]) + "," + kGpr[rt]);
+            if (rs == 0) set("negu", nx::string(kGpr[rd]) + "," + kGpr[rt]);
             else r3("subu");
             break;
         case Op::And: r3("and"); break;
         case Op::Or:
-            if (rt == 0) set("move", std::string(kGpr[rd]) + "," + kGpr[rs]);
+            if (rt == 0) set("move", nx::string(kGpr[rd]) + "," + kGpr[rs]);
             else r3("or");
             break;
         case Op::Xor: r3("xor"); break;
@@ -196,90 +197,90 @@ std::string format(const Instruction& in) {
         case Op::Sltu: r3("sltu"); break;
         case Op::Max: r3("max"); break;
         case Op::Min: r3("min"); break;
-        case Op::Bltz: set("bltz", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Bgez: set("bgez", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Bltzl: set("bltzl", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Bgezl: set("bgezl", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Bltzal: set("bltzal", std::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bltz: set("bltz", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bgez: set("bgez", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bltzl: set("bltzl", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bgezl: set("bgezl", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bltzal: set("bltzal", nx::string(kGpr[rs]) + "," + br()); break;
         case Op::Bgezal:
             if (rs == 0) set("bal", br());
-            else set("bgezal", std::string(kGpr[rs]) + "," + br());
+            else set("bgezal", nx::string(kGpr[rs]) + "," + br());
             break;
-        case Op::Bltzall: set("bltzall", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Bgezall: set("bgezall", std::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bltzall: set("bltzall", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bgezall: set("bgezall", nx::string(kGpr[rs]) + "," + br()); break;
         case Op::J: set("j", hex(in.jump_target())); break;
         case Op::Jal: set("jal", hex(in.jump_target())); break;
         case Op::Beq:
             if (rs == 0 && rt == 0) set("b", br());
-            else if (rt == 0) set("beqz", std::string(kGpr[rs]) + "," + br());
-            else set("beq", std::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
+            else if (rt == 0) set("beqz", nx::string(kGpr[rs]) + "," + br());
+            else set("beq", nx::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
             break;
         case Op::Bne:
-            if (rt == 0) set("bnez", std::string(kGpr[rs]) + "," + br());
-            else set("bne", std::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
+            if (rt == 0) set("bnez", nx::string(kGpr[rs]) + "," + br());
+            else set("bne", nx::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
             break;
         case Op::Beql:
-            if (rt == 0) set("beqzl", std::string(kGpr[rs]) + "," + br());
-            else set("beql", std::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
+            if (rt == 0) set("beqzl", nx::string(kGpr[rs]) + "," + br());
+            else set("beql", nx::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
             break;
         case Op::Bnel:
-            if (rt == 0) set("bnezl", std::string(kGpr[rs]) + "," + br());
-            else set("bnel", std::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
+            if (rt == 0) set("bnezl", nx::string(kGpr[rs]) + "," + br());
+            else set("bnel", nx::string(kGpr[rs]) + "," + kGpr[rt] + "," + br());
             break;
-        case Op::Blez: set("blez", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Bgtz: set("bgtz", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Blezl: set("blezl", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Bgtzl: set("bgtzl", std::string(kGpr[rs]) + "," + br()); break;
-        case Op::Addi: set("addi", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + std::to_string(in.simm())); break;
+        case Op::Blez: set("blez", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bgtz: set("bgtz", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Blezl: set("blezl", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Bgtzl: set("bgtzl", nx::string(kGpr[rs]) + "," + br()); break;
+        case Op::Addi: set("addi", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + nx::format("{}", in.simm())); break;
         case Op::Addiu:
-            if (rs == 0) set("li", std::string(kGpr[rt]) + "," + std::to_string(in.simm()));
-            else set("addiu", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + std::to_string(in.simm()));
+            if (rs == 0) set("li", nx::string(kGpr[rt]) + "," + nx::format("{}", in.simm()));
+            else set("addiu", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + nx::format("{}", in.simm()));
             break;
-        case Op::Slti: set("slti", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + std::to_string(in.simm())); break;
-        case Op::Sltiu: set("sltiu", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + std::to_string(in.simm())); break;
-        case Op::Andi: set("andi", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(in.uimm())); break;
+        case Op::Slti: set("slti", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + nx::format("{}", in.simm())); break;
+        case Op::Sltiu: set("sltiu", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + nx::format("{}", in.simm())); break;
+        case Op::Andi: set("andi", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(in.uimm())); break;
         case Op::Ori:
-            if (rs == 0) set("li", std::string(kGpr[rt]) + "," + hex(in.uimm()));
-            else set("ori", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(in.uimm()));
+            if (rs == 0) set("li", nx::string(kGpr[rt]) + "," + hex(in.uimm()));
+            else set("ori", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(in.uimm()));
             break;
-        case Op::Xori: set("xori", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(in.uimm())); break;
-        case Op::Lui: set("lui", std::string(kGpr[rt]) + "," + hex(in.uimm())); break;
-        case Op::Ext: set("ext", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(sa) + "," + hex(rd + 1)); break;
-        case Op::Ins: set("ins", std::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(sa) + "," + hex(rd + 1 - sa)); break;
-        case Op::Wsbh: set("wsbh", std::string(kGpr[rd]) + "," + kGpr[rt]); break;
-        case Op::Wsbw: set("wsbw", std::string(kGpr[rd]) + "," + kGpr[rt]); break;
-        case Op::Seb: set("seb", std::string(kGpr[rd]) + "," + kGpr[rt]); break;
-        case Op::Seh: set("seh", std::string(kGpr[rd]) + "," + kGpr[rt]); break;
-        case Op::Bitrev: set("bitrev", std::string(kGpr[rd]) + "," + kGpr[rt]); break;
-        case Op::Lb: set("lb", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Lh: set("lh", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Lwl: set("lwl", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Lw: set("lw", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Lbu: set("lbu", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Lhu: set("lhu", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Lwr: set("lwr", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Sb: set("sb", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Sh: set("sh", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Swl: set("swl", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Sw: set("sw", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Swr: set("swr", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Ll: set("ll", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
-        case Op::Sc: set("sc", std::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Xori: set("xori", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(in.uimm())); break;
+        case Op::Lui: set("lui", nx::string(kGpr[rt]) + "," + hex(in.uimm())); break;
+        case Op::Ext: set("ext", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(sa) + "," + hex(rd + 1)); break;
+        case Op::Ins: set("ins", nx::string(kGpr[rt]) + "," + kGpr[rs] + "," + hex(sa) + "," + hex(rd + 1 - sa)); break;
+        case Op::Wsbh: set("wsbh", nx::string(kGpr[rd]) + "," + kGpr[rt]); break;
+        case Op::Wsbw: set("wsbw", nx::string(kGpr[rd]) + "," + kGpr[rt]); break;
+        case Op::Seb: set("seb", nx::string(kGpr[rd]) + "," + kGpr[rt]); break;
+        case Op::Seh: set("seh", nx::string(kGpr[rd]) + "," + kGpr[rt]); break;
+        case Op::Bitrev: set("bitrev", nx::string(kGpr[rd]) + "," + kGpr[rt]); break;
+        case Op::Lb: set("lb", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Lh: set("lh", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Lwl: set("lwl", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Lw: set("lw", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Lbu: set("lbu", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Lhu: set("lhu", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Lwr: set("lwr", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Sb: set("sb", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Sh: set("sh", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Swl: set("swl", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Sw: set("sw", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Swr: set("swr", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Ll: set("ll", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
+        case Op::Sc: set("sc", nx::string(kGpr[rt]) + "," + mem(in.simm(), rs)); break;
         case Op::Cache: set("cache", hex(rt) + "," + mem(in.simm(), rs)); break;
         case Op::Halt: set("halt"); break;
-        case Op::Mfic: set("mfic", std::string(kGpr[rt]) + "," + std::to_string(rd)); break;
-        case Op::Mtic: set("mtic", std::string(kGpr[rt]) + "," + std::to_string(rd)); break;
-        case Op::Mfc0: set("mfc0", std::string(kGpr[rt]) + ",$" + std::to_string(rd)); break;
-        case Op::Mtc0: set("mtc0", std::string(kGpr[rt]) + ",$" + std::to_string(rd)); break;
+        case Op::Mfic: set("mfic", nx::string(kGpr[rt]) + "," + nx::format("{}", rd)); break;
+        case Op::Mtic: set("mtic", nx::string(kGpr[rt]) + "," + nx::format("{}", rd)); break;
+        case Op::Mfc0: set("mfc0", nx::string(kGpr[rt]) + ",$" + nx::format("{}", rd)); break;
+        case Op::Mtc0: set("mtc0", nx::string(kGpr[rt]) + ",$" + nx::format("{}", rd)); break;
         case Op::Eret: set("eret"); break;
 
         // FPU
         case Op::Lwc1: set("lwc1", fpr(in.ft()) + "," + mem(in.simm(), rs)); break;
         case Op::Swc1: set("swc1", fpr(in.ft()) + "," + mem(in.simm(), rs)); break;
-        case Op::Mfc1: set("mfc1", std::string(kGpr[rt]) + "," + fpr(in.fs())); break;
-        case Op::Mtc1: set("mtc1", std::string(kGpr[rt]) + "," + fpr(in.fs())); break;
-        case Op::Cfc1: set("cfc1", std::string(kGpr[rt]) + ",$" + std::to_string(in.fs())); break;
-        case Op::Ctc1: set("ctc1", std::string(kGpr[rt]) + ",$" + std::to_string(in.fs())); break;
+        case Op::Mfc1: set("mfc1", nx::string(kGpr[rt]) + "," + fpr(in.fs())); break;
+        case Op::Mtc1: set("mtc1", nx::string(kGpr[rt]) + "," + fpr(in.fs())); break;
+        case Op::Cfc1: set("cfc1", nx::string(kGpr[rt]) + ",$" + nx::format("{}", in.fs())); break;
+        case Op::Ctc1: set("ctc1", nx::string(kGpr[rt]) + ",$" + nx::format("{}", in.fs())); break;
         case Op::Bc1f: set("bc1f", br()); break;
         case Op::Bc1t: set("bc1t", br()); break;
         case Op::Bc1fl: set("bc1fl", br()); break;
@@ -298,7 +299,7 @@ std::string format(const Instruction& in) {
         case Op::FloorWS: set("floor.w.s", fpr(in.fd()) + "," + fpr(in.fs())); break;
         case Op::CvtSW: set("cvt.s.w", fpr(in.fd()) + "," + fpr(in.fs())); break;
         case Op::CvtWS: set("cvt.w.s", fpr(in.fd()) + "," + fpr(in.fs())); break;
-        case Op::CCondS: set(std::string("c.") + kFpuCond[w & 15] + ".s", fpr(in.fs()) + "," + fpr(in.ft())); break;
+        case Op::CCondS: set(nx::string("c.") + kFpuCond[w & 15] + ".s", fpr(in.fs()) + "," + fpr(in.ft())); break;
 
         // VFPU loads/stores and transfers
         case Op::LvS:
@@ -311,18 +312,18 @@ std::string format(const Instruction& in) {
             static constexpr const char* kNames[] = {"lv.q", "sv.q", "lvl.q", "lvr.q", "svl.q", "svr.q"};
             const int idx = in.op == Op::LvQ ? 0 : in.op == Op::SvQ ? 1 : in.op == Op::LvlQ ? 2 : in.op == Op::LvrQ ? 3 : in.op == Op::SvlQ ? 4 : 5;
             const auto vt = ((w >> 16) & 31) | ((w & 1) << 5);
-            std::string a = vreg(vt, 4) + "," + mem(static_cast<std::int16_t>(w & 0xFFFC), rs);
+            nx::string a = vreg(vt, 4) + "," + mem(static_cast<std::int16_t>(w & 0xFFFC), rs);
             if ((in.op == Op::LvQ || in.op == Op::SvQ) && (w & 2)) a += ",wb";
             set(kNames[idx], a);
             break;
         }
-        case Op::Mfv: set("mfv", std::string(kGpr[rt]) + "," + vreg(in.vd(), 1)); break;
-        case Op::Mtv: set("mtv", std::string(kGpr[rt]) + "," + vreg(in.vd(), 1)); break;
-        case Op::Mfvc: set("mfvc", std::string(kGpr[rt]) + ",$" + std::to_string(in.vd())); break;
-        case Op::Mtvc: set("mtvc", std::string(kGpr[rt]) + ",$" + std::to_string(in.vd())); break;
+        case Op::Mfv: set("mfv", nx::string(kGpr[rt]) + "," + vreg(in.vd(), 1)); break;
+        case Op::Mtv: set("mtv", nx::string(kGpr[rt]) + "," + vreg(in.vd(), 1)); break;
+        case Op::Mfvc: set("mfvc", nx::string(kGpr[rt]) + ",$" + nx::format("{}", in.vd())); break;
+        case Op::Mtvc: set("mtvc", nx::string(kGpr[rt]) + ",$" + nx::format("{}", in.vd())); break;
         case Op::Bvf: case Op::Bvt: case Op::Bvfl: case Op::Bvtl: {
             static constexpr const char* kNames[] = {"bvf", "bvt", "bvfl", "bvtl"};
-            set(kNames[(w >> 16) & 3], std::to_string((w >> 18) & 7) + "," + br());
+            set(kNames[(w >> 16) & 3], nx::format("{}", (w >> 18) & 7) + "," + br());
             break;
         }
 
@@ -343,7 +344,7 @@ std::string format(const Instruction& in) {
         case Op::Vscl: set(vsuffix("vscl", sz), vreg(in.vd(), sz) + "," + vreg(in.vs(), sz) + "," + vreg(in.vt(), 1)); break;
         case Op::Vcmp: {
             const auto cond = w & 15;
-            const std::string a = std::string(kVcmpCond[cond]) + "," + vreg(in.vs(), sz) + "," + vreg(in.vt(), sz);
+            const nx::string a = nx::string(kVcmpCond[cond]) + "," + vreg(in.vs(), sz) + "," + vreg(in.vt(), sz);
             set(vsuffix("vcmp", sz), a);
             break;
         }
@@ -353,13 +354,13 @@ std::string format(const Instruction& in) {
         case Op::Vsin: case Op::Vcos: case Op::Vexp2: case Op::Vlog2: case Op::Vsqrt: case Op::Vasin: case Op::Vnrcp:
         case Op::Vnsin: case Op::Vrexp2: case Op::Vsrt1: case Op::Vsrt2: case Op::Vbfy1: case Op::Vbfy2:
         case Op::Vocp: case Op::Vsrt3: case Op::Vsrt4: case Op::Vsgn: case Op::Vsbz: case Op::Vlgb: {
-            std::string name(op_name(in.op));
+            nx::string name(op_name(in.op));
             for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             set(vsuffix(name.c_str(), sz), vreg(in.vd(), sz) + "," + vreg(in.vs(), sz));
             break;
         }
         case Op::Vidt: case Op::Vzero: case Op::Vone: case Op::Vrndi: case Op::Vrndf1: case Op::Vrndf2: {
-            std::string name(op_name(in.op));
+            nx::string name(op_name(in.op));
             for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             set(vsuffix(name.c_str(), sz), vreg(in.vd(), sz));
             break;
@@ -388,18 +389,18 @@ std::string format(const Instruction& in) {
             set(vsuffix(name, sz), vreg(in.vd(), sz / 2 > 0 ? sz / 2 : 1) + "," + vreg(in.vs(), sz));
             break;
         }
-        case Op::Vmfvc: set(vsuffix("vmfvc", sz), vreg(in.vd(), sz) + ",$" + std::to_string(in.vs() + 128)); break;
-        case Op::Vmtvc: set(vsuffix("vmtvc", sz), "$" + std::to_string(in.vd() + 128) + "," + vreg(in.vs(), sz)); break;
+        case Op::Vmfvc: set(vsuffix("vmfvc", sz), vreg(in.vd(), sz) + ",$" + nx::format("{}", in.vs() + 128)); break;
+        case Op::Vmtvc: set(vsuffix("vmtvc", sz), "$" + nx::format("{}", in.vd() + 128) + "," + vreg(in.vs(), sz)); break;
         case Op::Vcst: set(vsuffix("vcst", sz), vreg(in.vd(), sz) + "," + kVcst[(w >> 16) & 31]); break;
         case Op::Vf2in: case Op::Vf2iz: case Op::Vf2iu: case Op::Vf2id: case Op::Vi2f: {
             const char* name = in.op == Op::Vf2in ? "vf2in" : in.op == Op::Vf2iz ? "vf2iz" : in.op == Op::Vf2iu ? "vf2iu"
                              : in.op == Op::Vf2id ? "vf2id" : "vi2f";
-            set(vsuffix(name, sz), vreg(in.vd(), sz) + "," + vreg(in.vs(), sz) + "," + std::to_string((w >> 16) & 31));
+            set(vsuffix(name, sz), vreg(in.vd(), sz) + "," + vreg(in.vs(), sz) + "," + nx::format("{}", (w >> 16) & 31));
             break;
         }
         case Op::Vcmovt: case Op::Vcmovf:
             set(vsuffix(in.op == Op::Vcmovt ? "vcmovt" : "vcmovf", sz),
-                vreg(in.vd(), sz) + "," + vreg(in.vs(), sz) + "," + std::to_string((w >> 16) & 7));
+                vreg(in.vd(), sz) + "," + vreg(in.vs(), sz) + "," + nx::format("{}", (w >> 16) & 7));
             break;
         case Op::Vwbn: set(vsuffix("vwbn", sz), vreg(in.vd(), sz) + "," + vreg(in.vs(), sz) + "," + hex((w >> 16) & 0xFF)); break;
 
@@ -407,7 +408,7 @@ std::string format(const Instruction& in) {
         case Op::Vpfxs: set("vpfxs", prefix_lanes(w, false)); break;
         case Op::Vpfxt: set("vpfxt", prefix_lanes(w, false)); break;
         case Op::Vpfxd: set("vpfxd", prefix_lanes(w, true)); break;
-        case Op::Viim: set("viim.s", vreg(in.vt(), 1) + "," + std::to_string(in.simm())); break;
+        case Op::Viim: set("viim.s", vreg(in.vt(), 1) + "," + nx::format("{}", in.simm())); break;
         case Op::Vfim: set("vfim.s", vreg(in.vt(), 1) + "," + half_float(static_cast<std::uint16_t>(w & 0xFFFF))); break;
 
         // VFPU matrix ops

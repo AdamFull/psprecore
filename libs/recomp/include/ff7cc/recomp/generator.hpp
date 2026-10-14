@@ -3,11 +3,11 @@
 // Allegrex -> C17 translator (see docs/recompiler.md).
 
 #include <cstdint>
-#include <string>
 
 #include "ff7cc/analysis/program.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::recomp {
 
@@ -25,7 +25,7 @@ struct Stats {
     std::size_t tail_calls = 0;
     std::size_t null_calls = 0;  // jal 0x0 to unlinked weak symbols
     std::size_t overrides = 0;   // functions emitted as _orig because game/ replaces them
-    nx::vector<std::string> warnings;  // unexpected control flow, each with its address
+    nx::vector<nx::string> warnings;  // unexpected control flow, each with its address
 };
 
 class Generator {
@@ -35,18 +35,18 @@ public:
               Options options);
 
     // C source of one function (module-relative start).
-    std::string function_source(const analysis::Function& fn);
+    nx::string function_source(const analysis::Function& fn);
     // `void f_XXXXXXXX(Context*);` for every function.
-    std::string header() const;
+    nx::string header() const;
     // Address -> function table and recomp_lookup().
-    std::string lookup_source() const;
+    nx::string lookup_source() const;
 
     const nx::vector<analysis::Function>& functions() const { return functions_; }
     const Stats& stats() const { return stats_; }
 
 private:
     std::uint32_t word(std::uint32_t abs) const;  // from the relocated image
-    std::string name_of(std::uint32_t abs) const;
+    nx::string name_of(std::uint32_t abs) const;
     bool is_function_start(std::uint32_t abs) const;
 
     const analysis::Program& program_;

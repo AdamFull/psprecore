@@ -2,12 +2,14 @@
 
 #include <array>
 
+#include "core/foundation/strings/utf8_string.h"
+
 namespace ff7cc::mips {
 
 namespace {
 
 constexpr std::array kOpNames{
-#define FF7CC_X(name) std::string_view(#name),
+#define FF7CC_X(name) nx::string_view(#name),
     FF7CC_ALLEGREX_OPS(FF7CC_X)
 #undef FF7CC_X
 };
@@ -324,7 +326,7 @@ Op classify(std::uint32_t w) {
 
 }  // namespace
 
-std::string_view op_name(Op op) { return kOpNames[static_cast<std::size_t>(op)]; }
+nx::string_view op_name(Op op) { return kOpNames[static_cast<std::size_t>(op)]; }
 
 Instruction decode(std::uint32_t word, std::uint32_t pc) { return Instruction{word, pc, classify(word)}; }
 

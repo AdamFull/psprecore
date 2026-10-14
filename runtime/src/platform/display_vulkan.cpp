@@ -25,20 +25,22 @@
 #include <filesystem>
 #include <functional>
 #include <stdexcept>
-#include <string>
 #include <utility>
 
 #include "ff7cc/platform/display.hpp"
+#include "ff7cc/io/path.hpp"
 #include "platform/touch_controls.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
 namespace ff7cc::platform {
 
 namespace {
 
 void check(VkResult r, const char* what) {
-    if (r != VK_SUCCESS) throw std::runtime_error(std::string("Vulkan: ") + what + " failed (" + std::to_string(r) + ")");
+    if (r != VK_SUCCESS) throw std::runtime_error(nx::format("Vulkan: {} failed ({})", what, static_cast<int>(r)).c_str());
 }
 
 }  // namespace
@@ -136,7 +138,7 @@ void Display::Impl::create_device() {
     check(vkCreateInstance(&ici, nullptr, &instance), "vkCreateInstance");
     volkLoadInstance(instance);
     if (!SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface))
-        throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface: ") + SDL_GetError());
+        throw std::runtime_error(nx::format("SDL_Vulkan_CreateSurface: {}", SDL_GetError()).c_str());
 
     std::uint32_t count = 0;
     vkEnumeratePhysicalDevices(instance, &count, nullptr);
@@ -386,15 +388,14 @@ void Display::Impl::init_imgui() {
     const float dpi = std::max(1.0f, SDL_GetWindowDisplayScale(window));
     ui_dpi = dpi;
     const float size = std::round(18.0f * dpi);
-    nx::vector<std::filesystem::path> fonts;
-    if (const char* windir = std::getenv("WINDIR")) fonts.push_back(std::filesystem::path(windir) / "Fonts" / "segoeui.ttf");
+    nx::vector<nx::string> fonts;
+    if (const char* windir = std::getenv("WINDIR")) fonts.push_back(path_join(windir, "Fonts", "segoeui.ttf"));
     fonts.push_back("/system/fonts/Roboto-Regular.ttf");
     fonts.push_back("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
     bool loaded = false;
     for (const auto& f : fonts) {
-        std::error_code ec;
-        if (!std::filesystem::exists(f, ec)) continue;
-        if (io.Fonts->AddFontFromFileTTF(f.string().c_str(), size)) {
+        if (!nx::fs::exists(f)) continue;
+        if (io.Fonts->AddFontFromFileTTF(f.c_str(), size)) {
             loaded = true;
             break;
         }
@@ -474,7 +475,7 @@ void Display::Impl::update_pad() {
 // ---------------------------------------------------------------------------------------------
 
 Display::Display(const char* title, int width, int height) : impl_(std::make_unique<Impl>()) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::string("SDL_Init: ") + SDL_GetError());
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(nx::format("SDL_Init: {}", SDL_GetError()).c_str());
     SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
 #ifdef __ANDROID__
     flags |= SDL_WINDOW_FULLSCREEN;  // immersive: hides the status and navigation bars
@@ -482,7 +483,7 @@ Display::Display(const char* title, int width, int height) : impl_(std::make_uni
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
 #endif
     impl_->window = SDL_CreateWindow(title, width, height, flags);
-    if (!impl_->window) throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
+    if (!impl_->window) throw std::runtime_error(nx::format("SDL_CreateWindow: {}", SDL_GetError()).c_str());
     impl_->create_device();
     impl_->create_swapchain();
     impl_->init_imgui();

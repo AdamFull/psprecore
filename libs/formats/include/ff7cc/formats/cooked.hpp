@@ -12,9 +12,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <span>
-#include <string>
+
+#include "ff7cc/io/path.hpp"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::cooked {
 
@@ -27,21 +28,21 @@ inline std::uint64_t fnv1a64(std::span<const std::byte> data) {
     return h;
 }
 
-inline std::string key_name(std::uint64_t key) {
+inline nx::string key_name(std::uint64_t key) {
     static constexpr char kHex[] = "0123456789abcdef";
-    std::string s(16, '0');
+    nx::string s(16, '0');
     for (int i = 15; i >= 0; --i, key >>= 4) s[static_cast<std::size_t>(i)] = kHex[key & 15];
     return s;
 }
 
-inline std::filesystem::path audio_path(const std::filesystem::path& root, std::uint64_t key) {
-    return root / "audio" / (key_name(key) + ".ogg");
+inline nx::string audio_path(nx::string_view root, std::uint64_t key) {
+    return path_join(root, "audio", key_name(key) + ".ogg");
 }
-inline std::filesystem::path movie_video_path(const std::filesystem::path& root, std::uint64_t key) {
-    return root / "movies" / (key_name(key) + ".ivf");
+inline nx::string movie_video_path(nx::string_view root, std::uint64_t key) {
+    return path_join(root, "movies", key_name(key) + ".ivf");
 }
-inline std::filesystem::path movie_audio_path(const std::filesystem::path& root, std::uint64_t key) {
-    return root / "movies" / (key_name(key) + ".ogg");
+inline nx::string movie_audio_path(nx::string_view root, std::uint64_t key) {
+    return path_join(root, "movies", key_name(key) + ".ogg");
 }
 
 }  // namespace ff7cc::cooked

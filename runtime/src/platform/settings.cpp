@@ -2,15 +2,16 @@
 
 #include <algorithm>
 #include <charconv>
-#include <fstream>
-#include <string>
-#include <string_view>
+
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/format.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::platform {
 
 namespace {
 
-int to_int(std::string_view v, int fallback) {
+int to_int(nx::string_view v, int fallback) {
     int out = fallback;
     std::from_chars(v.data(), v.data() + v.size(), out);
     return out;
@@ -18,14 +19,19 @@ int to_int(std::string_view v, int fallback) {
 
 }  // namespace
 
-Settings Settings::load(const std::filesystem::path& path) {
+Settings Settings::load(nx::fs::path_view path) {
     Settings s;
-    std::ifstream in(path);
-    for (std::string line; std::getline(in, line);) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
+    const auto text = nx::fs::file_read_text(path);
+    if (!text.has_value()) return s;
+    nx::string_view rest = text.value();
+    while (!rest.empty()) {
+        const std::size_t end = std::min(rest.find('\n'), rest.size());
+        nx::string_view line = rest.substr(0, end);
+        rest.remove_prefix(std::min(end + 1, rest.size()));
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
         const auto eq = line.find('=');
-        if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
-        const std::string_view key = std::string_view(line).substr(0, eq), value = std::string_view(line).substr(eq + 1);
+        if (line.empty() || line[0] == '#' || eq == nx::string_view::npos) continue;
+        const nx::string_view key = line.substr(0, eq), value = line.substr(eq + 1);
         if (key == "renderer") s.software_renderer = value == "software";
         else if (key == "scale") s.scale = std::clamp(to_int(value, s.scale), 1, 8);
         else if (key == "fullscreen") s.fullscreen = to_int(value, 0) != 0;
@@ -36,16 +42,12 @@ Settings Settings::load(const std::filesystem::path& path) {
     return s;
 }
 
-bool Settings::save(const std::filesystem::path& path) const {
-    std::ofstream out(path, std::ios::trunc);
-    out << "# FF7CCRECOMP settings\n"
-        << "renderer=" << (software_renderer ? "software" : "vulkan") << '\n'
-        << "scale=" << scale << '\n'
-        << "fullscreen=" << int{fullscreen} << '\n'
-        << "volume=" << volume << '\n'
-        << "frame_limit=" << int{frame_limit} << '\n'
-        << "show_fps=" << int{show_fps} << '\n';
-    return static_cast<bool>(out);
+bool Settings::save(nx::fs::path_view path) const {
+    const nx::string text = nx::format("# FF7CCRECOMP settings\nrenderer={}\nscale={}\nfullscreen={}\nvolume={}\nframe_limit={}\n"
+                                       "show_fps={}\n",
+                                       software_renderer ? "software" : "vulkan", scale, int{fullscreen}, volume,
+                                       int{frame_limit}, int{show_fps});
+    return nx::fs::file_write_text(path, text).has_value();
 }
 
 }  // namespace ff7cc::platform

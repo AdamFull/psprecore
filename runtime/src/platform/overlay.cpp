@@ -4,11 +4,11 @@
 
 #include <algorithm>
 #include <ctime>
-#include <string_view>
 
 #include "ff7cc/platform/display.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::platform {
 
@@ -17,7 +17,7 @@ namespace {
 constexpr ImGuiWindowFlags kDialogFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
                                           ImGuiWindowFlags_NoSavedSettings;
 
-std::string format_time(std::int64_t unix_seconds) {
+nx::string format_time(std::int64_t unix_seconds) {
     const std::time_t t = static_cast<std::time_t>(unix_seconds);
     std::tm local{};
 #ifdef _WIN32
@@ -31,12 +31,12 @@ std::string format_time(std::int64_t unix_seconds) {
 }
 
 // The first `lines` lines of `text`.
-std::string_view first_lines(std::string_view text, int lines) {
+nx::string_view first_lines(nx::string_view text, int lines) {
     std::size_t end = 0;
-    for (int i = 0; i < lines && end != std::string_view::npos; ++i) {
+    for (int i = 0; i < lines && end != nx::string_view::npos; ++i) {
         end = text.find('\n', end ? end + 1 : 0);
     }
-    return end == std::string_view::npos ? text : text.substr(0, end);
+    return end == nx::string_view::npos ? text : text.substr(0, end);
 }
 
 bool cancel_pressed() {
@@ -148,7 +148,7 @@ void Overlay::draw_menu() {
     if (!open) close_menu();
 }
 
-std::uint64_t Overlay::icon(const std::string& path) {
+std::uint64_t Overlay::icon(const nx::string& path) {
     if (const auto it = icons_.find(path); it != icons_.end()) return it->second;
     nx::vector<std::uint32_t> rgba;
     int w = 0, h = 0;
@@ -204,7 +204,7 @@ void Overlay::draw_save_dialog() {
             }
             const ImVec2 after = ImGui::GetCursorPos();
             ImGui::SetCursorPos(start);
-            if (const std::uint64_t tex = slot.icon.empty() ? 0 : icon(slot.icon.string()))
+            if (const std::uint64_t tex = slot.icon.empty() ? 0 : icon(slot.icon))
                 ImGui::Image(static_cast<ImTextureID>(tex), {icon_w, row_h});
             else
                 ImGui::Dummy({icon_w, row_h});
@@ -214,7 +214,7 @@ void Overlay::draw_save_dialog() {
                 ImGui::Text("%s", slot.title.empty() ? slot.name.c_str() : slot.title.c_str());
                 ImGui::SameLine();
                 ImGui::TextDisabled("  %s", format_time(slot.time).c_str());
-                const std::string_view detail = first_lines(slot.detail, 3);
+                const nx::string_view detail = first_lines(slot.detail, 3);
                 ImGui::TextUnformatted(detail.data(), detail.data() + detail.size());
             } else {
                 ImGui::TextDisabled("New save data");

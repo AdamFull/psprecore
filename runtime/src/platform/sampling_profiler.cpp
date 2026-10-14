@@ -14,8 +14,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <string>
 #include <thread>
+
+#include "core/foundation/strings/utf8_string.h"
 
 
 namespace ff7cc::platform {
@@ -83,25 +84,25 @@ void SamplingProfiler::report(std::FILE* out, int top) {
     SymInitialize(process, nullptr, TRUE);
     nx::hash_map<std::uint64_t, std::uint64_t> by_address;
     for (const std::uint64_t ip : impl_->samples) ++by_address[ip];
-    nx::map<std::string, std::uint64_t> by_function;
+    nx::map<nx::string, std::uint64_t> by_function;
     std::uint64_t counted = 0;
     alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512];
     for (const auto& [ip, n] : by_address) {
         IMAGEHLP_MODULE64 module{};
         module.SizeOfStruct = sizeof module;
-        const std::string mod = SymGetModuleInfo64(process, ip, &module) ? module.ModuleName : "?";
+        const nx::string mod = SymGetModuleInfo64(process, ip, &module) ? module.ModuleName : "?";
         // Threads blocked in the kernel sit in system call stubs: not work.
         if (mod == "ntdll" || mod == "win32u") continue;
         auto* sym = reinterpret_cast<SYMBOL_INFO*>(buffer);
         sym->SizeOfStruct = sizeof(SYMBOL_INFO);
         sym->MaxNameLen = 511;
         DWORD64 displacement = 0;
-        const std::string name = SymFromAddr(process, ip, &displacement, sym) ? sym->Name : "?";
+        const nx::string name = SymFromAddr(process, ip, &displacement, sym) ? sym->Name : "?";
         by_function[name + "  (" + mod + ")"] += n;
         counted += n;
     }
     SymCleanup(process);
-    nx::vector<std::pair<std::uint64_t, std::string>> sorted;
+    nx::vector<std::pair<std::uint64_t, nx::string>> sorted;
     for (const auto& [name, n] : by_function) sorted.emplace_back(n, name);
     std::sort(sorted.rbegin(), sorted.rend());
     std::fprintf(out, "profile: %llu samples outside waits\n", static_cast<unsigned long long>(counted));

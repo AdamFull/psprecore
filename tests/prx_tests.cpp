@@ -1,12 +1,12 @@
 #include <cstring>
-#include <string>
-#include <string_view>
 
 #include "ff7cc/error.hpp"
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "test_main.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
 using namespace ff7cc;
 
@@ -45,7 +45,7 @@ nx::vector<std::byte> tiny_elf(const nx::vector<std::uint32_t>& words) {
     return f;
 }
 
-nx::vector<std::byte> bytes(std::string_view s) {
+nx::vector<std::byte> bytes(nx::string_view s) {
     nx::vector<std::byte> out(s.size());
     std::memcpy(out.data(), s.data(), s.size());
     return out;
@@ -85,12 +85,12 @@ TEST_CASE("prx relocation: dangling HI16 is rejected") {
 }
 
 TEST_CASE("ar archive with GNU long names") {
-    std::string ar = "!<arch>\n";
-    const auto member = [&](std::string name, std::string body) {
+    nx::string ar = "!<arch>\n";
+    const auto member = [&](nx::string name, nx::string body) {
         name.resize(16, ' ');
-        std::string size = std::to_string(body.size());
+        nx::string size = nx::format("{}", body.size());
         size.resize(10, ' ');
-        ar += name + std::string(32, ' ') + size + "`\n" + body;
+        ar += name + nx::string(32, ' ') + size + "`\n" + body;
         if (body.size() & 1) ar += '\n';
     };
     member("//", "a_very_long_member_name.o/\n");
@@ -106,6 +106,6 @@ TEST_CASE("ar archive with GNU long names") {
 }
 
 TEST_CASE("elf rejects non-ELF input") {
-    const auto junk = bytes(std::string(64, 'x'));
+    const auto junk = bytes(nx::string(64, 'x'));
     CHECK_THROWS_AS(elf::File{junk}, FormatError);
 }

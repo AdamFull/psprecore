@@ -8,6 +8,7 @@
 
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
@@ -53,7 +54,7 @@ Thread& Kernel::current() {
 
 int Kernel::current_id() const { return tl_current ? tl_current->id : 0; }
 
-int Kernel::create_thread(const std::string& name, std::uint32_t entry, std::uint32_t priority,
+int Kernel::create_thread(const nx::string& name, std::uint32_t entry, std::uint32_t priority,
                           std::uint32_t stack_size, std::uint32_t attr) {
     auto t = std::make_unique<Thread>();
     t->id = new_id();
@@ -235,7 +236,7 @@ nx::vector<Thread*> Kernel::waiters(WaitType type, int object) {
 
 // ---------------------------------------------------------------------------------------------
 
-int Kernel::create_callback(const std::string& name, std::uint32_t entry, std::uint32_t arg) {
+int Kernel::create_callback(const nx::string& name, std::uint32_t entry, std::uint32_t arg) {
     auto cb = std::make_unique<Callback>();
     cb->id = new_id();
     cb->name = name;

@@ -4,9 +4,10 @@
 
 #include <cstdio>
 #include <functional>
-#include <string>
 
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
 namespace ff7cc::test {
 
@@ -21,7 +22,7 @@ inline nx::vector<Case>& registry() {
 }
 
 struct Failure {
-    std::string message;
+    nx::string message;
 };
 
 struct Registrar {
@@ -42,7 +43,7 @@ struct Registrar {
 #define CHECK(expr)                                                                                    \
     do {                                                                                               \
         if (!(expr))                                                                                   \
-            throw ::ff7cc::test::Failure{std::string(__FILE__) + ":" + std::to_string(__LINE__) + ": CHECK(" #expr ")"}; \
+            throw ::ff7cc::test::Failure{nx::string(__FILE__) + ":" + nx::format("{}", __LINE__) + ": CHECK(" #expr ")"}; \
     } while (0)
 
 #define CHECK_THROWS_AS(expr, type)                                                                    \

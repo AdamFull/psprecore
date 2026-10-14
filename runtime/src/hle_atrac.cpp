@@ -28,7 +28,7 @@ constexpr std::uint32_t kErrorUnknownFormat = 0x80630006;
 constexpr std::uint32_t kErrorAllDataDecoded = 0x80630024;
 constexpr std::uint32_t kAllDataOnMemory = 0xFFFFFFFF;  // remainFrames when the whole file was given
 
-std::filesystem::path g_cooked_root = "cooked";
+nx::string g_cooked_root = "cooked";
 
 GuestMemory& mem() { return kernel().memory(); }
 
@@ -180,7 +180,7 @@ constexpr HleBinding kBindings[] = {
 
 void hle_install_atrac() { hle_bind(kBindings); }
 
-void set_cooked_root(const std::filesystem::path& root) { g_cooked_root = root; }
-const std::filesystem::path& cooked_root() { return g_cooked_root; }
+void set_cooked_root(nx::string_view root) { g_cooked_root = root; }
+const nx::string& cooked_root() { return g_cooked_root; }
 
 }  // namespace ff7cc::rt

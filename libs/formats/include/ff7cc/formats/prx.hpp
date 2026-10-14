@@ -9,10 +9,10 @@
 
 #include <cstdint>
 #include <span>
-#include <string>
 
 #include "ff7cc/formats/elf.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::prx {
 
@@ -26,7 +26,7 @@ struct Relocation {
 };
 
 struct Import {
-    std::string library;
+    nx::string library;
     std::uint16_t version = 0;
     std::uint16_t attributes = 0;
     struct Function {
@@ -38,7 +38,7 @@ struct Import {
 };
 
 struct Export {
-    std::string library;  // empty for the module's own "system" export table
+    nx::string library;  // empty for the module's own "system" export table
     std::uint16_t version = 0;
     std::uint16_t attributes = 0;
     struct Entry {
@@ -50,7 +50,7 @@ struct Export {
 };
 
 struct Module {
-    std::string name;
+    nx::string name;
     std::uint16_t attributes = 0;
     std::uint16_t version = 0;
     std::uint32_t gp = 0;
@@ -72,9 +72,9 @@ nx::vector<std::byte> load_image(const elf::File& file, const Module& module, st
 
 // NID -> function name database, built from PSPSDK-style stub libraries (lib*.a).
 struct NidName {
-    std::string library;
+    nx::string library;
     std::uint32_t nid = 0;
-    std::string name;
+    nx::string name;
 };
 // Extracts NID/name pairs from one stub archive; members without a .rodata.sceNid section are ignored.
 nx::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive);

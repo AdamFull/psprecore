@@ -47,24 +47,19 @@ void convert(const Dav1dPicture& pic, nx::vector<std::uint32_t>& rgba) {
 
 }  // namespace
 
-std::unique_ptr<Av1Video> Av1Video::open(const std::filesystem::path& path) {
-#ifdef _WIN32
-    std::FILE* f = _wfopen(path.c_str(), L"rb");
-#else
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-#endif
-    if (!f) return nullptr;
+std::unique_ptr<Av1Video> Av1Video::open(nx::fs::path_view path) {
+    auto opened = nx::fs::open_file(path);
+    if (!opened.has_value()) return nullptr;
+    nx::fs::stream_ptr f = std::move(opened.value());
     std::uint8_t header[32];
-    if (std::fread(header, 1, 32, f) != 32 || std::memcmp(header, "DKIF", 4) != 0 || std::memcmp(header + 8, "AV01", 4) != 0) {
-        std::fclose(f);
+    if (f->read(header, 32) != 32 || std::memcmp(header, "DKIF", 4) != 0 || std::memcmp(header + 8, "AV01", 4) != 0)
         return nullptr;
-    }
     std::unique_ptr<Av1Video> v(new Av1Video);
-    v->file_ = f;
     v->width_ = header[12] | (header[13] << 8);
     v->height_ = header[14] | (header[15] << 8);
     const std::uint32_t header_size = header[6] | (header[7] << 8);
-    std::fseek(f, static_cast<long>(header_size), SEEK_SET);
+    f->seek(header_size);
+    v->file_ = std::move(f);
 
     Dav1dSettings settings;
     dav1d_default_settings(&settings);
@@ -76,14 +71,13 @@ std::unique_ptr<Av1Video> Av1Video::open(const std::filesystem::path& path) {
 
 Av1Video::~Av1Video() {
     if (decoder_) dav1d_close(&decoder_);
-    if (file_) std::fclose(file_);
 }
 
 bool Av1Video::read_packet(nx::vector<std::uint8_t>& out) {
     std::uint8_t frame_header[12];
-    if (std::fread(frame_header, 1, 12, file_) != 12) return false;
+    if (file_->read(frame_header, 12) != 12) return false;
     out.resize(le32(frame_header));
-    return std::fread(out.data(), 1, out.size(), file_) == out.size();
+    return file_->read(out.data(), out.size()) == out.size();
 }
 
 bool Av1Video::next(nx::vector<std::uint32_t>& rgba) {

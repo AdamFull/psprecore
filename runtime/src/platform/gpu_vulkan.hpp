@@ -10,12 +10,12 @@
 // Unlike the software renderer it does not write rendered pixels back to guest VRAM.
 
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 
 #include "ff7cc/platform/vulkan_context.hpp"
 #include "ff7cc/runtime/ge.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 class GuestMemory;
@@ -28,7 +28,7 @@ public:
     // `pipeline_cache`: file keeping compiled pipelines between runs (empty: none), so effects seen before do not
     // stall the first frame they appear in.
     VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& memory, int scale,
-                     std::filesystem::path pipeline_cache = {});
+                     nx::string pipeline_cache = {});
     ~VulkanGeRenderer() override;
 
     void draw(const rt::ge::State& state, rt::ge::Prim prim, const nx::vector<rt::ge::Vertex>& vertices) override;

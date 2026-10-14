@@ -3,8 +3,10 @@
 // Ogg Vorbis file reader (stb_vorbis) for cooked audio: sequential decoding with sample-exact seeking.
 
 #include <cstdint>
-#include <filesystem>
 #include <memory>
+
+#include "core/foundation/containers/blob.h"
+#include "core/foundation/platform/filesystem.h"
 
 struct stb_vorbis;
 
@@ -12,7 +14,7 @@ namespace ff7cc::rt::audio {
 
 class VorbisStream {
 public:
-    static std::unique_ptr<VorbisStream> open(const std::filesystem::path& path);  // null if missing/invalid
+    static std::unique_ptr<VorbisStream> open(nx::fs::path_view path);  // null if missing/invalid
     ~VorbisStream();
     VorbisStream(const VorbisStream&) = delete;
     VorbisStream& operator=(const VorbisStream&) = delete;
@@ -27,6 +29,7 @@ public:
 
 private:
     VorbisStream() = default;
+    nx::blob<std::uint8_t> file_;  // the whole .ogg (stb_vorbis decodes from memory)
     ::stb_vorbis* vorbis_ = nullptr;
     int channels_ = 0;
     std::uint32_t sample_rate_ = 0;

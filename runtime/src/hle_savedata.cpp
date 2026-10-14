@@ -10,21 +10,22 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <optional>
-#include <string>
+#include <span>
 
+#include "ff7cc/io/path.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/format.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
 namespace {
 
-namespace fs = std::filesystem;
 
 GuestMemory& mem() { return kernel().memory(); }
 
@@ -57,7 +58,7 @@ bool g_ui = false;
 struct Pending {
     std::uint32_t param = 0;
     std::uint32_t mode = 0;
-    std::string game;
+    nx::string game;
     SaveDialog dialog;
 };
 std::optional<Pending> g_pending;
@@ -66,47 +67,47 @@ std::optional<int> g_queued_answer;
 
 void apply_answer(int slot);
 
-std::string guest_string(std::uint32_t addr, std::size_t max) {
-    std::string s = mem().string(addr, max);
+nx::string guest_string(std::uint32_t addr, std::size_t max) {
+    nx::string s = mem().string(addr, max);
     return s;
 }
 
-fs::path save_folder(const std::string& game, const std::string& save) { return save_dir() / "SAVEDATA" / (game + save); }
+nx::string save_folder(const nx::string& game, const nx::string& save) { return path_join(save_dir(), "SAVEDATA", game + save); }
 
-nx::vector<std::string> save_name_list(std::uint32_t param) {
-    nx::vector<std::string> names;
+nx::vector<nx::string> save_name_list(std::uint32_t param) {
+    nx::vector<nx::string> names;
     const std::uint32_t list = mem().read32(param + kSaveNameList);
     if (!list) return names;
     for (std::uint32_t i = 0; i < 256; ++i) {
-        const std::string n = guest_string(list + i * 20, 20);
+        const nx::string n = guest_string(list + i * 20, 20);
         if (n.empty()) break;
         names.push_back(n);
     }
     return names;
 }
 
-bool save_exists(const std::string& game, const std::string& save, const std::string& file) {
-    return fs::exists(save_folder(game, save) / file);
+bool save_exists(const nx::string& game, const nx::string& save, const nx::string& file) {
+    return nx::fs::exists(path_join(save_folder(game, save), file));
 }
 
-fs::file_time_type save_time(const std::string& game, const std::string& save, const std::string& file) {
-    std::error_code ec;
-    return fs::last_write_time(save_folder(game, save) / file, ec);
+// Last write, nanoseconds since the Unix epoch (0 if unknown).
+std::uint64_t save_time(const nx::string& game, const nx::string& save, const nx::string& file) {
+    return nx::fs::stat_file(path_join(save_folder(game, save), file)).mtime_ns;
 }
 
-nx::vector<std::uint8_t> read_file(const fs::path& path) {
-    std::ifstream f(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+nx::vector<std::uint8_t> read_file(nx::fs::path_view path) {
+    const auto data = nx::fs::file_read(path);
+    if (!data.has_value()) return {};
+    return nx::vector<std::uint8_t>(data.value().data(), data.value().data() + data.value().size());
 }
 
-void write_file(const fs::path& path, const std::uint8_t* data, std::size_t size) {
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+void write_file(nx::fs::path_view path, const std::uint8_t* data, std::size_t size) {
+    (void)nx::fs::file_write(path, std::span(data, size));
 }
 
 // PARAM.txt holds one key=value per line; backslashes and newlines in values are escaped.
-std::string escape(std::string_view v) {
-    std::string out;
+nx::string escape(nx::string_view v) {
+    nx::string out;
     for (const char ch : v) {
         if (ch == '\\') out += "\\\\";
         else if (ch == '\n') out += "\\n";
@@ -114,8 +115,8 @@ std::string escape(std::string_view v) {
     }
     return out;
 }
-std::string unescape(std::string_view v) {
-    std::string out;
+nx::string unescape(nx::string_view v) {
+    nx::string out;
     for (std::size_t i = 0; i < v.size(); ++i) {
         if (v[i] == '\\' && i + 1 < v.size()) {
             ++i;
@@ -128,62 +129,60 @@ std::string unescape(std::string_view v) {
 }
 
 // Optional files (ICON0.PNG etc.): {buf, bufSize, size, unknown}.
-void save_extra(std::uint32_t param, std::uint32_t field, const fs::path& path) {
+void save_extra(std::uint32_t param, std::uint32_t field, nx::fs::path_view path) {
     const std::uint32_t buf = mem().read32(param + field), size = mem().read32(param + field + 8);
     if (buf && size) write_file(path, mem().ptr(buf), size);
 }
-void load_extra(std::uint32_t param, std::uint32_t field, const fs::path& path) {
+void load_extra(std::uint32_t param, std::uint32_t field, nx::fs::path_view path) {
     const std::uint32_t buf = mem().read32(param + field), cap = mem().read32(param + field + 4);
-    if (!buf || !cap || !fs::exists(path)) return;
+    if (!buf || !cap || !nx::fs::exists(path)) return;
     const auto data = read_file(path);
     const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(data.size(), cap));
     std::memcpy(mem().ptr(buf), data.data(), n);
     mem().write32(param + field + 8, n);
 }
 
-std::uint32_t do_save(std::uint32_t param, const std::string& game, const std::string& save) {
-    const std::string file = guest_string(param + kFileName, 13);
-    const fs::path folder = save_folder(game, save);
-    std::error_code ec;
-    fs::create_directories(folder, ec);
-    if (ec) return kErrorSaveNoSpace;
+std::uint32_t do_save(std::uint32_t param, const nx::string& game, const nx::string& save) {
+    const nx::string file = guest_string(param + kFileName, 13);
+    const nx::string folder = save_folder(game, save);
+    if (!nx::fs::create_directories(folder).has_value()) return kErrorSaveNoSpace;
     const std::uint32_t buf = mem().read32(param + kDataBuf), size = mem().read32(param + kDataSize);
-    if (buf && !file.empty()) write_file(folder / file, mem().ptr(buf), size);
-    save_extra(param, kIcon0, folder / "ICON0.PNG");
-    save_extra(param, kIcon1, folder / "ICON1.PMF");
-    save_extra(param, kPic1, folder / "PIC1.PNG");
-    save_extra(param, kSnd0, folder / "SND0.AT3");
-    std::ofstream sfo(folder / "PARAM.txt", std::ios::trunc);
-    sfo << "title=" << escape(guest_string(param + kSfoTitle, 128)) << '\n'
-        << "savedata_title=" << escape(guest_string(param + kSfoSavedataTitle, 128)) << '\n'
-        << "parental_level=" << int{*mem().ptr(param + kSfoParental)} << '\n'
-        << "detail=" << escape(guest_string(param + kSfoDetail, 1024)) << '\n';
+    if (buf && !file.empty()) write_file(path_join(folder, file), mem().ptr(buf), size);
+    save_extra(param, kIcon0, path_join(folder, "ICON0.PNG"));
+    save_extra(param, kIcon1, path_join(folder, "ICON1.PMF"));
+    save_extra(param, kPic1, path_join(folder, "PIC1.PNG"));
+    save_extra(param, kSnd0, path_join(folder, "SND0.AT3"));
+    const nx::string sfo = nx::format("title={}\nsavedata_title={}\nparental_level={}\ndetail={}\n",
+                                      escape(guest_string(param + kSfoTitle, 128)),
+                                      escape(guest_string(param + kSfoSavedataTitle, 128)),
+                                      int{*mem().ptr(param + kSfoParental)}, escape(guest_string(param + kSfoDetail, 1024)));
+    (void)nx::fs::file_write_text(path_join(folder, "PARAM.txt"), sfo);
     std::fprintf(stderr, "savedata: saved %s/%s (%u bytes)\n", (game + save).c_str(), file.c_str(), size);
     return 0;
 }
 
-std::uint32_t do_load(std::uint32_t param, const std::string& game, const std::string& save) {
-    const std::string file = guest_string(param + kFileName, 13);
-    const fs::path folder = save_folder(game, save);
-    if (file.empty() || !fs::exists(folder / file)) return kErrorLoadNoData;
-    const auto data = read_file(folder / file);
+std::uint32_t do_load(std::uint32_t param, const nx::string& game, const nx::string& save) {
+    const nx::string file = guest_string(param + kFileName, 13);
+    const nx::string folder = save_folder(game, save);
+    if (file.empty() || !nx::fs::exists(path_join(folder, file))) return kErrorLoadNoData;
+    const auto data = read_file(path_join(folder, file));
     const std::uint32_t buf = mem().read32(param + kDataBuf), cap = mem().read32(param + kDataBufSize);
     if (!buf || data.size() > cap) return kErrorLoadBroken;
     std::memcpy(mem().ptr(buf), data.data(), data.size());
     mem().write32(param + kDataSize, static_cast<std::uint32_t>(data.size()));
-    load_extra(param, kIcon0, folder / "ICON0.PNG");
-    load_extra(param, kPic1, folder / "PIC1.PNG");
+    load_extra(param, kIcon0, path_join(folder, "ICON0.PNG"));
+    load_extra(param, kPic1, path_join(folder, "PIC1.PNG"));
     mem().write_string(param + kSaveName, save);
     std::fprintf(stderr, "savedata: loaded %s/%s (%zu bytes)\n", (game + save).c_str(), file.c_str(), data.size());
     return 0;
 }
 
 // Picks the slot a list dialog would end on.
-std::string pick_slot(std::uint32_t param, const std::string& game, bool for_save) {
-    const std::string file = guest_string(param + kFileName, 13);
-    nx::vector<std::string> names = save_name_list(param);
+nx::string pick_slot(std::uint32_t param, const nx::string& game, bool for_save) {
+    const nx::string file = guest_string(param + kFileName, 13);
+    nx::vector<nx::string> names = save_name_list(param);
     if (names.empty()) names.push_back(guest_string(param + kSaveName, 20));
-    nx::vector<std::string> existing;
+    nx::vector<nx::string> existing;
     for (const auto& n : names)
         if (save_exists(game, n, file)) existing.push_back(n);
     const auto newest = [&] {
@@ -191,7 +190,7 @@ std::string pick_slot(std::uint32_t param, const std::string& game, bool for_sav
             return save_time(game, a, file) < save_time(game, b, file);
         });
     };
-    if (!for_save) return existing.empty() ? std::string{} : newest();
+    if (!for_save) return existing.empty() ? nx::string{} : newest();
     switch (mem().read32(param + kFocus)) {
         case kFocusLastList: return names.back();
         case kFocusLatest:
@@ -208,25 +207,26 @@ std::string pick_slot(std::uint32_t param, const std::string& game, bool for_sav
     return existing.empty() ? names.front() : newest();
 }
 
-std::int64_t unix_time(fs::file_time_type t) {
-    using namespace std::chrono;
-    const auto sys = system_clock::now() + duration_cast<system_clock::duration>(t - fs::file_time_type::clock::now());
-    return duration_cast<seconds>(sys.time_since_epoch()).count();
-}
 
-SaveSlotInfo slot_info(const std::string& game, const std::string& save, const std::string& file) {
+SaveSlotInfo slot_info(const nx::string& game, const nx::string& save, const nx::string& file) {
     SaveSlotInfo info;
     info.name = save;
     info.exists = save_exists(game, save, file);
     if (!info.exists) return info;
-    const fs::path folder = save_folder(game, save);
-    info.time = unix_time(save_time(game, save, file));
-    if (fs::exists(folder / "ICON0.PNG")) info.icon = folder / "ICON0.PNG";
-    std::ifstream sfo(folder / "PARAM.txt");
-    for (std::string line; std::getline(sfo, line);) {
+    const nx::string folder = save_folder(game, save);
+    info.time = static_cast<std::int64_t>(save_time(game, save, file) / 1'000'000'000);
+    if (nx::fs::exists(path_join(folder, "ICON0.PNG"))) info.icon = path_join(folder, "ICON0.PNG");
+    const auto sfo = nx::fs::file_read_text(path_join(folder, "PARAM.txt"));
+    nx::string_view rest = sfo.has_value() ? nx::string_view(sfo.value()) : nx::string_view{};
+    while (!rest.empty()) {
+        const std::size_t end = std::min(rest.find('\n'), rest.size());
+        nx::string_view line = rest.substr(0, end);
+        rest.remove_prefix(std::min(end + 1, rest.size()));
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
         const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string key = line.substr(0, eq), value = unescape(std::string_view(line).substr(eq + 1));
+        if (eq == nx::string_view::npos) continue;
+        const nx::string_view key = line.substr(0, eq);
+        const nx::string value = unescape(line.substr(eq + 1));
         if (key == "savedata_title") info.title = value;
         else if (key == "detail") info.detail = value;
     }
@@ -234,13 +234,13 @@ SaveSlotInfo slot_info(const std::string& game, const std::string& save, const s
 }
 
 // Opens the frontend's picker for a list dialog; the game polls GetStatus until answer_save_dialog().
-void open_dialog(std::uint32_t param, std::uint32_t mode, const std::string& game) {
-    const std::string file = guest_string(param + kFileName, 13);
-    nx::vector<std::string> names = save_name_list(param);
+void open_dialog(std::uint32_t param, std::uint32_t mode, const nx::string& game) {
+    const nx::string file = guest_string(param + kFileName, 13);
+    nx::vector<nx::string> names = save_name_list(param);
     if (names.empty()) names.push_back(guest_string(param + kSaveName, 20));
     Pending p{param, mode, game, {}};
     p.dialog.save = mode == kListSave;
-    const std::string focus = pick_slot(param, game, p.dialog.save);
+    const nx::string focus = pick_slot(param, game, p.dialog.save);
     for (const auto& n : names) {
         SaveSlotInfo info = slot_info(game, n, file);
         if (!p.dialog.save && !info.exists) continue;
@@ -253,8 +253,8 @@ void open_dialog(std::uint32_t param, std::uint32_t mode, const std::string& gam
 void InitStart(Context& c) {
     const std::uint32_t param = arg(c, 0);
     const std::uint32_t mode = mem().read32(param + kMode);
-    const std::string game = guest_string(param + kGameName, 13);
-    const std::string save = guest_string(param + kSaveName, 20);
+    const nx::string game = guest_string(param + kGameName, 13);
+    const nx::string save = guest_string(param + kSaveName, 20);
     const auto names = save_name_list(param);
     std::fprintf(stderr, "savedata: mode %u, %s%s/%s, %zu names in the list (%s..%s)\n", mode, game.c_str(), save.c_str(),
                  guest_string(param + kFileName, 13).c_str(), names.size(), names.empty() ? "" : names.front().c_str(), names.empty() ? "" : names.back().c_str());
@@ -270,20 +270,20 @@ void InitStart(Context& c) {
         case kAutoSave:
         case kSave: result = do_save(param, game, save); break;
         case kListLoad: {
-            const std::string slot = pick_slot(param, game, false);
+            const nx::string slot = pick_slot(param, game, false);
             result = slot.empty() ? kErrorLoadNoData : do_load(param, game, slot);
             break;
         }
         case kListSave: {
-            const std::string slot = pick_slot(param, game, true);
+            const nx::string slot = pick_slot(param, game, true);
             result = do_save(param, game, slot);
             if (result == 0) mem().write_string(param + kSaveName, slot);
             break;
         }
         case kListDelete:
         case kDelete: {
-            std::error_code ec;
-            result = fs::remove_all(save_folder(game, save), ec) ? 0 : kErrorDeleteNoData;
+            const nx::string folder = save_folder(game, save);
+            result = nx::fs::exists(folder) && nx::fs::remove_all(folder).has_value() ? 0 : kErrorDeleteNoData;
             break;
         }
         default:
@@ -351,7 +351,7 @@ void apply_answer(int slot) {
     g_pending.reset();
     std::uint32_t result = p.dialog.slots.empty() ? kErrorLoadNoData : kResultCancelled;
     if (slot >= 0 && static_cast<std::size_t>(slot) < p.dialog.slots.size()) {
-        const std::string& name = p.dialog.slots[static_cast<std::size_t>(slot)].name;
+        const nx::string& name = p.dialog.slots[static_cast<std::size_t>(slot)].name;
         if (p.mode == kListSave) {
             result = do_save(p.param, p.game, name);
             if (result == 0) mem().write_string(p.param + kSaveName, name);

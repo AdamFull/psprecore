@@ -5,10 +5,10 @@
 
 #include <cstdint>
 #include <functional>
-#include <string>
 
 #include "platform/settings.hpp"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::platform {
 
@@ -42,7 +42,7 @@ private:
     void draw_save_dialog();
     void draw_fps();
     void release_icons();
-    std::uint64_t icon(const std::string& path);
+    std::uint64_t icon(const nx::string& path);
 
     Display& display_;
     Settings& settings_;
@@ -51,7 +51,7 @@ private:
     bool menu_appearing_ = false;
     bool dialog_appearing_ = true;
     int overwrite_slot_ = -1;
-    nx::map<std::string, std::uint64_t> icons_;  // ICON0.PNG path -> texture (0: failed to load)
+    nx::map<nx::string, std::uint64_t> icons_;  // ICON0.PNG path -> texture (0: failed to load)
 };
 
 }  // namespace ff7cc::platform

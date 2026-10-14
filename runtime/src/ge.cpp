@@ -7,15 +7,16 @@
 
 #include "ff7cc/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt::ge {
 
 namespace {
 
 // GE command names (public knowledge of the command set, as used by the homebrew PSPSDK's libgu).
-constexpr std::array<std::string_view, 256> kNames = [] {
-    std::array<std::string_view, 256> n{};
-    const auto set = [&](int i, std::string_view s) { n[static_cast<std::size_t>(i)] = s; };
+constexpr std::array<nx::string_view, 256> kNames = [] {
+    std::array<nx::string_view, 256> n{};
+    const auto set = [&](int i, nx::string_view s) { n[static_cast<std::size_t>(i)] = s; };
     set(0x00, "NOP"); set(0x01, "VADDR"); set(0x02, "IADDR"); set(0x04, "PRIM"); set(0x05, "BEZIER");
     set(0x06, "SPLINE"); set(0x07, "BOUNDINGBOX"); set(0x08, "JUMP"); set(0x09, "BJUMP"); set(0x0A, "CALL");
     set(0x0B, "RET"); set(0x0C, "END"); set(0x0E, "SIGNAL"); set(0x0F, "FINISH"); set(0x10, "BASE");
@@ -63,19 +64,19 @@ constexpr const char* kPrims[8] = {"points", "lines", "line_strip", "triangles",
 
 }  // namespace
 
-std::string_view command_name(std::uint8_t cmd) {
+nx::string_view command_name(std::uint8_t cmd) {
     const auto n = kNames[cmd];
-    return n.empty() ? std::string_view("UNKNOWN") : n;
+    return n.empty() ? nx::string_view("UNKNOWN") : n;
 }
 
-std::string describe(std::uint32_t word) {
+nx::string describe(std::uint32_t word) {
     const std::uint8_t cmd = static_cast<std::uint8_t>(word >> 24);
     const std::uint32_t p = word & 0xFFFFFF;
     char buf[96];
     if (cmd == PRIM)
         std::snprintf(buf, sizeof buf, "PRIM %s x%u", kPrims[(p >> 16) & 7], p & 0xFFFF);
     else
-        std::snprintf(buf, sizeof buf, "%s 0x%06X", std::string(command_name(cmd)).c_str(), p);
+        std::snprintf(buf, sizeof buf, "%s 0x%06X", nx::string(command_name(cmd)).c_str(), p);
     return buf;
 }
 

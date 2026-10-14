@@ -7,8 +7,8 @@
 // against the SDK disassembler instruction by instruction.
 
 #include <cstdint>
-#include <string>
-#include <string_view>
+
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::mips {
 
@@ -52,7 +52,7 @@ enum class Op : std::uint16_t {
 #undef FF7CC_X
 };
 
-std::string_view op_name(Op op);  // enum spelling, e.g. "AddS"
+nx::string_view op_name(Op op);  // enum spelling, e.g. "AddS"
 
 // VFPU vector size encoded in bits 7 and 15 (1 = .s, 2 = .p, 3 = .t, 4 = .q).
 inline int vfpu_size(std::uint32_t w) { return 1 + (((w >> 7) & 1) | (((w >> 15) & 1) << 1)); }
@@ -92,6 +92,6 @@ struct Instruction {
 Instruction decode(std::uint32_t word, std::uint32_t pc);
 
 // "mnemonic\toperands" exactly as psp-objdump prints it (mnemonic only if there are no operands).
-std::string format(const Instruction& insn);
+nx::string format(const Instruction& insn);
 
 }  // namespace ff7cc::mips

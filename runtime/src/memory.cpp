@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 #endif
 
 uint8_t* g_membase = nullptr;
@@ -83,14 +84,14 @@ void GuestMemory::write(std::uint32_t addr, std::span<const std::byte> data) {
 
 void GuestMemory::fill(std::uint32_t addr, std::uint8_t value, std::uint32_t size) { std::memset(ptr(addr), value, size); }
 
-std::string GuestMemory::string(std::uint32_t addr, std::size_t max) const {
-    std::string s;
+nx::string GuestMemory::string(std::uint32_t addr, std::size_t max) const {
+    nx::string s;
     if (!addr) return s;
     for (const auto* p = reinterpret_cast<const char*>(ptr(addr)); s.size() < max && *p; ++p) s += *p;
     return s;
 }
 
-void GuestMemory::write_string(std::uint32_t addr, std::string_view s) {
+void GuestMemory::write_string(std::uint32_t addr, nx::string_view s) {
     std::memcpy(ptr(addr), s.data(), s.size());
     *ptr(addr + static_cast<std::uint32_t>(s.size())) = 0;
 }

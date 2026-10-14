@@ -8,6 +8,8 @@
 #include "ff7cc/mips/allegrex.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
 namespace ff7cc::recomp {
 
@@ -18,29 +20,29 @@ namespace {
 
 constexpr std::uint32_t kRa = 31;
 
-std::string hex(std::uint32_t v) {
+nx::string hex(std::uint32_t v) {
     char buf[16];
     std::snprintf(buf, sizeof buf, "0x%08Xu", v);
     return buf;
 }
-std::string label(std::uint32_t abs) {
+nx::string label(std::uint32_t abs) {
     char buf[16];
     std::snprintf(buf, sizeof buf, "L_%08X", abs);
     return buf;
 }
-std::string R(std::uint32_t n) { return n == 0 ? std::string("0u") : "ctx->r[" + std::to_string(n) + "]"; }
-std::string F(std::uint32_t n) { return "ctx->f[" + std::to_string(n) + "]"; }
-std::string FU(std::uint32_t n) { return "ctx->fu[" + std::to_string(n) + "]"; }
-std::string S(std::uint32_t n) { return "(int32_t)" + R(n); }
-std::string addr(const Instruction& in) { return "(" + R(in.rs()) + " + " + hex(static_cast<std::uint32_t>(in.simm())) + ")"; }
-std::string assign(std::uint32_t dest, const std::string& expr) {
-    return dest == 0 ? std::string() : R(dest) + " = " + expr + ";";
+nx::string R(std::uint32_t n) { return n == 0 ? nx::string("0u") : "ctx->r[" + nx::format("{}", n) + "]"; }
+nx::string F(std::uint32_t n) { return "ctx->f[" + nx::format("{}", n) + "]"; }
+nx::string FU(std::uint32_t n) { return "ctx->fu[" + nx::format("{}", n) + "]"; }
+nx::string S(std::uint32_t n) { return "(int32_t)" + R(n); }
+nx::string addr(const Instruction& in) { return "(" + R(in.rs()) + " + " + hex(static_cast<std::uint32_t>(in.simm())) + ")"; }
+nx::string assign(std::uint32_t dest, const nx::string& expr) {
+    return dest == 0 ? nx::string() : R(dest) + " = " + expr + ";";
 }
 
 bool is_control(const Instruction& in) { return in.is_branch() || in.is_jump(); }
 
 // Branch condition (evaluated before the delay slot); empty string = always.
-std::string branch_condition(const Instruction& in) {
+nx::string branch_condition(const Instruction& in) {
     const auto rs = in.rs(), rt = in.rt();
     switch (in.op) {
         case Op::Beq: case Op::Beql: return rs == rt ? "" : R(rs) + " == " + R(rt);
@@ -51,23 +53,23 @@ std::string branch_condition(const Instruction& in) {
         case Op::Bgez: case Op::Bgezl: case Op::Bgezal: case Op::Bgezall: return rs == 0 ? "" : S(rs) + " >= 0";
         case Op::Bc1f: case Op::Bc1fl: return "!fpu_cond(ctx)";
         case Op::Bc1t: case Op::Bc1tl: return "fpu_cond(ctx)";
-        case Op::Bvf: case Op::Bvfl: return "!vfpu_cond(ctx, " + std::to_string((in.word >> 18) & 7) + ")";
-        case Op::Bvt: case Op::Bvtl: return "vfpu_cond(ctx, " + std::to_string((in.word >> 18) & 7) + ")";
+        case Op::Bvf: case Op::Bvfl: return "!vfpu_cond(ctx, " + nx::format("{}", (in.word >> 18) & 7) + ")";
+        case Op::Bvt: case Op::Bvtl: return "vfpu_cond(ctx, " + nx::format("{}", (in.word >> 18) & 7) + ")";
         default: return "/*?*/0";
     }
 }
 
-std::string ext_mask(std::uint32_t size) { return size >= 32 ? "0xFFFFFFFFu" : hex((1u << size) - 1); }
+nx::string ext_mask(std::uint32_t size) { return size >= 32 ? "0xFFFFFFFFu" : hex((1u << size) - 1); }
 
 // Translation of a non-control instruction.
-std::string simple(const Instruction& in, std::uint32_t pc) {
+nx::string simple(const Instruction& in, std::uint32_t pc) {
     const auto rs = in.rs(), rt = in.rt(), rd = in.rd(), sa = in.sa();
     const auto w = in.word;
     switch (in.op) {
-        case Op::Sll: return w == 0 ? "" : assign(rd, R(rt) + " << " + std::to_string(sa));
-        case Op::Srl: return assign(rd, R(rt) + " >> " + std::to_string(sa));
-        case Op::Sra: return assign(rd, "(uint32_t)(" + S(rt) + " >> " + std::to_string(sa) + ")");
-        case Op::Rotr: return assign(rd, "cpu_rotr(" + R(rt) + ", " + std::to_string(sa) + ")");
+        case Op::Sll: return w == 0 ? "" : assign(rd, R(rt) + " << " + nx::format("{}", sa));
+        case Op::Srl: return assign(rd, R(rt) + " >> " + nx::format("{}", sa));
+        case Op::Sra: return assign(rd, "(uint32_t)(" + S(rt) + " >> " + nx::format("{}", sa) + ")");
+        case Op::Rotr: return assign(rd, "cpu_rotr(" + R(rt) + ", " + nx::format("{}", sa) + ")");
         case Op::Sllv: return assign(rd, R(rt) + " << (" + R(rs) + " & 31)");
         case Op::Srlv: return assign(rd, R(rt) + " >> (" + R(rs) + " & 31)");
         case Op::Srav: return assign(rd, "(uint32_t)(" + S(rt) + " >> (" + R(rs) + " & 31))");
@@ -99,17 +101,17 @@ std::string simple(const Instruction& in, std::uint32_t pc) {
         case Op::Max: return assign(rd, "(" + S(rs) + " > " + S(rt) + " ? " + R(rs) + " : " + R(rt) + ")");
         case Op::Min: return assign(rd, "(" + S(rs) + " < " + S(rt) + " ? " + R(rs) + " : " + R(rt) + ")");
         case Op::Addi: case Op::Addiu: return assign(rt, R(rs) + " + " + hex(static_cast<std::uint32_t>(in.simm())));
-        case Op::Slti: return assign(rt, "(uint32_t)(" + S(rs) + " < " + std::to_string(in.simm()) + ")");
+        case Op::Slti: return assign(rt, "(uint32_t)(" + S(rs) + " < " + nx::format("{}", in.simm()) + ")");
         case Op::Sltiu: return assign(rt, "(uint32_t)(" + R(rs) + " < " + hex(static_cast<std::uint32_t>(in.simm())) + ")");
         case Op::Andi: return assign(rt, R(rs) + " & " + hex(in.uimm()));
         case Op::Ori: return assign(rt, R(rs) + " | " + hex(in.uimm()));
         case Op::Xori: return assign(rt, R(rs) + " ^ " + hex(in.uimm()));
         case Op::Lui: return assign(rt, hex(in.uimm() << 16));
-        case Op::Ext: return assign(rt, "(" + R(rs) + " >> " + std::to_string(sa) + ") & " + ext_mask(rd + 1));
+        case Op::Ext: return assign(rt, "(" + R(rs) + " >> " + nx::format("{}", sa) + ") & " + ext_mask(rd + 1));
         case Op::Ins: {
             const auto size = rd + 1 - sa;
             const auto mask = (size >= 32 ? 0xFFFFFFFFu : ((1u << size) - 1)) << sa;
-            return assign(rt, "(" + R(rt) + " & " + hex(~mask) + ") | ((" + R(rs) + " << " + std::to_string(sa) + ") & " + hex(mask) + ")");
+            return assign(rt, "(" + R(rt) + " & " + hex(~mask) + ") | ((" + R(rs) + " << " + nx::format("{}", sa) + ") & " + hex(mask) + ")");
         }
         case Op::Wsbh: return assign(rd, "cpu_wsbh(" + R(rt) + ")");
         case Op::Wsbw: return assign(rd, "cpu_wsbw(" + R(rt) + ")");
@@ -138,7 +140,7 @@ std::string simple(const Instruction& in, std::uint32_t pc) {
         case Op::Swc1: return "mem_sw(" + addr(in) + ", " + FU(in.ft()) + ");";
         case Op::Mfc1: return assign(rt, FU(in.fs()));
         case Op::Mtc1: return FU(in.fs()) + " = " + R(rt) + ";";
-        case Op::Cfc1: return assign(rt, in.fs() == 31 ? std::string("ctx->fcr31") : std::string("0x00003351u"));
+        case Op::Cfc1: return assign(rt, in.fs() == 31 ? nx::string("ctx->fcr31") : nx::string("0x00003351u"));
         case Op::Ctc1: return in.fs() == 31 ? "ctx->fcr31 = " + R(rt) + ";" : "";
         case Op::AddS: return F(in.fd()) + " = " + F(in.fs()) + " + " + F(in.ft()) + ";";
         case Op::SubS: return F(in.fd()) + " = " + F(in.fs()) + " - " + F(in.ft()) + ";";
@@ -154,7 +156,7 @@ std::string simple(const Instruction& in, std::uint32_t pc) {
         case Op::TruncWS: return FU(in.fd()) + " = fpu_to_int(" + F(in.fs()) + ", 1);";
         case Op::CeilWS: return FU(in.fd()) + " = fpu_to_int(" + F(in.fs()) + ", 2);";
         case Op::FloorWS: return FU(in.fd()) + " = fpu_to_int(" + F(in.fs()) + ", 3);";
-        case Op::CCondS: return "fpu_compare(ctx, " + std::to_string(w & 7) + ", " + F(in.fs()) + ", " + F(in.ft()) + ");";
+        case Op::CCondS: return "fpu_compare(ctx, " + nx::format("{}", w & 7) + ", " + F(in.fs()) + ", " + F(in.ft()) + ");";
 
         // VFPU
         case Op::LvS: case Op::LvQ: case Op::LvlQ: case Op::LvrQ:
@@ -192,7 +194,7 @@ std::uint32_t Generator::word(std::uint32_t abs) const {
     return w;
 }
 
-std::string Generator::name_of(std::uint32_t abs) const {
+nx::string Generator::name_of(std::uint32_t abs) const {
     char buf[16];
     std::snprintf(buf, sizeof buf, "f_%08X", abs);
     return buf;
@@ -200,7 +202,7 @@ std::string Generator::name_of(std::uint32_t abs) const {
 
 bool Generator::is_function_start(std::uint32_t abs) const { return by_start_.contains(abs); }
 
-std::string Generator::function_source(const analysis::Function& fn) {
+nx::string Generator::function_source(const analysis::Function& fn) {
     const std::uint32_t begin = options_.base + fn.start, end = options_.base + fn.end;
     ++stats_.functions;
     if (const auto stub = import_nids_.find(begin); stub != import_nids_.end())  // reached via recomp_call
@@ -208,7 +210,7 @@ std::string Generator::function_source(const analysis::Function& fn) {
                fn.name + " */\n";
     const auto decode = [&](std::uint32_t pc) { return mips::decode(word(pc), pc); };
     const auto inside = [&](std::uint32_t a) { return a >= begin && a < end; };
-    const auto warn = [&](std::uint32_t pc, const std::string& what) {
+    const auto warn = [&](std::uint32_t pc, const nx::string& what) {
         char buf[24];
         std::snprintf(buf, sizeof buf, "%08X: ", pc);
         stats_.warnings.push_back(buf + what);
@@ -236,7 +238,7 @@ std::string Generator::function_source(const analysis::Function& fn) {
     for (std::uint32_t pc = begin; pc + 4 < end; pc += 4)
         if (is_control(decode(pc)) && labels.contains(pc + 4)) labels.insert(pc + 8);
 
-    std::string out;
+    nx::string out;
     char buf[160];
     const bool overridden = options_.overrides.contains(begin);
     if (overridden) ++stats_.overrides;
@@ -245,14 +247,14 @@ std::string Generator::function_source(const analysis::Function& fn) {
                   overridden ? "; replaced by game/" : "", name_of(begin).c_str(), overridden ? "_orig" : "");
     out += buf;
 
-    const auto line = [&](std::uint32_t pc, const std::string& code, int indent = 1) {
+    const auto line = [&](std::uint32_t pc, const nx::string& code, int indent = 1) {
         if (code.empty()) return;
         out.append(static_cast<std::size_t>(indent) * 4, ' ');
         out += code;
         out += '\n';
         (void)pc;
     };
-    const auto call = [&](std::uint32_t pc, std::uint32_t target) -> std::string {
+    const auto call = [&](std::uint32_t pc, std::uint32_t target) -> nx::string {
         if (const auto it = import_nids_.find(target); it != import_nids_.end()) return "hle_call(ctx, " + hex(it->second) + ");";
         if (is_function_start(target)) return name_of(target) + "(ctx);";
         if (target < options_.base) {  // unlinked weak symbol (jal 0x0); guarded by an address check
@@ -262,7 +264,7 @@ std::string Generator::function_source(const analysis::Function& fn) {
         warn(pc, "call into the middle of a function");
         return "recomp_call(ctx, " + hex(target) + ");";
     };
-    const auto goto_or_tail = [&](std::uint32_t pc, std::uint32_t target) -> std::string {
+    const auto goto_or_tail = [&](std::uint32_t pc, std::uint32_t target) -> nx::string {
         if (inside(target)) return "goto " + label(target) + ";";
         if (is_function_start(target)) {
             ++stats_.tail_calls;
@@ -289,9 +291,9 @@ std::string Generator::function_source(const analysis::Function& fn) {
         const auto ds_in = decode(ds_pc);
         if (is_control(ds_in)) warn(ds_pc, "control instruction in a delay slot");
         std::snprintf(buf, sizeof buf, "/* %08X: %s */ ", ds_pc, mips::format(ds_in).c_str());
-        const std::string delay = buf + simple(ds_in, ds_pc);
+        const nx::string delay = buf + simple(ds_in, ds_pc);
 
-        std::string code;
+        nx::string code;
         switch (in.op) {
             case Op::J:
                 code = delay + "\n        " + goto_or_tail(pc, in.jump_target());
@@ -322,8 +324,8 @@ std::string Generator::function_source(const analysis::Function& fn) {
             default: {  // conditional / unconditional branches
                 const auto cond = branch_condition(in);
                 const bool link = in.op == Op::Bltzal || in.op == Op::Bgezal || in.op == Op::Bltzall || in.op == Op::Bgezall;
-                const std::string link_code = link ? "ctx->r[31] = " + hex(pc + 8) + "; " : "";
-                const std::string take = link ? call(pc, in.branch_target()) : goto_or_tail(pc, in.branch_target());
+                const nx::string link_code = link ? "ctx->r[31] = " + hex(pc + 8) + "; " : "";
+                const nx::string take = link ? call(pc, in.branch_target()) : goto_or_tail(pc, in.branch_target());
                 if (cond.empty()) {
                     code = delay + "\n        " + link_code + take;
                 } else if (in.is_likely()) {
@@ -358,8 +360,8 @@ std::string Generator::function_source(const analysis::Function& fn) {
     return out;
 }
 
-std::string Generator::header() const {
-    std::string out = "/* Generated by ccrecomp. Do not edit. */\n#pragma once\n#include \"ff7cc/recomp/recomp.h\"\n\n";
+nx::string Generator::header() const {
+    nx::string out = "/* Generated by ccrecomp. Do not edit. */\n#pragma once\n#include \"ff7cc/recomp/recomp.h\"\n\n";
     for (const auto& fn : functions_) {
         const std::uint32_t abs = options_.base + fn.start;
         out += "void " + name_of(abs) + "(Context* ctx);";
@@ -370,8 +372,8 @@ std::string Generator::header() const {
     return out;
 }
 
-std::string Generator::lookup_source() const {
-    std::string out = "/* Generated by ccrecomp. Do not edit. */\n#include \"funcs.h\"\n\n"
+nx::string Generator::lookup_source() const {
+    nx::string out = "/* Generated by ccrecomp. Do not edit. */\n#include \"funcs.h\"\n\n"
                       "typedef struct { uint32_t address; RecompFunc func; } LookupEntry;\n\n"
                       "static const LookupEntry kFunctions[] = {\n";
     for (const auto& fn : functions_) {

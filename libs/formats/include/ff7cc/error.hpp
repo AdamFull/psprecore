@@ -2,10 +2,13 @@
 
 #include <stdexcept>
 
+#include "core/foundation/strings/utf8_string.h"
+
 namespace ff7cc {
 
 struct Error : std::runtime_error {
     using std::runtime_error::runtime_error;
+    explicit Error(nx::string_view message) : std::runtime_error(nx::string(message).c_str()) {}
 };
 
 // File system / stream failure.

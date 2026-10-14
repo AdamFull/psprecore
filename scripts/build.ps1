@@ -4,7 +4,8 @@
 #   scripts\build.ps1 -Preset windows-x64-release -NoTest
 param(
     [string]$Preset = 'windows-x64-debug',
-    [switch]$NoTest
+    [switch]$NoTest,
+    [string[]]$Target
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -34,9 +35,10 @@ Push-Location $root
 try {
     cmake --preset $Preset
     if ($LASTEXITCODE) { throw "configure failed ($LASTEXITCODE)" }
-    cmake --build --preset $Preset
+    if ($Target) { cmake --build --preset $Preset --target @Target }
+    else { cmake --build --preset $Preset }
     if ($LASTEXITCODE) { throw "build failed ($LASTEXITCODE)" }
-    if (-not $NoTest) {
+    if (-not $NoTest -and -not $Target) {
         ctest --preset $Preset
         if ($LASTEXITCODE) { throw "tests failed ($LASTEXITCODE)" }
     }

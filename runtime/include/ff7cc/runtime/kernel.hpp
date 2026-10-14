@@ -13,13 +13,13 @@
 #include <initializer_list>
 #include <memory>
 #include <semaphore>
-#include <string>
 #include <thread>
 
 #include "ff7cc/recomp/recomp.h"
 #include "ff7cc/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
@@ -46,7 +46,7 @@ enum class WaitType : std::uint8_t { None, Delay, Sleep, Sema, EventFlag, Thread
 
 struct Thread {
     int id = 0;
-    std::string name;
+    nx::string name;
     std::uint32_t entry = 0, priority = 0, attr = 0, stack = 0, stack_size = 0, gp = 0;
     Context ctx{};
     enum class State : std::uint8_t { Dormant, Ready, Running, Waiting, Dead } state = State::Dormant;
@@ -70,27 +70,27 @@ struct Thread {
 
 struct Semaphore {
     int id = 0;
-    std::string name;
+    nx::string name;
     std::uint32_t attr = 0;
     int count = 0, max = 0;
 };
 
 struct EventFlag {
     int id = 0;
-    std::string name;
+    nx::string name;
     std::uint32_t attr = 0, bits = 0;
 };
 
 struct Fpl {
     int id = 0;
-    std::string name;
+    nx::string name;
     std::uint32_t attr = 0, block_size = 0, base = 0;
     nx::vector<bool> used;
 };
 
 struct Callback {
     int id = 0;
-    std::string name;
+    nx::string name;
     std::uint32_t entry = 0, arg = 0;
     int owner = 0;
     int notify_count = 0;
@@ -111,7 +111,7 @@ public:
     GuestHeap& user_heap() { return user_heap_; }
 
     // ---- threads ----
-    int create_thread(const std::string& name, std::uint32_t entry, std::uint32_t priority, std::uint32_t stack_size,
+    int create_thread(const nx::string& name, std::uint32_t entry, std::uint32_t priority, std::uint32_t stack_size,
                       std::uint32_t attr);
     std::uint32_t start_thread(int id, std::uint32_t arg_size, std::uint32_t arg_ptr);
     [[noreturn]] void exit_current_thread(std::uint32_t status, bool delete_thread);
@@ -138,7 +138,7 @@ public:
     // Calls guest function `entry` on the current thread (EABI args a0-a3, t0-t3) and returns v0. The caller's
     // registers are preserved, so HLE functions can use it for guest callbacks (e.g. ring buffer fills).
     std::uint32_t call_guest(std::uint32_t entry, std::initializer_list<std::uint32_t> args);
-    int create_callback(const std::string& name, std::uint32_t entry, std::uint32_t arg);
+    int create_callback(const nx::string& name, std::uint32_t entry, std::uint32_t arg);
     void notify_callback(int id, std::uint32_t arg);
 
     // ---- time and interrupts ----

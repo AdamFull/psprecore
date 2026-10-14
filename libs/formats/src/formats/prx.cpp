@@ -5,6 +5,8 @@
 
 #include "ff7cc/error.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
 namespace ff7cc::prx {
 
@@ -24,13 +26,13 @@ std::size_t file_offset(const nx::vector<elf::Segment>& segments, std::uint32_t 
         if (s.type != 1) continue;  // PT_LOAD
         if (vaddr >= s.vaddr && vaddr - s.vaddr + size <= s.filesz) return s.offset + (vaddr - s.vaddr);
     }
-    throw FormatError("address 0x" + std::to_string(vaddr) + " is not backed by the module file");
+    throw FormatError("address 0x" + nx::format("{}", vaddr) + " is not backed by the module file");
 }
 
-std::string read_c_string(const elf::File& f, const nx::vector<elf::Segment>& segs, std::uint32_t vaddr) {
+nx::string read_c_string(const elf::File& f, const nx::vector<elf::Segment>& segs, std::uint32_t vaddr) {
     const auto data = f.data();
     std::size_t at = file_offset(segs, vaddr);
-    std::string s;
+    nx::string s;
     while (at < data.size() && data[at] != std::byte{0}) s += static_cast<char>(data[at++]);
     return s;
 }
@@ -171,7 +173,7 @@ nx::vector<std::byte> load_image(const elf::File& file, const Module& module, st
                 put(at, (w & 0xFFFF0000) | ((static_cast<std::uint32_t>(lo) + delta) & 0xFFFF));
                 break;
             }
-            default: throw FormatError("unsupported PSP relocation type " + std::to_string(r.type));
+            default: throw FormatError("unsupported PSP relocation type " + nx::format("{}", r.type));
         }
     }
     if (!pending_hi.empty()) throw FormatError("HI16 relocation without a following LO16");
@@ -187,7 +189,7 @@ nx::vector<NidName> nids_from_stub_archive(std::span<const std::byte> archive) {
         if (!nid_section) continue;
         const auto nids = obj.contents(*nid_section);
 
-        std::string library;
+        nx::string library;
         nx::vector<elf::Symbol> functions;
         for (const auto& sym : obj.symbols()) {
             if (sym.name.starts_with("__stub_module_") && library.empty()) library = sym.name.substr(14);

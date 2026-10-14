@@ -5,10 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string>
-#include <string_view>
 
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::elf {
 
@@ -23,7 +22,7 @@ inline constexpr std::uint32_t kSectionRel = 9;
 inline constexpr std::uint32_t kSectionPspRel = 0x700000A0;  // PSP relocations (REL format, extended info)
 
 struct Section {
-    std::string name;
+    nx::string name;
     std::uint32_t type = 0;
     std::uint32_t flags = 0;
     std::uint32_t addr = 0;
@@ -45,7 +44,7 @@ struct Segment {
 };
 
 struct Symbol {
-    std::string name;
+    nx::string name;
     std::uint32_t value = 0;
     std::uint32_t size = 0;
     std::uint8_t info = 0;
@@ -72,7 +71,7 @@ public:
 
     const nx::vector<Section>& sections() const { return sections_; }
     const nx::vector<Segment>& segments() const { return segments_; }
-    const Section* find_section(std::string_view name) const;
+    const Section* find_section(nx::string_view name) const;
 
     // Raw contents of a section (empty for NOBITS).
     std::span<const std::byte> contents(const Section& section) const;
@@ -91,7 +90,7 @@ private:
 
 // Iterates the members of a Unix "ar" archive (GNU long-name tables supported).
 struct ArchiveMember {
-    std::string name;
+    nx::string name;
     std::span<const std::byte> data;
 };
 nx::vector<ArchiveMember> read_archive(std::span<const std::byte> data);

@@ -7,21 +7,20 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <memory>
-#include <string>
-#include <system_error>
+#include <span>
 
 #include "ff7cc/formats/pkg.hpp"
 #include "ff7cc/io/file.hpp"
+#include "ff7cc/io/path.hpp"
+#include "ff7cc/text.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
-
-namespace fs = std::filesystem;
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
@@ -30,31 +29,36 @@ namespace {
 constexpr std::uint32_t kSector = 2048, kPkgLbn = 0x463;
 constexpr std::uint32_t kErrorNotFound = 0x80010002, kErrorBadFile = 0x80020323;
 
-fs::path g_game_dir, g_save_dir;
+nx::string g_game_dir, g_save_dir;
 
 GuestMemory& mem() { return kernel().memory(); }
 
 struct OpenFile {
-    std::fstream stream;
+    nx::fs::stream_ptr in;                     // files opened for reading
+    // Files opened for writing are kept in memory and written back whole after every write (the game writes
+    // little; save data goes through the savedata utility).
+    bool writable = false;
+    nx::vector<char> contents;
+    nx::string host;
     const nx::vector<char>* memory = nullptr;  // served from memory (the patched discimg.fse)
-    std::uint64_t memory_pos = 0;
+    std::uint64_t memory_pos = 0;               // position in `contents` or `memory`
     bool block = false;        // umd0:/umd1:
     std::uint64_t sector = 0;  // block devices: current absolute LBN
     std::int64_t async_result = 0;
     bool async_pending = false;
-    std::string path;
+    nx::string path;
 };
-// Open files stay where they are (nx::map moves its elements; std::fstream is not cheap to move).
+// Open files stay where they are (nx::map moves its elements).
 nx::map<int, std::unique_ptr<OpenFile>> g_files;
 int g_next_fd = 3;
 
 struct OpenDir {
-    nx::vector<fs::directory_entry> entries;
+    nx::vector<nx::fs::directory_entry> entries;
     std::size_t next = 0;
 };
 nx::map<int, OpenDir> g_dirs;
 
-std::fstream g_pkg;  // discimg.pkg for block reads
+nx::fs::stream_ptr g_pkg;  // discimg.pkg for block reads
 std::uint64_t g_pkg_sectors = 0;
 
 // Mod overlay (set_mods): a virtual archive with every entry in its original order, as a repacked archive would
@@ -64,7 +68,7 @@ std::uint64_t g_pkg_sectors = 0;
 struct VirtualEntry {
     std::uint64_t sector = 0, sectors = 0;  // virtual position, relative to the start of discimg.pkg
     std::uint64_t source_sector = 0;        // original position (unmodified entries)
-    fs::path mod;                           // replacement file, if any
+    nx::string mod;                         // replacement file, if any
 };
 nx::vector<VirtualEntry> g_virtual;  // empty when no mod replaces anything
 nx::vector<char> g_patched_fse;
@@ -79,39 +83,37 @@ void read_virtual(std::uint64_t first, std::uint64_t count, char* out) {
         if (it->sector >= end) break;
         const std::uint64_t from = std::max(s, it->sector), to = std::min(end, it->sector + it->sectors);
         char* dst = out + (from - first) * kSector;
-        const auto bytes = static_cast<std::streamsize>((to - from) * kSector);
+        const auto bytes = static_cast<std::size_t>((to - from) * kSector);
         if (it->mod.empty()) {
-            g_pkg.clear();
-            g_pkg.seekg(static_cast<std::streamoff>((it->source_sector + from - it->sector) * kSector));
-            g_pkg.read(dst, bytes);
-        } else {
-            std::ifstream mod(it->mod, std::ios::binary);
-            mod.seekg(static_cast<std::streamoff>((from - it->sector) * kSector));
-            mod.read(dst, bytes);  // the last sector is zero-padded
+            if (g_pkg && g_pkg->seek(static_cast<std::int64_t>((it->source_sector + from - it->sector) * kSector)))
+                (void)g_pkg->read(dst, bytes);
+        } else if (auto mod = nx::fs::open_file(it->mod); mod.has_value()) {
+            if (mod.value()->seek(static_cast<std::int64_t>((from - it->sector) * kSector)))
+                (void)mod.value()->read(dst, bytes);  // the last sector is zero-padded
         }
         s = to;
     }
 }
 
-std::string lower(std::string s) {
+nx::string lower(nx::string s) {
     for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return s;
 }
 
 // Guest path -> host path (empty if the device is not backed by files).
-fs::path host_path(const std::string& guest) {
+nx::string host_path(const nx::string& guest) {
     const auto colon = guest.find(':');
-    if (colon == std::string::npos) return {};
-    const std::string device = lower(guest.substr(0, colon));
-    std::string rest = guest.substr(colon + 1);
-    while (!rest.empty() && (rest.front() == '/' || rest.front() == '\\')) rest.erase(rest.begin());
-    if (device == "disc0" || device == "umd0" || device == "umd1") return rest.empty() ? fs::path{} : g_game_dir / rest;
-    if (device == "ms0" || device == "fatms0") return g_save_dir / rest;
+    if (colon == nx::string::npos) return {};
+    const nx::string device = lower(guest.substr(0, colon));
+    nx::string rest = guest.substr(colon + 1);
+    while (!rest.empty() && (rest.front() == '/' || rest.front() == '\\')) rest.erase(0, 1);
+    if (device == "disc0" || device == "umd0" || device == "umd1") return rest.empty() ? nx::string{} : path_join(g_game_dir, rest);
+    if (device == "ms0" || device == "fatms0") return path_join(g_save_dir, rest);
     return {};
 }
 
-bool is_block_device(const std::string& guest) {
-    const std::string l = lower(guest);
+bool is_block_device(const nx::string& guest) {
+    const nx::string l = lower(guest);
     return l == "umd0:" || l == "umd1:" || l == "umd0:/" || l == "umd1:/";
 }
 
@@ -120,9 +122,7 @@ std::int64_t block_read(OpenFile& f, std::uint32_t buffer, std::uint32_t sectors
     if (f.sector >= kPkgLbn && !g_virtual.empty()) {
         read_virtual(f.sector - kPkgLbn, sectors, data.data());
     } else if (f.sector >= kPkgLbn && g_pkg) {
-        g_pkg.clear();
-        g_pkg.seekg(static_cast<std::streamoff>((f.sector - kPkgLbn) * kSector));
-        g_pkg.read(data.data(), static_cast<std::streamsize>(data.size()));
+        if (g_pkg->seek(static_cast<std::int64_t>((f.sector - kPkgLbn) * kSector))) (void)g_pkg->read(data.data(), data.size());
     }
     std::memcpy(mem().ptr(buffer), data.data(), data.size());
     f.sector += sectors;
@@ -134,16 +134,14 @@ std::int64_t do_read(int fd, std::uint32_t buffer, std::uint32_t size) {
     if (it == g_files.end()) return static_cast<std::int32_t>(kErrorBadFile);
     OpenFile& f = *it->second;
     if (f.block) return block_read(f, buffer, size);
-    if (f.memory) {
-        const std::uint64_t n = std::min<std::uint64_t>(size, f.memory->size() - std::min<std::uint64_t>(f.memory_pos, f.memory->size()));
-        std::memcpy(mem().ptr(buffer), f.memory->data() + f.memory_pos, n);
+    if (f.memory || f.writable) {
+        const nx::vector<char>& data = f.writable ? f.contents : *f.memory;
+        const std::uint64_t n = std::min<std::uint64_t>(size, data.size() - std::min<std::uint64_t>(f.memory_pos, data.size()));
+        std::memcpy(mem().ptr(buffer), data.data() + f.memory_pos, n);
         f.memory_pos += n;
         return static_cast<std::int64_t>(n);
     }
-    f.stream.read(reinterpret_cast<char*>(mem().ptr(buffer)), size);
-    const auto n = f.stream.gcount();
-    f.stream.clear();
-    return n;
+    return f.in ? static_cast<std::int64_t>(f.in->read(mem().ptr(buffer), size)) : 0;
 }
 
 std::int64_t do_seek(int fd, std::int64_t offset, int whence) {
@@ -154,42 +152,55 @@ std::int64_t do_seek(int fd, std::int64_t offset, int whence) {
         f.sector = whence == 0 ? static_cast<std::uint64_t>(offset) : f.sector + offset;
         return static_cast<std::int64_t>(f.sector);
     }
-    if (f.memory) {
+    if (f.memory || f.writable) {
+        const std::size_t size = f.writable ? f.contents.size() : f.memory->size();
         const std::int64_t base = whence == 0 ? 0 : whence == 1 ? static_cast<std::int64_t>(f.memory_pos)
-                                                                : static_cast<std::int64_t>(f.memory->size());
+                                                                : static_cast<std::int64_t>(size);
         f.memory_pos = static_cast<std::uint64_t>(std::max<std::int64_t>(0, base + offset));
         return static_cast<std::int64_t>(f.memory_pos);
     }
-    f.stream.clear();
-    f.stream.seekg(offset, whence == 0 ? std::ios::beg : whence == 1 ? std::ios::cur : std::ios::end);
-    f.stream.seekp(f.stream.tellg());
-    return f.stream.tellg();
+    if (!f.in) return -1;
+    f.in->seek(offset, whence == 0 ? nx::fs::seek_origin::begin
+                       : whence == 1 ? nx::fs::seek_origin::current
+                                     : nx::fs::seek_origin::end);
+    return f.in->tell();
 }
 
-int do_open(const std::string& path, std::uint32_t flags) {
+int do_open(const nx::string& path, std::uint32_t flags) {
     OpenFile f;
     f.path = path;
     if (is_block_device(path)) {
         f.block = true;
     } else {
-        const fs::path host = host_path(path);
+        const nx::string host = host_path(path);
         if (host.empty()) return static_cast<int>(kErrorNotFound);
-        if (!g_patched_fse.empty() && lower(host.filename().string()) == "discimg.fse") {
+        if (!g_patched_fse.empty() && lower(file_name(host)) == "discimg.fse") {
             f.memory = &g_patched_fse;
             const int fd = g_next_fd++;
             g_files.emplace(fd, std::make_unique<OpenFile>(std::move(f)));
             return fd;
         }
-        std::ios::openmode mode = std::ios::binary;
-        if (flags & 0x0001) mode |= std::ios::in;    // PSP_O_RDONLY
-        if (flags & 0x0002) mode |= std::ios::out;   // PSP_O_WRONLY
-        if (flags & 0x0400) mode |= std::ios::trunc; // PSP_O_TRUNC
-        if ((flags & 0x0200) && !fs::exists(host)) {  // PSP_O_CREAT
-            fs::create_directories(host.parent_path());
-            std::ofstream(host, std::ios::binary).close();
+        const bool write = flags & 0x0002, create = flags & 0x0200, truncate = flags & 0x0400;  // PSP_O_WRONLY/CREAT/TRUNC
+        if (create && !nx::fs::exists(host)) {
+            (void)nx::fs::create_directories(parent_path(host));
+            if (!nx::fs::file_write(host, {}).has_value()) return static_cast<int>(kErrorNotFound);
         }
-        f.stream.open(host, mode);
-        if (!f.stream) return static_cast<int>(kErrorNotFound);
+        if (write) {
+            f.writable = true;
+            f.host = host;
+            if (truncate) {
+                if (!nx::fs::file_write(host, {}).has_value()) return static_cast<int>(kErrorNotFound);
+            } else {
+                const auto data = nx::fs::file_read(host);
+                if (!data.has_value()) return static_cast<int>(kErrorNotFound);
+                const auto* bytes = reinterpret_cast<const char*>(data.value().data());
+                f.contents.assign(bytes, bytes + data.value().size());
+            }
+        } else {
+            auto in = nx::fs::open_file(host);
+            if (!in.has_value()) return static_cast<int>(kErrorNotFound);
+            f.in = std::move(in.value());
+        }
     }
     const int fd = g_next_fd++;
     g_files.emplace(fd, std::make_unique<OpenFile>(std::move(f)));
@@ -202,11 +213,11 @@ void write64(std::uint32_t addr, std::int64_t v) {
 }
 
 // SceIoStat: mode, attr, size (u64), 3 × ScePspDateTime (16 bytes), private[6].
-void write_stat(std::uint32_t addr, const fs::path& host, std::uint32_t lbn) {
+void write_stat(std::uint32_t addr, nx::fs::path_view host, std::uint32_t lbn) {
     mem().fill(addr, 0, 88);
-    const bool dir = fs::is_directory(host);
-    std::error_code ec;
-    const std::uint64_t size = dir ? 0 : fs::file_size(host, ec);
+    const nx::fs::file_stat st = nx::fs::stat_file(host);
+    const bool dir = st.type == nx::fs::file_type::directory;
+    const std::uint64_t size = dir ? 0 : st.size;
     mem().write32(addr, dir ? 0x11FF : 0x21FF);
     mem().write32(addr + 4, dir ? 0x10 : 0x20);
     write64(addr + 8, static_cast<std::int64_t>(size));
@@ -216,7 +227,7 @@ void write_stat(std::uint32_t addr, const fs::path& host, std::uint32_t lbn) {
 // ---- IoFileMgrForUser --------------------------------------------------------------------------
 
 void Open(Context& c) {
-    const std::string path = mem().string(arg(c, 0));
+    const nx::string path = mem().string(arg(c, 0));
     const int fd = do_open(path, arg(c, 1));
     if (kernel().trace_hle) std::fprintf(stderr, "  sceIoOpen(%s) -> %d\n", path.c_str(), fd);
     ret(c, static_cast<std::uint32_t>(fd));
@@ -274,32 +285,39 @@ void Write(Context& c) {
     }
     const auto it = g_files.find(fd);
     if (it == g_files.end()) return ret(c, kErrorBadFile);
-    it->second->stream.write(reinterpret_cast<const char*>(mem().ptr(arg(c, 1))), size);
+    OpenFile& f = *it->second;
+    if (f.writable) {
+        const auto* src = reinterpret_cast<const char*>(mem().ptr(arg(c, 1)));
+        if (f.contents.size() < f.memory_pos + size) f.contents.resize(f.memory_pos + size);
+        std::memcpy(f.contents.data() + f.memory_pos, src, size);
+        f.memory_pos += size;
+        (void)nx::fs::file_write(f.host, std::span(reinterpret_cast<const std::uint8_t*>(f.contents.data()), f.contents.size()));
+    }
     ret(c, size);
 }
 void Getstat(Context& c) {
-    const std::string path = mem().string(arg(c, 0));
-    const fs::path host = host_path(path);
-    if (host.empty() || !fs::exists(host)) return ret(c, kErrorNotFound);
-    write_stat(arg(c, 1), host, lower(host.filename().string()) == "discimg.pkg" ? kPkgLbn : 0);
+    const nx::string path = mem().string(arg(c, 0));
+    const nx::string host = host_path(path);
+    if (host.empty() || !nx::fs::exists(host)) return ret(c, kErrorNotFound);
+    write_stat(arg(c, 1), host, lower(file_name(host)) == "discimg.pkg" ? kPkgLbn : 0);
     ret(c, 0);
 }
 void Mkdir(Context& c) {
-    const fs::path host = host_path(mem().string(arg(c, 0)));
-    std::error_code ec;
-    if (!host.empty()) fs::create_directories(host, ec);
+    const nx::string host = host_path(mem().string(arg(c, 0)));
+    if (!host.empty()) (void)nx::fs::create_directories(host);
     ret(c, 0);
 }
 void Rename(Context& c) {
-    std::error_code ec;
-    fs::rename(host_path(mem().string(arg(c, 0))), host_path(mem().string(arg(c, 1))), ec);
-    ret(c, ec ? kErrorNotFound : 0);
+    const bool ok = nx::fs::rename(host_path(mem().string(arg(c, 0))), host_path(mem().string(arg(c, 1)))).has_value();
+    ret(c, ok ? 0 : kErrorNotFound);
 }
 void Dopen(Context& c) {
-    const fs::path host = host_path(mem().string(arg(c, 0)));
-    if (host.empty() || !fs::is_directory(host)) return ret(c, kErrorNotFound);
+    const nx::string host = host_path(mem().string(arg(c, 0)));
+    if (host.empty() || !is_directory(host)) return ret(c, kErrorNotFound);
     OpenDir d;
-    for (const auto& e : fs::directory_iterator(host)) d.entries.push_back(e);
+    if (auto list = nx::fs::directory_entries(host); list.has_value()) d.entries = std::move(list.value());
+    // By name, the same on every platform (the host's listing order is not).
+    std::sort(d.entries.begin(), d.entries.end(), [](const auto& a, const auto& b) { return a.path < b.path; });
     const int fd = g_next_fd++;
     g_dirs.emplace(fd, std::move(d));
     ret(c, static_cast<std::uint32_t>(fd));
@@ -312,8 +330,8 @@ void Dread(Context& c) {
     if (d.next >= d.entries.size()) return ret(c, 0);
     const auto& e = d.entries[d.next++];
     const std::uint32_t out = arg(c, 1);
-    write_stat(out, e.path(), 0);
-    const std::string name = e.path().filename().string().substr(0, 255);
+    write_stat(out, e.path, 0);
+    const nx::string name = file_name(e.path).substr(0, 255);
     mem().write_string(out + 88, name);
     ret(c, 1);
 }
@@ -362,40 +380,45 @@ constexpr HleBinding kBindings[] = {
 
 }  // namespace
 
-void set_storage(const fs::path& game_dir, const fs::path& save_dir) {
+void set_storage(nx::string_view game_dir, nx::string_view save_dir) {
     g_game_dir = game_dir;
     g_save_dir = save_dir;
-    g_pkg.open(game_dir / "PSP_GAME" / "USRDIR" / "discimg.pkg", std::ios::in | std::ios::binary);
-    if (!g_pkg) std::fprintf(stderr, "warning: discimg.pkg not found under %s\n", game_dir.string().c_str());
-    std::error_code ec;
-    const auto pkg_size = fs::file_size(game_dir / "PSP_GAME" / "USRDIR" / "discimg.pkg", ec);
-    g_pkg_sectors = ec ? 0 : (pkg_size + kSector - 1) / kSector;
+    const nx::string pkg = path_join(game_dir, "PSP_GAME", "USRDIR", "discimg.pkg");
+    auto opened = nx::fs::open_file(pkg);
+    g_pkg = opened.has_value() ? std::move(opened.value()) : nx::fs::stream_ptr{};
+    if (!g_pkg) std::fprintf(stderr, "warning: discimg.pkg not found under %s\n", g_game_dir.c_str());
+    g_pkg_sectors = g_pkg ? (nx::fs::stat_file(pkg).size + kSector - 1) / kSector : 0;
 }
 
-void set_mods(const fs::path& mods_dir) {
+void set_mods(nx::string_view mods_dir) {
     g_virtual.clear();
     g_patched_fse.clear();
-    std::error_code ec;
-    if (!fs::is_directory(mods_dir, ec)) return;
-    nx::vector<fs::path> mods;
-    for (const auto& d : fs::directory_iterator(mods_dir, ec))
-        if (d.is_directory() && fs::is_directory(d.path() / "pkg")) mods.push_back(d.path());
+    if (!is_directory(mods_dir)) return;
+    nx::vector<nx::string> mods;
+    if (auto list = nx::fs::directory_entries(mods_dir); list.has_value())
+        for (const auto& d : list.value())
+            if (d.type == nx::fs::file_type::directory && is_directory(path_join(d.path, "pkg"))) mods.push_back(d.path);
     std::sort(mods.begin(), mods.end());
-    nx::map<std::size_t, fs::path> replaced;  // entry -> file (later mods win)
-    for (const auto& m : mods)
-        for (const auto& f : fs::directory_iterator(m / "pkg", ec)) {
-            const std::string stem = f.path().stem().string();
-            if (!f.is_regular_file() || stem.empty() || stem.find_first_not_of("0123456789") != std::string::npos) continue;
-            replaced[std::stoul(stem)] = f.path();
+    nx::map<std::size_t, nx::string> replaced;  // entry -> file (later mods win)
+    for (const auto& m : mods) {
+        auto files = nx::fs::directory_entries(path_join(m, "pkg"));
+        if (!files.has_value()) continue;
+        for (const auto& f : files.value()) {
+            const nx::string stem = file_stem(f.path);
+            if (f.type != nx::fs::file_type::regular || stem.empty() ||
+                stem.view().find_first_not_of("0123456789") != nx::string_view::npos)
+                continue;
+            replaced[static_cast<std::size_t>(parse_u64(stem))] = f.path;
         }
+    }
     if (replaced.empty()) return;
 
-    const fs::path fse_path = g_game_dir / "PSP_GAME" / "USRDIR" / "discimg.fse";
+    const nx::string fse_path = path_join(g_game_dir, "PSP_GAME", "USRDIR", "discimg.fse");
     const auto fse = io::read_all(fse_path);
     auto entries = pkg::parse_index(fse);
     for (const auto& [index, path] : replaced)
         if (index >= entries.size())
-            std::fprintf(stderr, "mods: %s replaces entry %zu, but the archive has %zu entries\n", path.string().c_str(),
+            std::fprintf(stderr, "mods: %s replaces entry %zu, but the archive has %zu entries\n", path.c_str(),
                          index, entries.size());
     std::uint64_t next = 0;
     g_virtual.reserve(entries.size());
@@ -405,7 +428,7 @@ void set_mods(const fs::path& mods_dir) {
         v.source_sector = entries[i].sector;
         if (const auto it = replaced.find(i); it != replaced.end()) {
             v.mod = it->second;
-            entries[i].size = static_cast<std::uint32_t>(fs::file_size(v.mod));
+            entries[i].size = static_cast<std::uint32_t>(nx::fs::stat_file(v.mod).size);
         }
         v.sectors = (std::uint64_t{entries[i].size} + kSector - 1) / kSector;
         entries[i].sector = static_cast<std::uint32_t>(next);
@@ -415,10 +438,10 @@ void set_mods(const fs::path& mods_dir) {
     const auto patched = pkg::serialize_index(entries);
     g_patched_fse.assign(reinterpret_cast<const char*>(patched.data()), reinterpret_cast<const char*>(patched.data()) + patched.size());
     std::fprintf(stderr, "mods: %zu archive entries replaced from %zu mod folders in %s\n", replaced.size(), mods.size(),
-                 mods_dir.string().c_str());
+                 nx::string(mods_dir).c_str());
 }
 
-const fs::path& save_dir() { return g_save_dir; }
+const nx::string& save_dir() { return g_save_dir; }
 
 void hle_install_io() { hle_bind(kBindings); }
 

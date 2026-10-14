@@ -6,10 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string>
-#include <string_view>
 
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
@@ -33,8 +32,8 @@ public:
     void write(std::uint32_t addr, std::span<const std::byte> data);
     void fill(std::uint32_t addr, std::uint8_t value, std::uint32_t size);
     // NUL-terminated string (bounded).
-    std::string string(std::uint32_t addr, std::size_t max = 1024) const;
-    void write_string(std::uint32_t addr, std::string_view s);  // with terminator
+    nx::string string(std::uint32_t addr, std::size_t max = 1024) const;
+    void write_string(std::uint32_t addr, nx::string_view s);  // with terminator
 
 private:
     std::uint8_t* base_ = nullptr;

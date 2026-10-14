@@ -10,11 +10,10 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string>
-#include <string_view>
 
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
@@ -112,7 +111,7 @@ inline std::uint32_t vram_canonical(std::uint32_t addr) {
     return (addr & 0x0F000000) == 0x04000000 ? 0x04000000 | (addr & 0x1FFFFF) : addr;
 }
 
-std::string_view command_name(std::uint8_t cmd);
+nx::string_view command_name(std::uint8_t cmd);
 
 // Decodes `count` consecutive vertices of format `f` at `data`, as draws do (benchmarks, tools).
 void decode_vertices(const VertexFormat& f, const float* morph_weights, const std::uint8_t* data, std::uint32_t count,
@@ -186,7 +185,7 @@ private:
 };
 
 // One-line human-readable decoding of a command word (used by --ge-dump).
-std::string describe(std::uint32_t word);
+nx::string describe(std::uint32_t word);
 
 }  // namespace ge
 }  // namespace ff7cc::rt

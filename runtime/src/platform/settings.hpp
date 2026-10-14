@@ -3,7 +3,7 @@
 // User settings, stored as key=value lines (ff7cc.ini). Unknown keys are ignored and missing keys keep their
 // defaults, so the file survives version changes.
 
-#include <filesystem>
+#include "core/foundation/platform/filesystem.h"
 
 namespace ff7cc::platform {
 
@@ -15,8 +15,8 @@ struct Settings {
     bool frame_limit = true;  // run at the PSP's speed (off: as fast as possible)
     bool show_fps = false;
 
-    static Settings load(const std::filesystem::path& path);  // defaults when the file is missing
-    bool save(const std::filesystem::path& path) const;
+    static Settings load(nx::fs::path_view path);  // defaults when the file is missing
+    bool save(nx::fs::path_view path) const;
 
     friend bool operator==(const Settings&, const Settings&) = default;
 };

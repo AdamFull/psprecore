@@ -4,7 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <filesystem>
+#include "core/foundation/platform/filesystem.h"
 #include <memory>
 
 #include "core/foundation/core/foundation.h"
@@ -15,7 +15,7 @@ namespace ff7cc::rt::media {
 
 class Av1Video {
 public:
-    static std::unique_ptr<Av1Video> open(const std::filesystem::path& path);  // null if missing/invalid
+    static std::unique_ptr<Av1Video> open(nx::fs::path_view path);  // null if missing/invalid
     ~Av1Video();
     Av1Video(const Av1Video&) = delete;
     Av1Video& operator=(const Av1Video&) = delete;
@@ -30,7 +30,7 @@ private:
     Av1Video() = default;
     bool read_packet(nx::vector<std::uint8_t>& out);
 
-    std::FILE* file_ = nullptr;
+    nx::fs::stream_ptr file_;
     ::Dav1dContext* decoder_ = nullptr;
     int width_ = 0, height_ = 0;
     bool eof_ = false;

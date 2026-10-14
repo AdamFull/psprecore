@@ -39,11 +39,9 @@
 #include <cstdlib>
 #include <ctime>
 #include <exception>
-#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -59,6 +57,8 @@
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/io/file.hpp"
+#include "ff7cc/io/path.hpp"
+#include "ff7cc/text.hpp"
 #include "ff7cc/platform/audio.hpp"
 #include "ff7cc/platform/display.hpp"
 #include "platform/gpu_vulkan.hpp"
@@ -73,15 +73,16 @@
 #include "ff7cc/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
-namespace fs = std::filesystem;
 
 namespace {
 
 // Records every audio source to <prefix>_<source>.wav (and forwards to the device, if any). For testing.
 class WavRecorder final : public ff7cc::rt::AudioSink {
 public:
-    WavRecorder(std::string prefix, ff7cc::rt::AudioSink* next) : prefix_(std::move(prefix)), next_(next) {}
+    WavRecorder(nx::string prefix, ff7cc::rt::AudioSink* next) : prefix_(std::move(prefix)), next_(next) {}
     ~WavRecorder() override { flush(); }
 
     void submit(int source, const std::int16_t* frames, std::size_t count) override {
@@ -92,8 +93,8 @@ public:
         for (int s = 0; s < kSources; ++s) {
             const auto& pcm = samples_[s];
             if (pcm.empty()) continue;
-            const std::string path = prefix_ + "_" + std::to_string(s) + ".wav";
-            std::FILE* f = std::fopen(path.c_str(), "wb");
+            const nx::string path = prefix_ + "_" + nx::format("{}", s) + ".wav";
+            std::FILE* f = ff7cc::io::open_c_file(path, "wb");
             if (!f) continue;
             const auto put32 = [f](std::uint32_t v) { std::fwrite(&v, 4, 1, f); };
             const auto put16 = [f](std::uint16_t v) { std::fwrite(&v, 2, 1, f); };
@@ -116,7 +117,7 @@ public:
     }
 
 private:
-    std::string prefix_;
+    nx::string prefix_;
     ff7cc::rt::AudioSink* next_;
     nx::vector<std::int16_t> samples_[kSources];
 };
@@ -182,8 +183,8 @@ nx::vector<std::uint32_t> compare_frames(const nx::vector<std::uint32_t>& ref, c
 // With the same game data, saves and clock base the run is reproduced exactly (virtual time is deterministic).
 class InputRecorder {
 public:
-    InputRecorder(const fs::path& path, std::int64_t clock_base) : f_(std::fopen(path.string().c_str(), "w")) {
-        if (!f_) throw std::runtime_error("cannot write " + path.string());
+    InputRecorder(nx::fs::path_view path, std::int64_t clock_base) : f_(ff7cc::io::open_c_file(path, "w")) {
+        if (!f_) throw ff7cc::Error(nx::string("cannot write ") + path.native());
         std::fprintf(f_, "ff7cc-input 1 %lld\n", static_cast<long long>(clock_base));
     }
     ~InputRecorder() {
@@ -213,26 +214,26 @@ private:
 
 class InputReplay {
 public:
-    explicit InputReplay(const fs::path& path) {
-        std::FILE* f = std::fopen(path.string().c_str(), "r");
-        if (!f) throw std::runtime_error("cannot read " + path.string());
+    explicit InputReplay(nx::fs::path_view path) {
+        std::FILE* f = ff7cc::io::open_c_file(path, "r");
+        if (!f) throw ff7cc::Error(nx::string("cannot read ") + path.native());
         long long base = 0;
         if (std::fscanf(f, "ff7cc-input 1 %lld", &base) != 1) {
             std::fclose(f);
-            throw std::runtime_error(path.string() + " is not an ff7cc input recording");
+            throw ff7cc::Error(nx::string(path.native()) + " is not an ff7cc input recording");
         }
         clock_base_ = base;
         char kind[16];
         unsigned long long vblank = 0;
         while (std::fscanf(f, "%llu %15s", &vblank, kind) == 2) {
             Event e{vblank};
-            if (std::string_view(kind) == "pad") {
+            if (nx::string_view(kind) == "pad") {
                 unsigned b = 0, lx = 128, ly = 128;
                 if (std::fscanf(f, "%x %u %u", &b, &lx, &ly) != 3) break;
                 e.buttons = b;
                 e.lx = static_cast<std::uint8_t>(lx);
                 e.ly = static_cast<std::uint8_t>(ly);
-            } else if (std::string_view(kind) == "dialog") {
+            } else if (nx::string_view(kind) == "dialog") {
                 if (std::fscanf(f, "%d", &e.dialog) != 1) break;
                 e.is_dialog = true;
             } else {
@@ -288,19 +289,19 @@ struct ScriptedPress {
 
 struct ScriptedUi {
     std::uint64_t vblank;
-    std::string action;
+    nx::string action;
 };
 
-std::uint32_t button_from_name(std::string_view name) {
+std::uint32_t button_from_name(nx::string_view name) {
     using namespace ff7cc::platform;
-    static constexpr std::pair<std::string_view, std::uint32_t> kNames[] = {
+    static constexpr std::pair<nx::string_view, std::uint32_t> kNames[] = {
         {"select", kSelect}, {"start", kStart},   {"up", kUp},       {"right", kRight},
         {"down", kDown},     {"left", kLeft},     {"l", kLTrigger},  {"r", kRTrigger},
         {"triangle", kTriangle}, {"circle", kCircle}, {"cross", kCross}, {"square", kSquare},
     };
     for (const auto& [n, b] : kNames)
         if (n == name) return b;
-    throw std::runtime_error("unknown button: " + std::string(name));
+    throw ff7cc::Error("unknown button: " + nx::string(name));
 }
 
 std::uint32_t scripted_buttons(const nx::vector<ScriptedPress>& presses, std::uint64_t vblank) {
@@ -321,16 +322,16 @@ constexpr std::uint32_t kLoadBase = 0x08804000;  // must match the base ccrecomp
 #ifdef __ANDROID__
 // The runtime logs to stderr; on Android forward it line by line to logcat (tag "ff7cc") and to `log_path`
 // (logcat's ring buffer is small and shared with the whole system).
-void redirect_stderr_to_logcat(const fs::path& log_path) {
+void redirect_stderr_to_logcat(nx::fs::path_view log_path) {
     static int fds[2];
     static std::FILE* log = nullptr;
     if (pipe(fds) != 0) return;
-    log = std::fopen(log_path.string().c_str(), "w");
+    log = io::open_c_file(log_path, "w");
     dup2(fds[1], STDERR_FILENO);
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
     std::thread([] {
         char buf[1024];
-        std::string line;
+        nx::string line;
         for (ssize_t n; (n = read(fds[0], buf, sizeof buf)) > 0;)
             for (ssize_t i = 0; i < n; ++i) {
                 if (buf[i] != '\n') {
@@ -354,32 +355,31 @@ void redirect_stderr_to_logcat(const fs::path& log_path) {
 int main(int argc, char** argv) {
     // Saves, settings and cooked media live in the working directory on desktop and in the app's external
     // files directory (Android/data/<package>/files) on Android, next to the extracted game folder.
-    fs::path data_dir = fs::current_path();
+    nx::string data_dir = ".";
 #ifdef __ANDROID__
     if (const char* ext = SDL_GetAndroidExternalStoragePath()) data_dir = ext;
-    redirect_stderr_to_logcat(data_dir / "ff7cc.log");
+    redirect_stderr_to_logcat(path_join(data_dir, "ff7cc.log"));
     if (argc > 1) {  // launch-intent options (testing)
         std::fprintf(stderr, "arguments:");
         for (int i = 1; i < argc; ++i) std::fprintf(stderr, " [%s]", argv[i]);
         std::fprintf(stderr, "\n");
     }
     // Options may come from the launch intent (GameActivity); a leading non-option argument is the game folder.
-    const bool explicit_dir = argc >= 2 && std::string_view(argv[1]).substr(0, 2) != "--";
+    const bool explicit_dir = argc >= 2 && nx::string_view(argv[1]).substr(0, 2) != "--";
     const int first_option = explicit_dir ? 2 : 1;
-    const fs::path game_dir = explicit_dir ? fs::path(argv[1]) : data_dir / "Crisis Core - Final Fantasy VII EU";
-    // Probe without exceptions: a folder created by `adb push` before the app's first start belongs to the shell
-    // user, and the app is then denied access to it.
-    std::error_code probe_error;
-    const bool found = fs::exists(game_dir / "PSP_GAME" / "SYSDIR" / "BOOT.BIN", probe_error);
-    if (!found) {
-        const bool denied = probe_error == std::errc::permission_denied;
-        const std::string message =
-            denied ? "The app is not allowed to read:\n\n" + game_dir.string() +
+    const nx::string game_dir = explicit_dir ? nx::string(argv[1]) : path_join(data_dir, "Crisis Core - Final Fantasy VII EU");
+    // A folder created by `adb push` before the app's first start belongs to the shell user, and the app is then
+    // denied access to it.
+    const auto probe = nx::fs::open_file(path_join(game_dir, "PSP_GAME", "SYSDIR", "BOOT.BIN"));
+    if (!probe.has_value()) {
+        const bool denied = probe.error().kind == nx::fs::io_error::PermissionDenied;
+        const nx::string message =
+            denied ? "The app is not allowed to read:\n\n" + game_dir +
                          "\n\nThe folder was probably created before the app's first start (for example by adb push), so it "
                          "belongs to another user. Uninstall the app (this deletes its files folder), install it again, start "
                          "it once, then copy the game files. scripts/build-android.ps1 -InstallData does this in the right order."
-                   : "Copy your extracted game folder (with PSP_GAME inside) and the cooked folder to:\n\n" + data_dir.string() +
-                         "\n\nExpected: " + game_dir.string() +
+                   : "Copy your extracted game folder (with PSP_GAME inside) and the cooked folder to:\n\n" + data_dir +
+                         "\n\nExpected: " + game_dir +
                          "\n\nscripts/build-android.ps1 -InstallData can copy them from your PC.";
         std::fprintf(stderr, "%s\n", message.c_str());
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, denied ? "Game files not readable" : "Game files not found",
@@ -391,18 +391,18 @@ int main(int argc, char** argv) {
         std::fputs("usage: ff7cc <extracted disc folder> [--trace] [--vblanks N]\n", stderr);
         return 2;
     }
-    const fs::path game_dir = argv[1];
+    const nx::string game_dir = argv[1];
     const int first_option = 2;
 #endif
     try {
         bool trace = false, headless = false;
         std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
-        std::string screenshot_path;
-        std::string audio_dump;
-        fs::path cooked_dir;
-        std::string renderer;  // empty: the setting (Vulkan or software, switchable in the pause menu)
+        nx::string screenshot_path;
+        nx::string audio_dump;
+        nx::string cooked_dir;
+        nx::string renderer;  // empty: the setting (Vulkan or software, switchable in the pause menu)
         int scale = 0;  // 0: from the settings file
-        fs::path settings_path = data_dir / "ff7cc.ini";
+        nx::string settings_path = path_join(data_dir, "ff7cc.ini");
         bool no_audio = false, unthrottled = false, perf = false, mute = false;
 #ifdef __ANDROID__
         bool touch = true;  // shown until a gamepad is used
@@ -413,23 +413,23 @@ int main(int argc, char** argv) {
         std::uint64_t ge_dump_vblank = 0, ge_bench_vblank = 0, profile_vblank = 0;
         std::uint64_t state_hash_every = 0;
         std::uint64_t ram_dump_vblank = 0;
-        std::string ram_dump_path;
-        fs::path record_path, replay_path, saves_dir, mods_dir;
+        nx::string ram_dump_path;
+        nx::string record_path, replay_path, saves_dir, mods_dir;
         std::int64_t clock_base = static_cast<std::int64_t>(std::time(nullptr));
         bool clock_given = false;
         nx::vector<ScriptedPress> presses;
         nx::vector<ScriptedUi> ui_script;
         std::uint64_t window_shot_vblank = 0;
-        std::string window_shot_path;
+        nx::string window_shot_path;
         for (int i = first_option; i < argc; ++i) {
-            const std::string_view a = argv[i];
+            const nx::string_view a = argv[i];
             if (a == "--trace") trace = true;
             else if (a == "--headless") headless = true;
             else if (a == "--screenshot" && i + 2 < argc) {
-                screenshot_vblank = std::stoull(argv[++i]);
+                screenshot_vblank = parse_u64(argv[++i]);
                 screenshot_path = argv[++i];
             } else if (a == "--screenshot-every" && i + 2 < argc) {
-                screenshot_every = std::stoull(argv[++i]);
+                screenshot_every = parse_u64(argv[++i]);
                 screenshot_path = argv[++i];
             } else if (a == "--unthrottled") {
                 unthrottled = true;
@@ -444,7 +444,7 @@ int main(int argc, char** argv) {
             } else if (a == "--renderer" && i + 1 < argc) {
                 renderer = argv[++i];
             } else if (a == "--scale" && i + 1 < argc) {
-                scale = std::max(1, std::stoi(argv[++i]));
+                scale = std::max(1, static_cast<int>(parse_i64(argv[++i])));
             } else if (a == "--settings" && i + 1 < argc) {
                 settings_path = argv[++i];
             } else if (a == "--cooked" && i + 1 < argc) {
@@ -453,24 +453,24 @@ int main(int argc, char** argv) {
                 audio_dump = argv[++i];
             }
             else if (a == "--ui" && i + 2 < argc) {
-                const std::uint64_t at = std::stoull(argv[++i]);
+                const std::uint64_t at = parse_u64(argv[++i]);
                 ui_script.push_back({at, argv[++i]});
             } else if (a == "--window-shot" && i + 2 < argc) {
-                window_shot_vblank = std::stoull(argv[++i]);
+                window_shot_vblank = parse_u64(argv[++i]);
                 window_shot_path = argv[++i];
             }
             else if (a == "--press" && i + 2 < argc) {
-                const std::uint64_t at = std::stoull(argv[++i]);
+                const std::uint64_t at = parse_u64(argv[++i]);
                 presses.push_back({at, button_from_name(argv[++i])});
             }
-            else if (a == "--vblanks" && i + 1 < argc) max_vblanks = std::stoull(argv[++i]);
-            else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
-            else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = std::stoull(argv[++i]);
-            else if (a == "--ge-bench" && i + 1 < argc) ge_bench_vblank = std::stoull(argv[++i]);
-            else if (a == "--profile" && i + 1 < argc) profile_vblank = std::stoull(argv[++i]);
-            else if (a == "--state-hash" && i + 1 < argc) state_hash_every = std::stoull(argv[++i]);
+            else if (a == "--vblanks" && i + 1 < argc) max_vblanks = parse_u64(argv[++i]);
+            else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(parse_u64(argv[++i]), "ge_dump.txt");
+            else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = parse_u64(argv[++i]);
+            else if (a == "--ge-bench" && i + 1 < argc) ge_bench_vblank = parse_u64(argv[++i]);
+            else if (a == "--profile" && i + 1 < argc) profile_vblank = parse_u64(argv[++i]);
+            else if (a == "--state-hash" && i + 1 < argc) state_hash_every = parse_u64(argv[++i]);
             else if (a == "--ram-dump" && i + 2 < argc) {
-                ram_dump_vblank = std::stoull(argv[++i]);
+                ram_dump_vblank = parse_u64(argv[++i]);
                 ram_dump_path = argv[++i];
             }
             else if (a == "--record" && i + 1 < argc) record_path = argv[++i];
@@ -478,14 +478,14 @@ int main(int argc, char** argv) {
             else if (a == "--saves" && i + 1 < argc) saves_dir = argv[++i];
             else if (a == "--mods" && i + 1 < argc) mods_dir = argv[++i];
             else if (a == "--clock" && i + 1 < argc) {
-                clock_base = std::stoll(argv[++i]);
+                clock_base = parse_i64(argv[++i]);
                 clock_given = true;
             }
         }
 
         rt::install_crash_handler();
         rt::GuestMemory memory;
-        const auto boot = io::read_all(game_dir / "PSP_GAME" / "SYSDIR" / "BOOT.BIN");
+        const auto boot = io::read_all(path_join(game_dir, "PSP_GAME", "SYSDIR", "BOOT.BIN"));
         const elf::File file(boot);
         const auto module = prx::parse(file);
         const auto image = prx::load_image(file, module, kLoadBase);
@@ -498,24 +498,22 @@ int main(int argc, char** argv) {
         kernel.user_heap().alloc_at(kLoadBase, static_cast<std::uint32_t>(image.size()));
         // Recordings are self-contained: --record snapshots the save folder next to the recording (<file>.saves),
         // and --replay runs on a fresh copy of that snapshot (<file>.saves-run), so the game can save freely.
-        fs::path saves = saves_dir.empty() ? data_dir / "saves" : saves_dir;
+        nx::string saves = saves_dir.empty() ? path_join(data_dir, "saves") : saves_dir;
         if (!replay_path.empty() && saves_dir.empty()) {
-            const fs::path snapshot = fs::path(replay_path).concat(".saves"), run = fs::path(replay_path).concat(".saves-run");
-            std::error_code ec;
-            fs::remove_all(run, ec);
-            fs::create_directories(run);
-            if (fs::exists(snapshot)) fs::copy(snapshot, run, fs::copy_options::recursive);
+            const nx::string snapshot = replay_path + ".saves", run = replay_path + ".saves-run";
+            (void)nx::fs::remove_all(run);
+            (void)nx::fs::create_directories(run);
+            if (nx::fs::exists(snapshot)) (void)nx::fs::copy(snapshot, run, true);
             saves = run;
         }
         if (!record_path.empty()) {
-            const fs::path snapshot = fs::path(record_path).concat(".saves");
-            std::error_code ec;
-            fs::remove_all(snapshot, ec);
-            fs::create_directories(snapshot);
-            if (fs::exists(saves)) fs::copy(saves, snapshot, fs::copy_options::recursive);
+            const nx::string snapshot = record_path + ".saves";
+            (void)nx::fs::remove_all(snapshot);
+            (void)nx::fs::create_directories(snapshot);
+            if (nx::fs::exists(saves)) (void)nx::fs::copy(saves, snapshot, true);
         }
         rt::set_storage(game_dir, saves);
-        rt::set_mods(mods_dir.empty() ? data_dir / "mods" : mods_dir);
+        rt::set_mods(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
 
         // Input recording / replay. A replay also fixes the guest clock to the recording's.
         std::unique_ptr<InputReplay> replay;
@@ -523,7 +521,7 @@ int main(int argc, char** argv) {
         if (!replay_path.empty()) {
             replay = std::make_unique<InputReplay>(replay_path);
             if (!clock_given) clock_base = replay->clock_base();
-            std::fprintf(stderr, "replaying %s (until vblank %llu)\n", replay_path.string().c_str(),
+            std::fprintf(stderr, "replaying %s (until vblank %llu)\n", replay_path.c_str(),
                          static_cast<unsigned long long>(replay->last_vblank()));
         }
         rt::set_wall_clock_base(clock_base);
@@ -538,7 +536,7 @@ int main(int argc, char** argv) {
         const auto input_step = [&](std::uint32_t& buttons, std::uint8_t& lx, std::uint8_t& ly) {
             const std::uint64_t vblank = kernel.vblank_count();
             if (!ram_dump_path.empty() && vblank == ram_dump_vblank) {  // debugging: user RAM to a file
-                std::FILE* f = std::fopen(ram_dump_path.c_str(), "wb");
+                std::FILE* f = io::open_c_file(ram_dump_path, "wb");
                 if (f) {
                     std::fwrite(memory.ptr(0x08800000), 1, 0x01800000, f);
                     std::fclose(f);
@@ -567,14 +565,14 @@ int main(int argc, char** argv) {
             if (recorder_in) recorder_in->pad(vblank, buttons, lx, ly);
         };
         if (cooked_dir.empty()) {
-            cooked_dir = data_dir / "cooked";
-            if (!fs::exists(cooked_dir)) cooked_dir = fs::path(argv[0]).parent_path() / "cooked";
+            cooked_dir = path_join(data_dir, "cooked");
+            if (!nx::fs::exists(cooked_dir)) cooked_dir = path_join(parent_path(argv[0]), "cooked");
         }
         rt::set_cooked_root(cooked_dir);
         rt::hle_install();
 
         // module_start(argc = strlen(path) + 1, argv = path), as the PSP loader does.
-        const std::string boot_path = "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN";
+        const nx::string boot_path = "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN";
         const std::uint32_t args = kernel.user_heap().alloc(static_cast<std::uint32_t>(boot_path.size() + 1));
         memory.write_string(args, boot_path);
 
@@ -779,14 +777,14 @@ int main(int argc, char** argv) {
                     if (!display->present_again()) std::this_thread::sleep_for(std::chrono::milliseconds(16));
                 }
                 if (settings != before && !settings.save(settings_path))
-                    std::fprintf(stderr, "could not write %s\n", settings_path.string().c_str());
+                    std::fprintf(stderr, "could not write %s\n", settings_path.c_str());
             };
             {
                 rt::set_ge_renderer_factory([&](rt::GuestMemory& mem) {
                     vulkan_renderer = nullptr;
                     if (!gpu) return rt::gpu::make_soft_renderer(mem);
                     auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale,
-                                                                          data_dir / "vulkan_pipelines.bin");
+                                                                          path_join(data_dir, "vulkan_pipelines.bin"));
                     vulkan_renderer = r.get();
                     if (renderer != "compare") return std::unique_ptr<rt::ge::Renderer>(std::move(r));
                     r->set_guest_copies(false);  // the software renderer already copies in guest memory
@@ -834,8 +832,8 @@ int main(int argc, char** argv) {
                     }
                     else if (u.action.starts_with("tap:")) {  // tap:X,Y in window-normalised coordinates
                         const auto comma = u.action.find(',');
-                        if (comma != std::string::npos)
-                            display->inject_finger(std::stof(u.action.substr(4, comma - 4)), std::stof(u.action.substr(comma + 1)), 8);
+                        if (comma != nx::string::npos)
+                            display->inject_finger(static_cast<float>(parse_double(u.action.substr(4, comma - 4))), static_cast<float>(parse_double(u.action.substr(comma + 1))), 8);
                     }
                 }
                 if (!window_shot_path.empty() && vblank == window_shot_vblank) window_shot_armed = true;

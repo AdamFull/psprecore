@@ -11,7 +11,6 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
-#include <string>
 #include <type_traits>
 
 #include "ff7cc/runtime/hle.hpp"
@@ -24,6 +23,8 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/containers/hash_map.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/format.h"
 
 namespace ff7cc::platform {
 
@@ -40,7 +41,7 @@ constexpr int kTargetHeight = 512;  // render targets cover the GE's addressable
 constexpr VkFormat kColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
 void check(VkResult r, const char* what) {
-    if (r != VK_SUCCESS) throw std::runtime_error(std::string("Vulkan GE renderer: ") + what + " failed (" + std::to_string(r) + ")");
+    if (r != VK_SUCCESS) throw std::runtime_error(nx::format("Vulkan GE renderer: {} failed ({})", what, static_cast<int>(r)).c_str());
 }
 
 
@@ -153,7 +154,7 @@ struct VulkanGeRenderer::Impl {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
     nx::hash_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
-    std::filesystem::path cache_path;
+    nx::string cache_path;
     VkPipelineCache cache = VK_NULL_HANDLE;
     std::uint64_t cache_dirty_frame = 0;  // frame of the last pipeline created since the cache was saved (0: saved)
     nx::map<std::uint32_t, VkSampler> samplers;
@@ -182,7 +183,7 @@ struct VulkanGeRenderer::Impl {
     nx::vector<ClipVertex> clip;
     nx::vector<GpuVertex> out;
 
-    Impl(const VulkanContext& context, rt::GuestMemory& mem, int s, std::filesystem::path cache_file)
+    Impl(const VulkanContext& context, rt::GuestMemory& mem, int s, nx::string cache_file)
         : vk(context), memory(mem), scale(std::max(1, s)), pending_scale(scale), cache_path(std::move(cache_file)) {}
 
     Frame& frame() { return frames[static_cast<std::size_t>(current)]; }
@@ -329,24 +330,16 @@ struct VulkanGeRenderer::Impl {
         transition(frame().draw, white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
-    static nx::vector<char> read_file(const std::filesystem::path& path) {
-        std::ifstream in(path, std::ios::binary);
-        return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    static nx::vector<char> read_file(nx::fs::path_view path) {
+        auto data = nx::fs::file_read(path);
+        if (!data.has_value()) return {};
+        const auto& bytes = data.value();
+        return nx::vector<char>(reinterpret_cast<const char*>(bytes.data()), reinterpret_cast<const char*>(bytes.data()) + bytes.size());
     }
-    static void write_file(const std::filesystem::path& path, const void* data, std::size_t size) {
-        std::filesystem::path tmp = path;
-        tmp += ".tmp";
-        {
-            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-            if (!out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size))) return;
-        }
-        std::error_code ec;
-        std::filesystem::rename(tmp, path, ec);
+    static void write_file(nx::fs::path_view path, const void* data, std::size_t size) {
+        (void)nx::fs::file_write_atomic(path, std::span(static_cast<const std::uint8_t*>(data), size));
     }
-    std::filesystem::path keys_path() const {
-        std::filesystem::path p = cache_path;
-        return p += ".keys";
-    }
+    nx::string keys_path() const { return cache_path + ".keys"; }
 
     // Pipelines are created when a draw first needs them, which takes milliseconds each and stalls the game (and
     // its audio) when an effect brings several at once. So the driver's pipeline cache is kept on disk (the driver
@@ -1263,7 +1256,7 @@ struct VulkanGeRenderer::Impl {
 };
 
 VulkanGeRenderer::VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& memory, int scale,
-                                   std::filesystem::path pipeline_cache)
+                                   nx::string pipeline_cache)
     : impl_(std::make_unique<Impl>(vk, memory, scale, std::move(pipeline_cache))) {
     impl_->init();
 }

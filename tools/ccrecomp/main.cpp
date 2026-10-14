@@ -2,46 +2,70 @@
 //
 //   ccrecomp <BOOT.BIN> <output dir> [--overrides DIR] [--per-file N]
 
+#include <algorithm>
 #include <cstdio>
 #include <exception>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
-#include <regex>
-#include <stdexcept>
-#include <string>
-#include <string_view>
 
 #include "ff7cc/analysis/program.hpp"
 #include "ff7cc/error.hpp"
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/io/file.hpp"
+#include "ff7cc/io/path.hpp"
 #include "ff7cc/recomp/generator.hpp"
+#include "ff7cc/text.hpp"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/utf8_string.h"
 
-namespace fs = std::filesystem;
 using namespace ff7cc;
 
 namespace {
 
-void write_text(const fs::path& path, const std::string& text) {
-    io::write_all(path, std::as_bytes(std::span(text)));
+void write_text(nx::fs::path_view path, nx::string_view text) {
+    io::write_all(path, std::as_bytes(std::span(text.data(), text.size())));
+}
+
+bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r'; }
+
+bool is_hex_digit(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+
+// Adds the address of every `GAME_FUNC\s*\(\s*([0-9A-Fa-f]{8})\s*,` in `text`.
+void scan_game_funcs(nx::string_view text, nx::set<std::uint32_t>& out) {
+    constexpr nx::string_view kMacro = "GAME_FUNC";
+    for (std::size_t at = text.find(kMacro); at != nx::string_view::npos; at = text.find(kMacro, at + 1)) {
+        std::size_t i = at + kMacro.size();
+        const auto skip_spaces = [&] {
+            while (i < text.size() && is_space(text[i])) ++i;
+        };
+        skip_spaces();
+        if (i >= text.size() || text[i] != '(') continue;
+        ++i;
+        skip_spaces();
+        const std::size_t digits = i;
+        while (i < text.size() && i - digits < 8 && is_hex_digit(text[i])) ++i;
+        if (i - digits != 8) continue;
+        skip_spaces();
+        if (i >= text.size() || text[i] != ',') continue;
+        out.insert(static_cast<std::uint32_t>(parse_u64(text.substr(digits, 8), 16)));
+        at = i;
+    }
 }
 
 }  // namespace
 
 // Addresses of GAME_FUNC(XXXXXXXX, name) replacements in the C/C++ sources under `dir`.
-nx::set<std::uint32_t> scan_overrides(const fs::path& dir) {
+nx::set<std::uint32_t> scan_overrides(nx::fs::path_view dir) {
     nx::set<std::uint32_t> out;
-    const std::regex pattern(R"(GAME_FUNC\s*\(\s*([0-9A-Fa-f]{8})\s*,)");
-    for (const auto& entry : fs::recursive_directory_iterator(dir)) {
-        const auto ext = entry.path().extension().string();
+    const auto entries = nx::fs::recursive_directory_entries(dir);
+    if (!entries) throw IoError(nx::string("cannot list directory '") + dir.native() + "'");
+    for (const auto& entry : entries.value()) {
+        const auto ext = nx::fs::path_view(entry.path).extension();
+        if (entry.type != nx::fs::file_type::regular) continue;
         if (ext != ".c" && ext != ".cpp" && ext != ".h" && ext != ".hpp") continue;
-        std::ifstream in(entry.path());
-        const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-        for (std::sregex_iterator it(text.begin(), text.end(), pattern), end; it != end; ++it)
-            out.insert(static_cast<std::uint32_t>(std::stoul((*it)[1].str(), nullptr, 16)));
+        const auto text = nx::fs::file_read_text(entry.path);
+        if (!text) throw IoError("cannot read '" + entry.path + "'");
+        scan_game_funcs(text.value(), out);
     }
     return out;
 }
@@ -54,14 +78,14 @@ int main(int argc, char** argv) {
         return 2;
     }
     try {
-        const fs::path input = argv[1], out_dir = argv[2];
+        const nx::string_view input = argv[1], out_dir = argv[2];
         std::size_t per_file = 200;
         recomp::Options options;
         for (int i = 3; i < argc; ++i) {
-            const std::string_view a = argv[i];
+            const nx::string_view a = argv[i];
             if (a == "--overrides" && i + 1 < argc) options.overrides = scan_overrides(argv[++i]);
-            else if (a == "--per-file" && i + 1 < argc) per_file = std::stoul(argv[++i]);
-            else throw std::runtime_error("unknown option " + std::string(a));
+            else if (a == "--per-file" && i + 1 < argc) per_file = parse_u64(argv[++i]);
+            else throw Error(nx::string("unknown option ") + a);
         }
 
         const auto data = io::read_all(input);
@@ -71,29 +95,32 @@ int main(int argc, char** argv) {
         recomp::Generator gen(program, prx::load_image(file, module, options.base),
                               analysis::discover_functions(program), options);
 
-        fs::create_directories(out_dir);
-        for (const auto& old : fs::directory_iterator(out_dir))  // drop stale chunks from earlier runs
-            if (old.path().filename().string().starts_with("funcs_")) fs::remove(old.path());
+        if (!nx::fs::create_directories(out_dir))
+            throw IoError(nx::string("cannot create directory '") + out_dir + "'");
+        const auto old_files = nx::fs::directory_entries(out_dir);
+        if (!old_files) throw IoError(nx::string("cannot list directory '") + out_dir + "'");
+        for (const auto& old : old_files.value())  // drop stale chunks from earlier runs
+            if (nx::fs::path_view(old.path).filename().native().starts_with("funcs_") && !nx::fs::remove(old.path))
+                throw IoError("cannot remove '" + old.path + "'");
 
-        write_text(out_dir / "funcs.h", gen.header());
-        write_text(out_dir / "lookup.c", gen.lookup_source());
+        write_text(path_join(out_dir, "funcs.h"), gen.header());
+        write_text(path_join(out_dir, "lookup.c"), gen.lookup_source());
         const auto& functions = gen.functions();
         std::size_t files = 0;
         for (std::size_t i = 0; i < functions.size(); i += per_file, ++files) {
-            std::string source = "/* Generated by ccrecomp from " + input.filename().string() +
-                                 ". Do not edit. */\n#include \"funcs.h\"\n";
+            nx::string source = nx::string("/* Generated by ccrecomp from ") + nx::fs::path_view(input).filename().native() +
+                                ". Do not edit. */\n#include \"funcs.h\"\n";
             for (std::size_t j = i; j < std::min(functions.size(), i + per_file); ++j)
                 source += gen.function_source(functions[j]);
             char name[32];
             std::snprintf(name, sizeof name, "funcs_%03zu.c", files);
-            write_text(out_dir / name, source);
+            write_text(path_join(out_dir, name), source);
         }
 
         const auto& s = gen.stats();
         std::printf("%zu functions, %zu instructions, %zu jump tables, %zu tail calls, %zu weak-symbol calls"
                     " -> %zu files in %s\n",
-                    s.functions, s.instructions, s.jump_tables, s.tail_calls, s.null_calls, files,
-                    out_dir.string().c_str());
+                    s.functions, s.instructions, s.jump_tables, s.tail_calls, s.null_calls, files, argv[2]);
         if (!options.overrides.empty())
             std::printf("%zu of %zu overrides matched a function\n", s.overrides, options.overrides.size());
         std::printf("%zu warnings\n", s.warnings.size());

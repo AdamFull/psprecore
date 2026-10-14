@@ -5,13 +5,13 @@
 
 #include <cstdint>
 #include <optional>
-#include <string>
 
 #include "ff7cc/formats/elf.hpp"
 #include "ff7cc/formats/prx.hpp"
 #include "ff7cc/mips/allegrex.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::analysis {
 
@@ -27,7 +27,7 @@ public:
     std::optional<std::uint32_t> word(std::uint32_t addr) const;  // file-backed memory only
     mips::Instruction insn(std::uint32_t addr) const;
     // NUL-terminated printable string at `addr` (empty if not a plausible string).
-    std::string string_at(std::uint32_t addr, std::size_t max_len = 128) const;
+    nx::string string_at(std::uint32_t addr, std::size_t max_len = 128) const;
 
     // Relocation patching the word at `addr`, if any.
     const prx::Relocation* relocation_at(std::uint32_t addr) const;
@@ -43,7 +43,7 @@ private:
 struct Function {
     std::uint32_t start = 0;
     std::uint32_t end = 0;  // exclusive
-    std::string name;       // empty if unknown
+    nx::string name;       // empty if unknown
     enum class Origin : std::uint8_t { Entry, Export, Import, Call, Pointer, Gap } origin = Origin::Gap;
 };
 
@@ -64,7 +64,7 @@ nx::vector<Function> discover_functions(const Program& program);
 struct Registration {
     std::uint32_t call_site = 0;  // address of the jal
     std::uint32_t registrar = 0;  // called function
-    std::string name;             // string argument
+    nx::string name;             // string argument
     std::uint32_t handler = 0;    // code-pointer argument
 };
 

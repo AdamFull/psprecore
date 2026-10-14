@@ -6,6 +6,7 @@
 
 #include "ff7cc/error.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::elf {
 
@@ -24,11 +25,11 @@ std::span<const std::byte> slice(std::span<const std::byte> data, std::size_t at
     return data.subspan(at, size);
 }
 
-std::string c_string(std::span<const std::byte> table, std::size_t at) {
+nx::string c_string(std::span<const std::byte> table, std::size_t at) {
     if (at >= table.size()) return {};
     const auto* begin = reinterpret_cast<const char*>(table.data()) + at;
     const auto* end = reinterpret_cast<const char*>(table.data()) + table.size();
-    return std::string(begin, std::find(begin, end, '\0'));
+    return nx::string(begin, static_cast<std::size_t>(std::find(begin, end, '\0') - begin));
 }
 
 }  // namespace
@@ -78,7 +79,7 @@ File::File(std::span<const std::byte> data) : data_(data) {
     }
 }
 
-const Section* File::find_section(std::string_view name) const {
+const Section* File::find_section(nx::string_view name) const {
     for (const auto& s : sections_)
         if (s.name == name) return &s;
     return nullptr;
@@ -124,11 +125,11 @@ nx::vector<ArchiveMember> read_archive(std::span<const std::byte> data) {
     std::span<const std::byte> long_names;
     for (std::size_t at = 8; at + 60 <= data.size();) {
         const auto field = [&](std::size_t off, std::size_t len) {
-            std::string s(reinterpret_cast<const char*>(data.data()) + at + off, len);
-            s.erase(s.find_last_not_of(' ') + 1);
+            nx::string s(reinterpret_cast<const char*>(data.data()) + at + off, len);
+            s.erase(s.view().find_last_not_of(' ') + 1);
             return s;
         };
-        std::string name = field(0, 16);
+        nx::string name = field(0, 16);
         const auto size_text = field(48, 10);
         std::size_t size = 0;
         std::from_chars(size_text.data(), size_text.data() + size_text.size(), size);

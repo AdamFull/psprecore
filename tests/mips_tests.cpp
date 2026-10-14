@@ -2,12 +2,13 @@
 
 #include "ff7cc/mips/allegrex.hpp"
 #include "test_main.hpp"
+#include "core/foundation/strings/utf8_string.h"
 
 using namespace ff7cc::mips;
 
 namespace {
 
-std::string fmt(std::uint32_t word, std::uint32_t pc = 0) { return format(decode(word, pc)); }
+nx::string fmt(std::uint32_t word, std::uint32_t pc = 0) { return format(decode(word, pc)); }
 
 }  // namespace
 

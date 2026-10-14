@@ -8,19 +8,14 @@
 
 namespace ff7cc::io {
 
+std::FILE* open_c_file(nx::fs::path_view path, const char* mode);
+
 namespace {
 
 constexpr std::size_t kCopyChunk = 1 << 20;
 
-std::FILE* open_file(const std::filesystem::path& path, File::Mode mode) {
-#if defined(_WIN32)
-    std::FILE* f = nullptr;
-    const wchar_t* m = mode == File::Mode::Read ? L"rb" : L"wb";
-    if (_wfopen_s(&f, path.c_str(), m) != 0) return nullptr;
-    return f;
-#else
-    return std::fopen(path.c_str(), mode == File::Mode::Read ? "rb" : "wb");
-#endif
+std::FILE* open_file(nx::fs::path_view path, File::Mode mode) {
+    return open_c_file(path, mode == File::Mode::Read ? "rb" : "wb");
 }
 
 int seek64(std::FILE* f, std::uint64_t offset, int origin) {
@@ -41,9 +36,24 @@ std::int64_t tell64(std::FILE* f) {
 
 }  // namespace
 
-File::File(const std::filesystem::path& path, Mode mode) : path_(path) {
+// Paths are UTF-8; Windows opens files by UTF-16 name.
+std::FILE* open_c_file(nx::fs::path_view path, const char* mode) {
+    const nx::string name(path.native());
+#if defined(_WIN32)
+    std::FILE* f = nullptr;
+    const nx::string m(mode);
+    if (_wfopen_s(&f, reinterpret_cast<const wchar_t*>(name.u16string().c_str()),
+                  reinterpret_cast<const wchar_t*>(m.u16string().c_str())) != 0)
+        return nullptr;
+    return f;
+#else
+    return std::fopen(name.c_str(), mode);
+#endif
+}
+
+File::File(nx::fs::path_view path, Mode mode) : path_(path.native()) {
     file_ = open_file(path, mode);
-    if (!file_) throw IoError("cannot open '" + path.string() + "'");
+    if (!file_) throw IoError("cannot open '" + path_ + "'");
 }
 
 File::~File() {
@@ -130,14 +140,14 @@ void File::copy_from(File& src, std::uint64_t src_offset, std::uint64_t count) {
     }
 }
 
-nx::vector<std::byte> read_all(const std::filesystem::path& path) {
+nx::vector<std::byte> read_all(nx::fs::path_view path) {
     File f(path, File::Mode::Read);
     nx::vector<std::byte> data(static_cast<std::size_t>(f.size()));
     f.read_exact(data);
     return data;
 }
 
-void write_all(const std::filesystem::path& path, std::span<const std::byte> data) {
+void write_all(nx::fs::path_view path, std::span<const std::byte> data) {
     File f(path, File::Mode::Write);
     f.write(data);
     f.close();

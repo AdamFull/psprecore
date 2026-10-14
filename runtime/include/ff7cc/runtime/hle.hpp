@@ -7,14 +7,13 @@
 // Calls without an implementation are logged once and return 0.
 
 #include <cstdint>
-#include <filesystem>
+#include "core/foundation/platform/filesystem.h"
 #include <functional>
 #include <memory>
-#include <string>
-#include <string_view>
 
 #include "ff7cc/recomp/recomp.h"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::rt {
 
@@ -73,18 +72,18 @@ void set_flip_handler(std::function<void(std::uint32_t address, std::uint32_t st
 // Display output and controller input for the host frontend.
 bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8
 void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly);
-bool write_png(const std::string& path, const std::uint32_t* rgba, int width, int height);
-bool read_png(const std::string& path, nx::vector<std::uint32_t>& rgba, int& width, int& height);  // RGBA8
+bool write_png(const nx::string& path, const std::uint32_t* rgba, int width, int height);
+bool read_png(const nx::string& path, nx::vector<std::uint32_t>& rgba, int& width, int& height);  // RGBA8
 
 // Save/load list dialogs (sceUtilitySavedata list modes). With a frontend UI enabled, a dialog stays open
 // (status RUNNING) until the frontend answers it; otherwise a slot is chosen automatically. Both calls are made
 // between guest time slices (e.g. from Kernel::on_vblank), never concurrently with guest code.
 struct SaveSlotInfo {
-    std::string name;    // save name suffix (e.g. "0001")
+    nx::string name;    // save name suffix (e.g. "0001")
     bool exists = false;
-    std::string title;   // SFO savedata title and detail text written by the game (UTF-8)
-    std::string detail;
-    std::filesystem::path icon;  // ICON0.PNG, if any
+    nx::string title;   // SFO savedata title and detail text written by the game (UTF-8)
+    nx::string detail;
+    nx::string icon;  // ICON0.PNG path, if any
     std::int64_t time = 0;       // last write, seconds since the Unix epoch
 };
 struct SaveDialog {
@@ -106,8 +105,8 @@ void set_wall_clock_base(std::int64_t unix_seconds);
 std::int64_t wall_clock_base();
 
 // Directory with cooked media (cccook output); sceAtrac/sceMpeg look up replacements there.
-void set_cooked_root(const std::filesystem::path& root);
-const std::filesystem::path& cooked_root();
+void set_cooked_root(nx::string_view root);
+const nx::string& cooked_root();
 
 // Registers every HLE module (call once at startup).
 void hle_install();

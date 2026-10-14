@@ -7,6 +7,7 @@
 #include "ff7cc/error.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::analysis {
 
@@ -82,11 +83,11 @@ std::optional<std::uint32_t> Program::word(std::uint32_t addr) const {
 
 mips::Instruction Program::insn(std::uint32_t addr) const { return mips::decode(word(addr).value_or(0), addr); }
 
-std::string Program::string_at(std::uint32_t addr, std::size_t max_len) const {
-    std::string s;
+nx::string Program::string_at(std::uint32_t addr, std::size_t max_len) const {
+    nx::string s;
     for (std::uint32_t a = addr; a < image_.size() && s.size() <= max_len; ++a) {
         const auto c = std::to_integer<unsigned char>(image_[a]);
-        if (c == 0) return s.size() >= 2 ? s : std::string();
+        if (c == 0) return s.size() >= 2 ? s : nx::string();
         if (c < 0x20 || c >= 0x7F) return {};
         s += static_cast<char>(c);
     }
@@ -201,7 +202,7 @@ nx::map<std::uint32_t, JumpTable> find_jump_tables(const Program& p) {
 
 nx::vector<Function> discover_functions(const Program& p) {
     nx::map<std::uint32_t, Function> funcs;
-    const auto seed = [&](std::uint32_t addr, Function::Origin origin, std::string name = {}) {
+    const auto seed = [&](std::uint32_t addr, Function::Origin origin, nx::string name = {}) {
         if (!p.in_text(addr) || addr % 4) return;
         auto [it, inserted] = funcs.try_emplace(addr, Function{addr, 0, std::move(name), origin});
         if (!inserted && static_cast<int>(origin) < static_cast<int>(it->second.origin)) {

@@ -10,11 +10,14 @@
 
 namespace ff7cc::rt::audio {
 
-std::unique_ptr<VorbisStream> VorbisStream::open(const std::filesystem::path& path) {
-    int error = 0;
-    stb_vorbis* v = stb_vorbis_open_filename(path.string().c_str(), &error, nullptr);
-    if (!v) return nullptr;
+std::unique_ptr<VorbisStream> VorbisStream::open(nx::fs::path_view path) {
+    auto file = nx::fs::file_read(path);
+    if (!file.has_value() || file.value().size() > 0x7FFFFFFF) return nullptr;
     std::unique_ptr<VorbisStream> s(new VorbisStream);
+    s->file_ = std::move(file.value());
+    int error = 0;
+    stb_vorbis* v = stb_vorbis_open_memory(s->file_.data(), static_cast<int>(s->file_.size()), &error, nullptr);
+    if (!v) return nullptr;
     s->vorbis_ = v;
     const stb_vorbis_info info = stb_vorbis_get_info(v);
     s->channels_ = info.channels;

@@ -3,10 +3,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <filesystem>
 #include <span>
 
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace ff7cc::io {
 
@@ -16,7 +17,7 @@ public:
     enum class Mode { Read, Write };
 
     File() = default;
-    File(const std::filesystem::path& path, Mode mode);
+    File(nx::fs::path_view path, Mode mode);
     ~File();
 
     File(File&& other) noexcept;
@@ -25,7 +26,7 @@ public:
     File& operator=(const File&) = delete;
 
     bool is_open() const { return file_ != nullptr; }
-    const std::filesystem::path& path() const { return path_; }
+    nx::fs::path_view path() const { return path_; }
 
     std::uint64_t size();
     std::uint64_t tell();
@@ -45,10 +46,13 @@ public:
 
 private:
     std::FILE* file_ = nullptr;
-    std::filesystem::path path_;
+    nx::string path_;
 };
 
-nx::vector<std::byte> read_all(const std::filesystem::path& path);
-void write_all(const std::filesystem::path& path, std::span<const std::byte> data);
+// fopen() by UTF-8 path (Windows opens by UTF-16 name); null on failure.
+std::FILE* open_c_file(nx::fs::path_view path, const char* mode);
+
+nx::vector<std::byte> read_all(nx::fs::path_view path);
+void write_all(nx::fs::path_view path, std::span<const std::byte> data);
 
 }  // namespace ff7cc::io
