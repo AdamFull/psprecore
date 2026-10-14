@@ -224,7 +224,7 @@ void SasSetPause(Context& c) {  // (core, voice mask, pause)
 }
 void SasGetPauseFlag(Context& c) { ret(c, g_sas.pause_flags()); }
 void SasRevType(Context& c) {
-    g_sas.reverb_type = static_cast<int>(arg(c, 1));
+    g_sas.reverb.set_type(static_cast<int>(arg(c, 1)));
     ret(c, 0);
 }
 void SasRevParam(Context& c) {

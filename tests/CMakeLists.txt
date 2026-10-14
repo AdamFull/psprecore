@@ -8,6 +8,8 @@ add_executable(ff7cc_tests
     mips_tests.cpp
     audio_ring_tests.cpp
     foundation_tests.cpp
+    reverb_tests.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/src/audio/reverb.cpp
 )
 target_link_libraries(ff7cc_tests PRIVATE ff7cc::formats ff7cc::mips nx::foundation)
 target_include_directories(ff7cc_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)  # header-only pieces of the runtime

@@ -21,6 +21,7 @@ add_library(ff7cc_runtime STATIC
     src/gpu/soft_renderer.cpp
     src/gpu/vertex_pipeline.cpp
     src/audio/sas.cpp
+    src/audio/reverb.cpp
     src/audio/vorbis.cpp
     src/media/av1_video.cpp
 )

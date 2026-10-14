@@ -1,11 +1,13 @@
 #pragma once
 
 // sceSasCore software mixer: up to 32 voices of VAG ADPCM (or noise) with pitch, ADSR envelopes and per-voice
-// stereo volume, mixed one grain at a time into 16-bit stereo. Reverb parameters are recorded but the wet path
-// is not implemented yet (voices play dry).
+// stereo volume, mixed one grain at a time into 16-bit stereo. Each voice also sends to the reverb (audio/reverb)
+// at its effect volume.
 
 #include <array>
 #include <cstdint>
+
+#include "audio/reverb.hpp"
 
 namespace ff7cc::rt {
 class GuestMemory;
@@ -74,8 +76,10 @@ public:
     std::uint32_t pause_flags() const;
     void set_pause(std::uint32_t mask, bool pause);
 
-    // Reverb settings (stored; not rendered yet).
-    int reverb_type = 0, reverb_delay = 0, reverb_feedback = 0, reverb_left = 0, reverb_right = 0;
+    // Reverb: type (sceSasRevType), return volumes (0x1000 = unity), and whether the dry voices and the wet
+    // signal are heard (sceSasRevVON). Delay and feedback (ECHO/DELAY types) are stored but not applied yet.
+    Reverb reverb;
+    int reverb_delay = 0, reverb_feedback = 0, reverb_left = 0, reverb_right = 0;
     bool reverb_dry = true, reverb_wet = false;
 
     // Mixes one grain. `mix_in` (optional) is added after scaling by left/right volume (0x1000 = unity).

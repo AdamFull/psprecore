@@ -189,8 +189,9 @@ std::int32_t Sas::next_source_sample(const GuestMemory& memory, Voice& v) {
 
 void Sas::mix(const GuestMemory& memory, std::int16_t* out, const std::int16_t* mix_in, int left, int right) {
     const int n = grain_;
-    static thread_local std::int32_t acc[2 * 4096];
+    static thread_local std::int32_t acc[2 * 4096], send[2 * 4096];
     std::fill(acc, acc + 2 * n, 0);
+    std::fill(send, send + 2 * n, 0);
     for (int vi = 0; vi < max_voices_ && vi < 32; ++vi) {
         Voice& v = voices_[static_cast<std::size_t>(vi)];
         if (!v.playing || v.paused) continue;
@@ -206,9 +207,13 @@ void Sas::mix(const GuestMemory& memory, std::int16_t* out, const std::int16_t* 
             const std::int32_t enveloped = static_cast<std::int32_t>((sample * (v.envelope.height >> 15)) >> 15);
             acc[2 * i] += (enveloped * v.volume_left) >> 12;
             acc[2 * i + 1] += (enveloped * v.volume_right) >> 12;
+            send[2 * i] += (enveloped * v.effect_left) >> 12;
+            send[2 * i + 1] += (enveloped * v.effect_right) >> 12;
             if (v.envelope.phase == Envelope::Phase::Off) v.playing = false;
         }
     }
+    if (!reverb_dry) std::fill(acc, acc + 2 * n, 0);
+    if (reverb_wet) reverb.process(send, acc, n, reverb_left, reverb_right);
     for (int i = 0; i < n; ++i) {
         std::int32_t l = acc[2 * i], r = acc[2 * i + 1];
         if (mix_in) {
