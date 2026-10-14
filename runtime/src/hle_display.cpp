@@ -1,4 +1,4 @@
-// sceDisplay, sceGe_user, sceCtrl. Display lists are recorded but not rendered yet (Phase 5).
+// sceDisplay, sceGe_user, sceCtrl. Display lists are drawn by the software reference renderer.
 
 #include <cstdio>
 #include <cstring>
@@ -8,6 +8,7 @@
 #include "ff7cc/runtime/ge.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
+#include "gpu/soft_renderer.hpp"
 
 namespace ff7cc::rt {
 
@@ -30,6 +31,7 @@ std::uint8_t g_pad_lx = 128, g_pad_ly = 128;
 ge::Processor& gpu() {
     if (!g_display.ge) {
         g_display.ge = std::make_unique<ge::Processor>(mem());
+        g_display.ge->set_renderer(gpu::make_soft_renderer(mem()));
         g_display.ge->on_command = [](std::uint32_t pc, std::uint32_t word) {
             if (g_display.dump && g_display.frames == g_display.dump_frame)
                 std::fprintf(g_display.dump, "%08X: %08X  %s\n", pc, word, ge::describe(word).c_str());

@@ -1,6 +1,8 @@
 #include "ff7cc/runtime/ge.hpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 #include "ff7cc/runtime/memory.hpp"
 
@@ -75,6 +77,156 @@ std::string describe(std::uint32_t word) {
     return buf;
 }
 
+VertexFormat VertexFormat::decode(std::uint32_t vt) {
+    VertexFormat f;
+    f.raw = vt;
+    f.tc = vt & 3;
+    f.color = (vt >> 2) & 7;
+    f.normal = (vt >> 5) & 3;
+    f.pos = (vt >> 7) & 3;
+    f.weight = (vt >> 9) & 3;
+    f.index = (vt >> 11) & 3;
+    f.weights = static_cast<int>((vt >> 14) & 7) + 1;
+    f.morphs = static_cast<int>((vt >> 18) & 7) + 1;
+    f.through = (vt >> 23) & 1;
+    int offset = 0, max_align = 1;
+    const auto place = [&](int size, int align) {
+        offset = (offset + align - 1) & ~(align - 1);
+        const int at = offset;
+        offset += size;
+        max_align = std::max(max_align, align);
+        return at;
+    };
+    static constexpr int kScalar[4] = {0, 1, 2, 4};  // none, 8-bit, 16-bit, float
+    if (f.weight) place(kScalar[f.weight] * f.weights, kScalar[f.weight]);
+    if (f.tc) f.tc_off = place(kScalar[f.tc] * 2, kScalar[f.tc]);
+    if (f.color >= 4) f.color_off = place(f.color == 7 ? 4 : 2, f.color == 7 ? 4 : 2);
+    if (f.normal) f.normal_off = place(kScalar[f.normal] * 3, kScalar[f.normal]);
+    f.pos_off = place(kScalar[f.pos ? f.pos : 3] * 3, kScalar[f.pos ? f.pos : 3]);
+    f.size = (offset + max_align - 1) & ~(max_align - 1);
+    return f;
+}
+
+namespace {
+
+// Reads component `i` of an attribute with encoding `kind` (1: 8-bit, 2: 16-bit, 3: float).
+float component(const std::uint8_t* p, int kind, int i, bool is_signed, float scale) {
+    switch (kind) {
+        case 1: return (is_signed ? static_cast<float>(static_cast<std::int8_t>(p[i])) : static_cast<float>(p[i])) * scale;
+        case 2: {
+            std::uint16_t v;
+            std::memcpy(&v, p + i * 2, 2);
+            return (is_signed ? static_cast<float>(static_cast<std::int16_t>(v)) : static_cast<float>(v)) * scale;
+        }
+        case 3: {
+            float v;
+            std::memcpy(&v, p + i * 4, 4);
+            return v;
+        }
+        default: return 0.0f;
+    }
+}
+
+void decode_color(const std::uint8_t* p, int kind, float out[4]) {
+    std::uint32_t c = 0;
+    std::memcpy(&c, p, kind == 7 ? 4 : 2);
+    switch (kind) {
+        case 4:  // 5650
+            out[0] = static_cast<float>(c & 31) / 31.0f;
+            out[1] = static_cast<float>((c >> 5) & 63) / 63.0f;
+            out[2] = static_cast<float>((c >> 11) & 31) / 31.0f;
+            out[3] = 1.0f;
+            break;
+        case 5:  // 5551
+            out[0] = static_cast<float>(c & 31) / 31.0f;
+            out[1] = static_cast<float>((c >> 5) & 31) / 31.0f;
+            out[2] = static_cast<float>((c >> 10) & 31) / 31.0f;
+            out[3] = static_cast<float>((c >> 15) & 1);
+            break;
+        case 6:  // 4444
+            for (int i = 0; i < 4; ++i) out[i] = static_cast<float>((c >> (i * 4)) & 15) / 15.0f;
+            break;
+        default:  // 8888
+            for (int i = 0; i < 4; ++i) out[i] = static_cast<float>((c >> (i * 8)) & 255) / 255.0f;
+            break;
+    }
+}
+
+// Decodes one vertex at `p`, blending morph targets with `morph_weights`. A vertex without a color component
+// gets color[0] = -1 so the renderer substitutes the material color.
+void decode_vertex(const VertexFormat& f, const std::uint8_t* p, const float* morph_weights, Vertex& v) {
+    v = Vertex{};
+    std::fill(std::begin(v.color), std::end(v.color), 0.0f);
+    const bool through = f.through;
+    const int morphs = through ? 1 : f.morphs;
+    for (int m = 0; m < morphs; ++m) {
+        const std::uint8_t* t = p + m * f.size;
+        const float w = morphs == 1 ? 1.0f : morph_weights[m];
+        if (f.weight)
+            for (int i = 0; i < f.weights; ++i)
+                v.weights[i] += w * component(t, f.weight, i, false, f.weight == 1 ? 1.0f / 128 : 1.0f / 32768);
+        if (f.tc) {
+            const float scale = through ? 1.0f : f.tc == 1 ? 1.0f / 128 : 1.0f / 32768;
+            for (int i = 0; i < 2; ++i) v.uv[i] += w * component(t + f.tc_off, f.tc, i, false, scale);
+        }
+        if (f.color >= 4) {
+            float c[4];
+            decode_color(t + f.color_off, f.color, c);
+            for (int i = 0; i < 4; ++i) v.color[i] += w * c[i];
+        }
+        if (f.normal)
+            for (int i = 0; i < 3; ++i)
+                v.normal[i] += w * component(t + f.normal_off, f.normal, i, true,
+                                             f.normal == 1 ? 1.0f / 128 : 1.0f / 32768);
+        const int pk = f.pos ? f.pos : 3;
+        if (through) {  // screen coordinates; z is unsigned
+            for (int i = 0; i < 3; ++i) v.pos[i] = component(t + f.pos_off, pk, i, i < 2, 1.0f);
+        } else {
+            for (int i = 0; i < 3; ++i)
+                v.pos[i] += w * component(t + f.pos_off, pk, i, true, pk == 1 ? 1.0f / 128 : 1.0f / 32768);
+        }
+    }
+    if (f.color < 4) v.color[0] = -1.0f;
+}
+
+}  // namespace
+
+void Processor::draw(std::uint32_t p) {
+    const auto prim = static_cast<Prim>((p >> 16) & 7);
+    const std::uint32_t count = p & 0xFFFF;
+    state_.format = VertexFormat::decode(state_.param(VERTEXTYPE));
+    const VertexFormat& f = state_.format;
+    ++stats_.draws;
+    stats_.vertices += count;
+    if (on_draw) on_draw(Draw{0, static_cast<std::uint32_t>(prim), count, f.raw, vaddr_, iaddr_});
+
+    float morph_weights[8];
+    for (int i = 0; i < 8; ++i) morph_weights[i] = state_.flt(static_cast<std::uint8_t>(MORPHWEIGHT0 + i));
+    const int index_size = f.index_size();
+    vertices_.resize(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::uint32_t n = i;
+        if (index_size == 1) {
+            n = *memory_.ptr(iaddr_ + i);
+        } else if (index_size == 2) {
+            std::uint16_t x;
+            std::memcpy(&x, memory_.ptr(iaddr_ + i * 2), 2);
+            n = x;
+        } else if (index_size == 4) {
+            n = memory_.read32(iaddr_ + i * 4);
+        }
+        decode_vertex(f, memory_.ptr(vram_canonical(vaddr_ + n * static_cast<std::uint32_t>(f.stride()))),
+                      morph_weights, vertices_[i]);
+    }
+    // The GE leaves the pointer it consumed just past the data, so consecutive PRIMs can continue.
+    if (index_size)
+        iaddr_ += count * static_cast<std::uint32_t>(index_size);
+    else
+        vaddr_ += count * static_cast<std::uint32_t>(f.stride());
+
+    if (renderer_ && prim <= Prim::Sprites && count) renderer_->draw(state_, prim, vertices_);
+}
+
 int Processor::enqueue(std::uint32_t list, std::uint32_t stall, bool) {
     const int id = next_id_++;
     auto& l = lists_[id];
@@ -109,7 +261,7 @@ void Processor::run(List& l) {
         const std::uint32_t p = word & 0xFFFFFF;
         l.pc += 4;
         ++stats_.commands;
-        regs_[cmd] = word;
+        state_.regs[cmd] = word;
         if (on_command) on_command(pc, word);
 
         switch (cmd) {
@@ -134,16 +286,42 @@ void Processor::run(List& l) {
                 break;
             case FINISH: break;  // END follows
             case END: l.done = true; return;
-            case PRIM: {
-                Draw d{pc, (p >> 16) & 7, p & 0xFFFF, regs_[VERTEXTYPE] & 0xFFFFFF, vaddr_, iaddr_};
-                ++stats_.draws;
-                stats_.vertices += d.count;
-                if (on_draw) on_draw(d);
-                // The GE advances the vertex (or index) pointer past the consumed data; the exact stride is
-                // computed by the vertex decoder (Phase 5). Lists in practice set VADDR before each PRIM.
+            case PRIM: draw(p); break;
+            case BEZIER:
+            case SPLINE:
+                if (!warned_patches_) std::fprintf(stderr, "GE: bezier/spline patches are not rendered yet\n");
+                warned_patches_ = true;
+                break;
+            case BOUNDINGBOX: bbox_visible_ = true; break;  // conservative: always "maybe visible"
+            case BJUMP:
+                if (!bbox_visible_) l.pc = address(p & ~3u);
+                break;
+            case WORLDMATRIXNUMBER: world_index_ = p & 15; break;
+            case WORLDMATRIXDATA: if (world_index_ < 12) state_.world[world_index_++] = f24(p); break;
+            case VIEWMATRIXNUMBER: view_index_ = p & 15; break;
+            case VIEWMATRIXDATA: if (view_index_ < 12) state_.view[view_index_++] = f24(p); break;
+            case PROJMATRIXNUMBER: proj_index_ = p & 15; break;
+            case PROJMATRIXDATA: if (proj_index_ < 16) state_.proj[proj_index_++] = f24(p); break;
+            case TGENMATRIXNUMBER: tgen_index_ = p & 15; break;
+            case TGENMATRIXDATA: if (tgen_index_ < 12) state_.tgen[tgen_index_++] = f24(p); break;
+            case BONEMATRIXNUMBER: bone_index_ = p & 127; break;
+            case BONEMATRIXDATA:
+                if (bone_index_ < 96) {
+                    state_.bones[bone_index_ / 12][bone_index_ % 12] = f24(p);
+                    ++bone_index_;
+                }
+                break;
+            case LOADCLUT: {
+                const std::uint32_t addr = vram_canonical(((state_.param(CLUTADDRUPPER) & 0x0F0000) << 8) |
+                                                          (state_.param(CLUTADDR) & 0xFFFFF0));
+                const std::uint32_t bytes = std::min<std::uint32_t>((p & 0x3F) * 32, 1024);
+                if (addr) std::memcpy(state_.clut.data(), memory_.ptr(addr), bytes);
                 break;
             }
-            case TRANSFERSTART: ++stats_.transfers; break;
+            case TRANSFERSTART:
+                ++stats_.transfers;
+                if (renderer_) renderer_->transfer(state_);
+                break;
             default: break;
         }
     }

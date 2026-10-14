@@ -1,6 +1,7 @@
 // ff7cc — runs the recompiled game (headless for now).
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
+//       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
 
 #include <cstdio>
 #include <cstdlib>
@@ -37,7 +38,7 @@ int main(int argc, char** argv) {
     try {
         const fs::path game_dir = argv[1];
         bool trace = false, headless = false;
-        std::uint64_t screenshot_vblank = 0;
+        std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
         std::string screenshot_path;
         std::uint64_t max_vblanks = 0;
         for (int i = 2; i < argc; ++i) {
@@ -46,6 +47,9 @@ int main(int argc, char** argv) {
             else if (a == "--headless") headless = true;
             else if (a == "--screenshot" && i + 2 < argc) {
                 screenshot_vblank = std::stoull(argv[++i]);
+                screenshot_path = argv[++i];
+            } else if (a == "--screenshot-every" && i + 2 < argc) {
+                screenshot_every = std::stoull(argv[++i]);
                 screenshot_path = argv[++i];
             }
             else if (a == "--vblanks" && i + 1 < argc) max_vblanks = std::stoull(argv[++i]);
@@ -76,11 +80,20 @@ int main(int argc, char** argv) {
         // Window + presentation + input, unless running headless.
         std::unique_ptr<platform::Display> display;
         std::vector<std::uint32_t> frame;
+        const auto screenshot = [&](const std::vector<std::uint32_t>& rgba, int w, int h) {
+            const std::uint64_t n = kernel.vblank_count();
+            if (screenshot_every && n % screenshot_every == 0) {
+                char name[32];
+                std::snprintf(name, sizeof name, "_%06llu.png", static_cast<unsigned long long>(n));
+                rt::write_png(screenshot_path + name, rgba.data(), w, h);
+            } else if (!screenshot_every && n == screenshot_vblank) {
+                rt::write_png(screenshot_path, rgba.data(), w, h);
+            }
+        };
         if (headless && !screenshot_path.empty())
             kernel.on_vblank = [&] {
                 int w = 0, h = 0;
-                if (kernel.vblank_count() == screenshot_vblank && rt::read_framebuffer(frame, w, h))
-                    rt::write_png(screenshot_path, frame.data(), w, h);
+                if (rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             };
         if (!headless) {
             display = std::make_unique<platform::Display>("Crisis Core -Final Fantasy VII-", 960, 544);
@@ -92,8 +105,7 @@ int main(int argc, char** argv) {
                 int w = 0, h = 0;
                 if (rt::read_framebuffer(frame, w, h)) {
                     display->present(frame.data(), w, h);
-                    if (!screenshot_path.empty() && kernel.vblank_count() == screenshot_vblank)
-                        rt::write_png(screenshot_path, frame.data(), w, h);
+                    if (!screenshot_path.empty()) screenshot(frame, w, h);
                 }
             };
         }

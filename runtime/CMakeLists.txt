@@ -14,12 +14,14 @@ add_library(ff7cc_runtime STATIC
     src/vfpu.cpp
     src/ge.cpp
     src/image_io.cpp
+    src/gpu/texture.cpp
+    src/gpu/soft_renderer.cpp
 )
 if(WIN32)
     target_link_libraries(ff7cc_runtime PRIVATE dbghelp)
 endif()
 add_library(ff7cc::runtime ALIAS ff7cc_runtime)
-target_include_directories(ff7cc_runtime PUBLIC include)
+target_include_directories(ff7cc_runtime PUBLIC include PRIVATE src)
 target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips PRIVATE ff7cc_stb)
 ff7cc_target_defaults(ff7cc_runtime)
 
