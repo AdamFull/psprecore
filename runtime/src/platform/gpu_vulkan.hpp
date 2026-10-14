@@ -38,6 +38,7 @@ public:
         std::uint64_t hashed_bytes = 0, uploads = 0, uploaded_texels = 0;
         std::uint64_t pipelines = 0;  // created
         double pipeline_ms = 0.0, worst_pipeline_ms = 0.0;
+        std::uint64_t transform_ns = 0, texture_ns = 0;  // vertex transform + primitive assembly; texture lookup
     };
     Stats take_stats();
 

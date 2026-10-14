@@ -113,16 +113,23 @@ inline std::uint32_t vram_canonical(std::uint32_t addr) {
 
 std::string_view command_name(std::uint8_t cmd);
 
+// Decodes `count` consecutive vertices of format `f` at `data`, as draws do (benchmarks, tools).
+void decode_vertices(const VertexFormat& f, const float* morph_weights, const std::uint8_t* data, std::uint32_t count,
+                     std::vector<Vertex>& out);
+
 struct Draw {
     std::uint32_t list_pc = 0;  // address of the PRIM command
     std::uint32_t prim = 0;     // GE primitive type (0 points .. 6 sprites)
     std::uint32_t count = 0;
     std::uint32_t vertex_type = 0;
     std::uint32_t vertices = 0, indices = 0;  // guest addresses
+    const State* state = nullptr;             // the state the draw uses (valid during the callback)
 };
 
 struct Stats {
     std::uint64_t lists = 0, commands = 0, draws = 0, vertices = 0, transfers = 0;
+    // Host time (ns): list processing in total (signal handlers included), vertex decoding, the renderer's draws.
+    std::uint64_t run_ns = 0, decode_ns = 0, render_ns = 0;
 };
 
 class Processor {

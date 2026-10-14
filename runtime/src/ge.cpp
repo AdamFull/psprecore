@@ -1,6 +1,7 @@
 #include "ff7cc/runtime/ge.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -189,6 +190,72 @@ void decode_vertex(const VertexFormat& f, const std::uint8_t* p, const float* mo
     if (f.color < 4) v.color[0] = -1.0f;
 }
 
+// The same decoding specialised for one format without morph targets (the common case: the format is fixed at
+// compile time, so the per-component switches go away). Results are identical to decode_vertex.
+template <int TC, int COLOR, int NORMAL, int POS, int WEIGHT, bool THROUGH>
+void decode_fixed(const VertexFormat& f, const std::uint8_t* t, const float*, Vertex& v) {
+    v = Vertex{};
+    if constexpr (WEIGHT != 0)
+        for (int i = 0; i < f.weights; ++i)
+            v.weights[i] = component(t, WEIGHT, i, false, WEIGHT == 1 ? 1.0f / 128 : 1.0f / 32768);
+    if constexpr (TC != 0) {
+        constexpr float scale = THROUGH ? 1.0f : TC == 1 ? 1.0f / 128 : 1.0f / 32768;
+        v.uv[0] = component(t + f.tc_off, TC, 0, false, scale);
+        v.uv[1] = component(t + f.tc_off, TC, 1, false, scale);
+    }
+    if constexpr (COLOR >= 4) {
+        decode_color(t + f.color_off, COLOR, v.color);
+    } else {
+        v.color[0] = -1.0f;
+        v.color[1] = v.color[2] = v.color[3] = 0.0f;
+    }
+    if constexpr (NORMAL != 0)
+        for (int i = 0; i < 3; ++i)
+            v.normal[i] = component(t + f.normal_off, NORMAL, i, true, NORMAL == 1 ? 1.0f / 128 : 1.0f / 32768);
+    constexpr int pk = POS ? POS : 3;
+    for (int i = 0; i < 3; ++i) {
+        if constexpr (THROUGH) v.pos[i] = component(t + f.pos_off, pk, i, i < 2, 1.0f);
+        else v.pos[i] = component(t + f.pos_off, pk, i, true, pk == 1 ? 1.0f / 128 : 1.0f / 32768);
+    }
+}
+
+using DecodeFn = void (*)(const VertexFormat&, const std::uint8_t*, const float*, Vertex&);
+
+// The formats Crisis Core draws most (battle: ~75% float UV + 8888 color + s16 position; skinned models with
+// float UV, s8 normals, s16 positions and float weights; through-mode sprites); others use decode_vertex.
+DecodeFn select_decoder(const VertexFormat& f) {
+    if (f.morphs != 1) return decode_vertex;
+    const auto is = [&](int tc, int color, int normal, int pos, int weight, bool through) {
+        return f.tc == tc && f.color == color && f.normal == normal && f.pos == pos && f.weight == weight &&
+               f.through == through;
+    };
+    if (is(3, 7, 0, 2, 0, false)) return decode_fixed<3, 7, 0, 2, 0, false>;
+    if (is(3, 0, 1, 2, 3, false)) return decode_fixed<3, 0, 1, 2, 3, false>;
+    if (is(2, 7, 0, 2, 0, true)) return decode_fixed<2, 7, 0, 2, 0, true>;
+    if (is(2, 7, 0, 2, 0, false)) return decode_fixed<2, 7, 0, 2, 0, false>;
+    if (is(2, 0, 0, 2, 0, false)) return decode_fixed<2, 0, 0, 2, 0, false>;
+    if (is(3, 7, 1, 2, 0, false)) return decode_fixed<3, 7, 1, 2, 0, false>;
+    if (is(3, 0, 1, 2, 0, false)) return decode_fixed<3, 0, 1, 2, 0, false>;
+    return decode_vertex;
+}
+
+}  // namespace
+
+void decode_vertices(const VertexFormat& f, const float* morph_weights, const std::uint8_t* data, std::uint32_t count,
+                     std::vector<Vertex>& out) {
+    const DecodeFn decode = select_decoder(f);
+    out.resize(count);
+    for (std::uint32_t i = 0; i < count; ++i)
+        decode(f, data + static_cast<std::size_t>(i) * static_cast<std::size_t>(f.stride()), morph_weights, out[i]);
+}
+
+namespace {
+
+std::uint64_t now_ns() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 }  // namespace
 
 void Processor::draw(std::uint32_t p) {
@@ -198,11 +265,13 @@ void Processor::draw(std::uint32_t p) {
     const VertexFormat& f = state_.format;
     ++stats_.draws;
     stats_.vertices += count;
-    if (on_draw) on_draw(Draw{0, static_cast<std::uint32_t>(prim), count, f.raw, vaddr_, iaddr_});
+    if (on_draw) on_draw(Draw{0, static_cast<std::uint32_t>(prim), count, f.raw, vaddr_, iaddr_, &state_});
 
+    const std::uint64_t decode_start = now_ns();
     float morph_weights[8];
     for (int i = 0; i < 8; ++i) morph_weights[i] = state_.flt(static_cast<std::uint8_t>(MORPHWEIGHT0 + i));
     const int index_size = f.index_size();
+    const DecodeFn decode = select_decoder(f);
     vertices_.resize(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint32_t n = i;
@@ -215,8 +284,8 @@ void Processor::draw(std::uint32_t p) {
         } else if (index_size == 4) {
             n = memory_.read32(iaddr_ + i * 4);
         }
-        decode_vertex(f, memory_.ptr(vram_canonical(vaddr_ + n * static_cast<std::uint32_t>(f.stride()))),
-                      morph_weights, vertices_[i]);
+        decode(f, memory_.ptr(vram_canonical(vaddr_ + n * static_cast<std::uint32_t>(f.stride()))), morph_weights,
+               vertices_[i]);
     }
     // The GE leaves the pointer it consumed just past the data, so consecutive PRIMs can continue.
     if (index_size)
@@ -224,7 +293,12 @@ void Processor::draw(std::uint32_t p) {
     else
         vaddr_ += count * static_cast<std::uint32_t>(f.stride());
 
-    if (renderer_ && prim <= Prim::Sprites && count) renderer_->draw(state_, prim, vertices_);
+    const std::uint64_t render_start = now_ns();
+    stats_.decode_ns += render_start - decode_start;
+    if (renderer_ && prim <= Prim::Sprites && count) {
+        renderer_->draw(state_, prim, vertices_);
+        stats_.render_ns += now_ns() - render_start;
+    }
 }
 
 int Processor::enqueue(std::uint32_t list, std::uint32_t stall, bool) {
@@ -233,7 +307,9 @@ int Processor::enqueue(std::uint32_t list, std::uint32_t stall, bool) {
     l.pc = list & 0x0FFFFFFF;
     l.stall = stall & 0x0FFFFFFF;
     ++stats_.lists;
+    const std::uint64_t start = now_ns();
     run(l);
+    stats_.run_ns += now_ns() - start;
     // Keep only unfinished lists (plus a little history for list_done()).
     for (auto it = lists_.begin(); it != lists_.end() && lists_.size() > 64;)
         it = it->second.done ? lists_.erase(it) : std::next(it);
@@ -244,7 +320,9 @@ void Processor::update_stall(int id, std::uint32_t stall) {
     const auto it = lists_.find(id);
     if (it == lists_.end() || it->second.done) return;
     it->second.stall = stall & 0x0FFFFFFF;
+    const std::uint64_t start = now_ns();
     run(it->second);
+    stats_.run_ns += now_ns() - start;
 }
 
 bool Processor::list_done(int id) const {

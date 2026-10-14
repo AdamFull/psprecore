@@ -21,6 +21,8 @@ namespace ff7cc::rt {
 class GuestMemory;
 namespace ge {
 class Renderer;
+struct Stats;
+struct Draw;
 }
 
 struct HleImport {
@@ -61,6 +63,10 @@ std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size);  /
 void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory);
 // Replaces the GE renderer with a new one from the factory (between frames; e.g. the renderer setting changed).
 void reset_ge_renderer();
+// GE counters since start (zero before the first display list).
+ge::Stats ge_stats();
+// Called for every draw before it is decoded (empty function: none).
+void set_ge_draw_listener(std::function<void(const ge::Draw&)> listener);
 // Called on every framebuffer flip (sceDisplaySetFrameBuf) with the address, stride and pixel format.
 void set_flip_handler(std::function<void(std::uint32_t address, std::uint32_t stride, std::uint32_t format)> handler);
 

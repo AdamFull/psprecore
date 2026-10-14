@@ -81,6 +81,11 @@ private:
     int map_mode = 0, proj_source = 0, shade_u = 0, shade_v = 0;
     float tex_scale[2] = {1, 1}, tex_offset[2] = {0, 0};
     float fog_end = 0, fog_slope = 0;
+    // Per draw: world, view and projection combined (clip = wvp * pos, 4x4 column major), the view-space z row
+    // (fog), and whether the world-space position / the normal are needed at all (lighting, texture generation).
+    float wvp[16] = {};
+    float view_z[4] = {};
+    bool need_world = false, need_normal = false;
 };
 
 }  // namespace ff7cc::rt::gpu

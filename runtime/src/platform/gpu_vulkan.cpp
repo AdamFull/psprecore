@@ -1003,6 +1003,7 @@ struct VulkanGeRenderer::Impl {
         cull = s.on(ge::CULLFACEENABLE) && !through;
         cull_mode = static_cast<int>(s.param(ge::CULL) & 1);
 
+        const auto transform_start = std::chrono::steady_clock::now();
         clip.resize(vertices.size());
         for (std::size_t i = 0; i < vertices.size(); ++i) clip[i] = vp.transform(s, vertices[i]);
 
@@ -1041,6 +1042,8 @@ struct VulkanGeRenderer::Impl {
                 for (std::size_t i = 0; i + 1 < n; i += 2) sprite(clip[i], clip[i + 1]);
                 break;
         }
+        stats.transform_ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                             std::chrono::steady_clock::now() - transform_start).count());
         if (out.empty()) return;
 
         // Fixed-function state.
@@ -1171,10 +1174,13 @@ struct VulkanGeRenderer::Impl {
         if (texturing) {
             const std::uint32_t tex_addr = rt::ge::vram_canonical(((s.param(ge::TEXBUFWIDTH0) & 0x0F0000) << 8) |
                                                                   (s.param(ge::TEXADDR0) & 0xFFFFF0));
+            const auto texture_start = std::chrono::steady_clock::now();
             Image* img = nullptr;
             Target* rt_tex = ts.format() < 4 ? target_containing(tex_addr) : nullptr;
             if (rt_tex) img = target_texture(*rt_tex, tex_addr, ts.width(), ts.height());
             if (!img) img = texture(s, ts, tex_addr);
+            stats.texture_ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                               std::chrono::steady_clock::now() - texture_start).count());
             const std::uint32_t filter = s.param(ge::TEXFILTER), wrap = s.param(ge::TEXWRAP);
             if (img) {
                 view = img->view;

@@ -6,6 +6,8 @@
 //                                        changes; headless always uses the software renderer;
 //                                        compare runs both and screenshots show reference | Vulkan | difference)
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
+//       [--ge-bench VBLANK]             (captures the draws of the vblanks after VBLANK, times vertex decoding and
+//                                        transform on them in a loop, prints the result and quits)
 //       [--record FILE] [--replay FILE]  (controller input and save picker answers per vblank; a replay
 //                                        reproduces the run, then live input takes over)
 //       [--ram-dump VBLANK FILE]        (writes user RAM, 0x08800000-0x0A000000, at VBLANK)
@@ -62,6 +64,7 @@
 #include "platform/overlay.hpp"
 #include "platform/settings.hpp"
 #include "gpu/soft_renderer.hpp"
+#include "gpu/vertex_pipeline.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
@@ -398,7 +401,7 @@ int main(int argc, char** argv) {
         bool touch = false;
 #endif
         std::uint64_t max_vblanks = 0;
-        std::uint64_t ge_dump_vblank = 0;
+        std::uint64_t ge_dump_vblank = 0, ge_bench_vblank = 0;
         std::uint64_t state_hash_every = 0;
         std::uint64_t ram_dump_vblank = 0;
         std::string ram_dump_path;
@@ -454,6 +457,7 @@ int main(int argc, char** argv) {
             else if (a == "--vblanks" && i + 1 < argc) max_vblanks = std::stoull(argv[++i]);
             else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
             else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = std::stoull(argv[++i]);
+            else if (a == "--ge-bench" && i + 1 < argc) ge_bench_vblank = std::stoull(argv[++i]);
             else if (a == "--state-hash" && i + 1 < argc) state_hash_every = std::stoull(argv[++i]);
             else if (a == "--ram-dump" && i + 2 < argc) {
                 ram_dump_vblank = std::stoull(argv[++i]);
@@ -579,6 +583,60 @@ int main(int argc, char** argv) {
                 rt::write_png(screenshot_path, rgba.data(), w, h);
             }
         };
+        // --ge-bench: the non-indexed draws of a few vblanks, copied out, then decoded and transformed repeatedly.
+        struct BenchDraw {
+            rt::ge::State state;
+            float morph[8];
+            std::uint32_t count = 0;
+            std::vector<std::uint8_t> bytes;
+        };
+        std::vector<BenchDraw> bench_draws;
+        const auto bench_tick = [&] {
+            if (!ge_bench_vblank) return;
+            const std::uint64_t vblank = kernel.vblank_count();
+            if (vblank == ge_bench_vblank) {
+                rt::set_ge_draw_listener([&](const rt::ge::Draw& d) {
+                    if (d.indices || !d.count) return;
+                    BenchDraw b;
+                    b.state = *d.state;
+                    for (int i = 0; i < 8; ++i) b.morph[i] = d.state->flt(static_cast<std::uint8_t>(rt::ge::MORPHWEIGHT0 + i));
+                    b.count = d.count;
+                    const auto size = static_cast<std::size_t>(d.count) * static_cast<std::size_t>(d.state->format.stride());
+                    const std::uint8_t* p = memory.ptr(rt::ge::vram_canonical(d.vertices));
+                    b.bytes.assign(p, p + size);
+                    bench_draws.push_back(std::move(b));
+                });
+                return;
+            }
+            if (vblank != ge_bench_vblank + 4) return;
+            rt::set_ge_draw_listener({});
+            std::size_t vertices = 0;
+            for (const auto& b : bench_draws) vertices += b.count;
+            std::vector<std::vector<rt::ge::Vertex>> decoded(bench_draws.size());
+            rt::gpu::VertexPipeline vp;
+            double checksum = 0;
+            constexpr int kRounds = 200;
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int round = 0; round < kRounds; ++round)
+                for (std::size_t i = 0; i < bench_draws.size(); ++i) {
+                    const auto& b = bench_draws[i];
+                    rt::ge::decode_vertices(b.state.format, b.morph, b.bytes.data(), b.count, decoded[i]);
+                    checksum += decoded[i][0].pos[0];
+                }
+            const auto t1 = std::chrono::steady_clock::now();
+            for (int round = 0; round < kRounds; ++round)
+                for (std::size_t i = 0; i < bench_draws.size(); ++i) {
+                    const auto& b = bench_draws[i];
+                    vp.configure(b.state, b.state.on(rt::ge::TEXTUREMAPENABLE), 256, 256, b.state.on(rt::ge::FOGENABLE));
+                    for (const auto& v : decoded[i]) checksum += vp.transform(b.state, v).clip[3];
+                }
+            const auto t2 = std::chrono::steady_clock::now();
+            const double n = static_cast<double>(vertices) * kRounds;
+            std::fprintf(stderr, "ge bench: %zu draws, %zu vertices; decode %.2f ns/vertex, transform %.2f ns/vertex (%g)\n",
+                         bench_draws.size(), vertices, std::chrono::duration<double, std::nano>(t1 - t0).count() / n,
+                         std::chrono::duration<double, std::nano>(t2 - t1).count() / n, checksum);
+            kernel.request_quit();
+        };
         platform::VulkanGeRenderer* vulkan_renderer = nullptr;
         platform::AudioDevice* audio_device = nullptr;
         auto perf_start = std::chrono::steady_clock::now(), perf_last = perf_start;
@@ -596,8 +654,22 @@ int main(int argc, char** argv) {
                          static_cast<unsigned long long>(kernel.vblank_count()), ms / 300.0, 300.0 * 16.683 / ms,
                          perf_worst_ms, static_cast<unsigned long long>(frames - perf_frames));
             perf_worst_ms = 0.0;
+            {
+                static rt::ge::Stats last;
+                const rt::ge::Stats g = rt::ge_stats();
+                const auto per_vblank = [&](std::uint64_t now_ns, std::uint64_t then_ns) {
+                    return static_cast<double>(now_ns - then_ns) / 1e6 / 300.0;
+                };
+                std::fprintf(stderr, "    ge: %.2f ms/vblank in lists (decode %.2f, renderer %.2f), %.0f draws, %.0f vertices per vblank\n",
+                             per_vblank(g.run_ns, last.run_ns), per_vblank(g.decode_ns, last.decode_ns),
+                             per_vblank(g.render_ns, last.render_ns), static_cast<double>(g.draws - last.draws) / 300.0,
+                             static_cast<double>(g.vertices - last.vertices) / 300.0);
+                last = g;
+            }
             if (vulkan_renderer) {
                 const auto st = vulkan_renderer->take_stats();
+                std::fprintf(stderr, "    vulkan draw: transform %.2f ms/vblank, textures %.2f ms/vblank\n",
+                             static_cast<double>(st.transform_ns) / 1e6 / 300.0, static_cast<double>(st.texture_ns) / 1e6 / 300.0);
                 std::fprintf(stderr, "    vulkan: %.1f MB texture hashing, %llu uploads (%.2f Mtexels), %llu pipelines (%.1f ms, worst %.1f)\n",
                              static_cast<double>(st.hashed_bytes) / 1e6,
                              static_cast<unsigned long long>(st.uploads), static_cast<double>(st.uploaded_texels) / 1e6,
@@ -616,6 +688,7 @@ int main(int argc, char** argv) {
         if (headless)
             kernel.on_vblank = [&] {
                 perf_tick();
+                bench_tick();
                 if (ge_dump_vblank && kernel.vblank_count() == ge_dump_vblank)
                     rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 std::uint32_t buttons = scripted_buttons(presses, kernel.vblank_count());
@@ -715,6 +788,7 @@ int main(int argc, char** argv) {
             }
             kernel.on_vblank = [&, pause, arm_window_shot] {
                 perf_tick();
+                bench_tick();
                 const std::uint64_t vblank = kernel.vblank_count();
                 if (ge_dump_vblank && vblank == ge_dump_vblank) rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 for (const auto& u : ui_script) {

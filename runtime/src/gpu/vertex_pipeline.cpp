@@ -58,6 +58,20 @@ void VertexPipeline::configure(const State& s, bool texture_on, int tex_w, int t
     }
     offset_x = static_cast<float>(s.param(ge::OFFSETX) & 0xFFFF) / 16.0f;
     offset_y = static_cast<float>(s.param(ge::OFFSETY) & 0xFFFF) / 16.0f;
+
+    // view * world (4x3, element (row r, column c) at [c * 3 + r]), then projection * that (4x4, [c * 4 + r]).
+    float vw[12];
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 3; ++r)
+            vw[c * 3 + r] = s.view[r] * s.world[c * 3] + s.view[3 + r] * s.world[c * 3 + 1] +
+                            s.view[6 + r] * s.world[c * 3 + 2] + (c == 3 ? s.view[9 + r] : 0.0f);
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            wvp[c * 4 + r] = s.proj[r] * vw[c * 3] + s.proj[4 + r] * vw[c * 3 + 1] + s.proj[8 + r] * vw[c * 3 + 2] +
+                             (c == 3 ? s.proj[12 + r] : 0.0f);
+    for (int c = 0; c < 4; ++c) view_z[c] = vw[c * 3 + 2];
+    need_world = lighting_on || map_mode == 2;
+    need_normal = lighting_on || map_mode == 2 || (map_mode == 1 && proj_source >= 2);
 }
 
 void VertexPipeline::lighting(Vec3 wp, Vec3 wn, const Vertex& v, float color[4], float spec[3]) const {
@@ -147,15 +161,17 @@ ClipVertex VertexPipeline::transform(const State& s, const Vertex& v) const {
         for (int i = 0; i < s.format.weights; ++i) {
             if (v.weights[i] == 0.0f) continue;
             p = p + mul43(s.bones[i], pos) * v.weights[i];
-            n = n + mul43(s.bones[i], normal, 0.0f) * v.weights[i];
+            if (d.need_normal) n = n + mul43(s.bones[i], normal, 0.0f) * v.weights[i];
         }
         pos = p;
         normal = n;
     }
-    const Vec3 world = mul43(s.world, pos);
-    const Vec3 world_normal = mul43(s.world, normal, 0.0f);
-    const Vec3 view = mul43(s.view, world);
-    mul44(s.proj, view, out.clip);
+    mul44(d.wvp, pos, out.clip);
+    Vec3 world, world_normal;
+    if (d.need_world) {
+        world = mul43(s.world, pos);
+        world_normal = mul43(s.world, normal, 0.0f);
+    }
 
     if (d.lighting_on) {
         lighting(world, world_normal, v, out.color, out.spec);
@@ -195,7 +211,10 @@ ClipVertex VertexPipeline::transform(const State& s, const Vertex& v) const {
             out.t = v.uv[1] * d.tex_scale[1] + d.tex_offset[1];
             break;
     }
-    if (d.fog) out.fog = std::clamp((view.z + d.fog_end) * d.fog_slope, 0.0f, 1.0f);
+    if (d.fog) {
+        const float view_z = d.view_z[0] * pos.x + d.view_z[1] * pos.y + d.view_z[2] * pos.z + d.view_z[3];
+        out.fog = std::clamp((view_z + d.fog_end) * d.fog_slope, 0.0f, 1.0f);
+    }
     return out;
 }
 

@@ -166,6 +166,12 @@ void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMe
     g_renderer_factory = std::move(factory);
 }
 
+void set_ge_draw_listener(std::function<void(const ge::Draw&)> listener) {
+    if (g_display.ge) g_display.ge->on_draw = std::move(listener);  // (no display list yet: nothing to listen to)
+}
+
+ge::Stats ge_stats() { return g_display.ge ? g_display.ge->stats() : ge::Stats{}; }
+
 void reset_ge_renderer() {
     if (!g_display.ge) return;  // created on first use
     g_display.ge->set_renderer(nullptr);  // the old one goes first (GPU resources)
