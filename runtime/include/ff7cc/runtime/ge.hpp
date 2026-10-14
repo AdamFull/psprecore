@@ -143,12 +143,20 @@ public:
     // Optional listeners.
     std::function<void(const Draw&)> on_draw;
     std::function<void(std::uint32_t pc, std::uint32_t word)> on_command;  // every executed command (dumps)
+    // SIGNAL + END: the game's signal handler (sceGeSetCallback) runs with the signal id, then the list goes on.
+    std::function<void(std::uint32_t id)> on_signal;
+    // FINISH + END: the list is complete; the finish handler runs with the FINISH id.
+    std::function<void(std::uint32_t id)> on_finish;
 
 private:
     struct List {
         std::uint32_t pc = 0, stall = 0;
         bool done = false;
         std::vector<std::uint32_t> call_stack;
+        std::uint32_t signal = 0;  // parameter of a SIGNAL awaiting its END
+        bool signal_pending = false;
+        std::uint32_t finish = 0;
+        bool finish_pending = false;
     };
     void run(List& list);
     void draw(std::uint32_t param);
@@ -162,6 +170,7 @@ private:
     std::uint32_t world_index_ = 0, view_index_ = 0, proj_index_ = 0, tgen_index_ = 0, bone_index_ = 0;
     bool bbox_visible_ = true;
     bool warned_patches_ = false;
+    std::uint32_t warned_signals_ = 0;  // bit per unsupported signal behaviour already reported
     std::map<int, List> lists_;
     int next_id_ = 1;
     Stats stats_;

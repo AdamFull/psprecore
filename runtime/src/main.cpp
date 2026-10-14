@@ -3,6 +3,7 @@
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
 //       [--renderer vulkan|soft] [--scale N]   (window only; headless always uses the software renderer)
+//       [--ge-dump-at VBLANK]           (headless: writes ge_dump.txt for the first full frame after VBLANK)
 //       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
 //       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
 //       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
@@ -144,6 +145,7 @@ int main(int argc, char** argv) {
         fs::path settings_path = fs::current_path() / "ff7cc.ini";
         bool no_audio = false, unthrottled = false;
         std::uint64_t max_vblanks = 0;
+        std::uint64_t ge_dump_vblank = 0;
         std::vector<ScriptedPress> presses;
         std::vector<ScriptedUi> ui_script;
         std::uint64_t window_shot_vblank = 0;
@@ -186,6 +188,7 @@ int main(int argc, char** argv) {
             }
             else if (a == "--vblanks" && i + 1 < argc) max_vblanks = std::stoull(argv[++i]);
             else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(std::stoull(argv[++i]), "ge_dump.txt");
+            else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = std::stoull(argv[++i]);
         }
 
         rt::install_crash_handler();
@@ -231,6 +234,8 @@ int main(int argc, char** argv) {
         };
         if (headless)
             kernel.on_vblank = [&] {
+                if (ge_dump_vblank && kernel.vblank_count() == ge_dump_vblank)
+                    rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 rt::set_pad(scripted_buttons(presses, kernel.vblank_count()), 128, 128);
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);

@@ -45,6 +45,7 @@ void install_crash_handler();
 
 // Writes every GE command executed during display frame `frame` to `path` (debugging).
 void set_ge_dump(std::uint64_t frame, const char* path);
+std::uint64_t display_frame_count();  // framebuffer flips so far (the frame numbering set_ge_dump uses)
 
 // GE renderer used for display lists (call before the game starts; default: the software renderer).
 void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory);

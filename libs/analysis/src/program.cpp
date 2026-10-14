@@ -236,7 +236,12 @@ std::vector<Function> discover_functions(const Program& p) {
         if (funcs.contains(addr)) return true;
         const auto first = p.insn(addr);
         if (first.op == Op::Addiu && first.rt() == kSp && first.rs() == kSp && first.simm() < 0) return true;
-        return addr >= p.text_begin() + 8 && is_jr_ra(p.insn(addr - 8));
+        if (addr < p.text_begin() + 8) return false;
+        // The previous code cannot fall through: a return, an indirect jump, or an unconditional jump/branch
+        // (e.g. a function ending in a tail branch back into its own body), followed by its delay slot.
+        const auto prev = p.insn(addr - 8);
+        return prev.op == Op::Jr || prev.op == Op::J ||
+               (prev.op == Op::Beq && prev.rs() == 0 && prev.rt() == 0);
     };
     std::vector<std::uint32_t> pointers;
     std::uint32_t hi_value = 0;

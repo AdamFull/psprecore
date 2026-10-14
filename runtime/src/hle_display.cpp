@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -24,6 +25,10 @@ struct DisplayState {
     std::unique_ptr<ge::Processor> ge;
     std::uint64_t dump_frame = ~0ull;
     std::FILE* dump = nullptr;
+    struct Callback {
+        std::uint32_t signal_func, signal_arg, finish_func, finish_arg;
+    };
+    std::map<int, Callback> callbacks;  // sceGeSetCallback
 } g_display;
 
 std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> g_renderer_factory;
@@ -39,6 +44,15 @@ ge::Processor& gpu() {
         g_display.ge->on_command = [](std::uint32_t pc, std::uint32_t word) {
             if (g_display.dump && g_display.frames == g_display.dump_frame)
                 std::fprintf(g_display.dump, "%08X: %08X  %s\n", pc, word, ge::describe(word).c_str());
+        };
+        // GE interrupts: the handlers run as guest calls inside the sceGe call that is executing the list.
+        g_display.ge->on_signal = [](std::uint32_t id) {
+            for (const auto& [_, cb] : g_display.callbacks)
+                if (cb.signal_func) kernel().call_guest(cb.signal_func, {id, cb.signal_arg});
+        };
+        g_display.ge->on_finish = [](std::uint32_t id) {
+            for (const auto& [_, cb] : g_display.callbacks)
+                if (cb.finish_func) kernel().call_guest(cb.finish_func, {id, cb.finish_arg});
         };
     }
     return *g_display.ge;
@@ -92,7 +106,17 @@ void UpdateStallAddr(Context& c) {
 }
 void ListSync(Context& c) { ret(c, 0); }  // lists complete immediately until the renderer exists
 void DrawSync(Context& c) { ret(c, 0); }
-void SetCallback(Context& c) { ret(c, static_cast<std::uint32_t>(g_display.next_callback_id++)); }
+// sceGeSetCallback(SceGeCbParam*): {signal func, signal cookie, finish func, finish cookie}.
+void SetCallback(Context& c) {
+    const std::uint32_t p = arg(c, 0);
+    const int id = g_display.next_callback_id++;
+    g_display.callbacks[id] = {mem().read32(p), mem().read32(p + 4), mem().read32(p + 8), mem().read32(p + 12)};
+    ret(c, static_cast<std::uint32_t>(id));
+}
+void UnsetCallback(Context& c) {
+    g_display.callbacks.erase(static_cast<int>(arg(c, 0)));
+    ret(c, 0);
+}
 void ReturnZero(Context& c) { ret(c, 0); }
 
 // ---- sceCtrl -----------------------------------------------------------------------------------
@@ -125,7 +149,7 @@ constexpr HleBinding kBindings[] = {
     {"sceGeListSync", ListSync},
     {"sceGeDrawSync", DrawSync},
     {"sceGeSetCallback", SetCallback},
-    {"sceGeUnsetCallback", ReturnZero},
+    {"sceGeUnsetCallback", UnsetCallback},
     {"sceGeContinue", ReturnZero},
     {"sceGeBreak", ReturnZero},
     {"sceCtrlSetSamplingCycle", ReturnZero},
@@ -186,5 +210,7 @@ void set_ge_dump(std::uint64_t frame, const char* path) {
     g_display.dump_frame = frame;
     g_display.dump = std::fopen(path, "w");
 }
+
+std::uint64_t display_frame_count() { return g_display.frames; }
 
 }  // namespace ff7cc::rt

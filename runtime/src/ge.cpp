@@ -284,8 +284,42 @@ void Processor::run(List& l) {
                     l.call_stack.pop_back();
                 }
                 break;
-            case FINISH: break;  // END follows
-            case END: l.done = true; return;
+            case SIGNAL:
+                l.signal = p;
+                l.signal_pending = true;
+                break;
+            case FINISH:
+                l.finish = p;
+                l.finish_pending = true;
+                break;
+            case END:
+                if (l.signal_pending) {  // END completes the SIGNAL; the list continues (sceGuSignal modes)
+                    l.signal_pending = false;
+                    const std::uint32_t behaviour = (l.signal >> 16) & 0xFF, id = l.signal & 0xFFFF;
+                    switch (behaviour) {
+                        case 1:  // wait: the GE resumes once the handler returns
+                        case 2:  // no wait
+                            if (on_signal) on_signal(id);
+                            break;
+                        case 3:  // pause until sceGeContinue: not modelled, the list continues
+                            if (on_signal) on_signal(id);
+                            [[fallthrough]];
+                        default:
+                            if (behaviour < 32 && !(warned_signals_ & (1u << behaviour))) {
+                                std::fprintf(stderr, "GE: signal behaviour %u (id 0x%X) is not supported; continuing\n",
+                                             behaviour, id);
+                                warned_signals_ |= 1u << behaviour;
+                            }
+                            break;
+                    }
+                    break;
+                }
+                l.done = true;
+                if (l.finish_pending) {
+                    l.finish_pending = false;
+                    if (on_finish) on_finish(l.finish & 0xFFFF);
+                }
+                return;
             case PRIM: draw(p); break;
             case BEZIER:
             case SPLINE:
