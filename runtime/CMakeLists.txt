@@ -24,7 +24,7 @@ if(WIN32)
 endif()
 add_library(ff7cc::runtime ALIAS ff7cc_runtime)
 target_include_directories(ff7cc_runtime PUBLIC include PRIVATE src)
-target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips PRIVATE ff7cc_stb)
+target_link_libraries(ff7cc_runtime PUBLIC ff7cc::mips ff7cc::formats PRIVATE ff7cc_stb)
 ff7cc_target_defaults(ff7cc_runtime)
 
 # The game executable needs code generated from the user's own BOOT.BIN (ccrecomp -> generated/).
