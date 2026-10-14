@@ -3,7 +3,6 @@
 // Minimal self-registering test harness (no external dependencies).
 
 #include <cstdio>
-#include <functional>
 
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
@@ -13,7 +12,7 @@ namespace psprecore::test {
 
 struct Case {
     const char* name;
-    std::function<void()> fn;
+    void (*fn)();
 };
 
 inline nx::vector<Case>& registry() {
@@ -26,7 +25,7 @@ struct Failure {
 };
 
 struct Registrar {
-    Registrar(const char* name, std::function<void()> fn) { registry().push_back({name, std::move(fn)}); }
+    Registrar(const char* name, void (*fn)()) { registry().push_back({name, fn}); }
 };
 
 }  // namespace psprecore::test

@@ -8,9 +8,9 @@
 #include <array>
 #include <bit>
 #include <cstdint>
-#include <functional>
 #include <memory>
 
+#include "core/foundation/core/callable.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
@@ -155,12 +155,15 @@ public:
     }
 
     // Optional listeners.
-    std::function<void(const Draw&)> on_draw;
-    std::function<void(std::uint32_t pc, std::uint32_t word)> on_command;  // every executed command (dumps)
+    using DrawListener = nx::unique_function<void(const Draw&)>;
+    using CommandListener = nx::unique_function<void(std::uint32_t pc, std::uint32_t word)>;
+    using IdHandler = nx::unique_function<void(std::uint32_t id)>;
+    DrawListener on_draw;
+    CommandListener on_command;  // every executed command (dumps)
     // SIGNAL + END: the game's signal handler (sceGeSetCallback) runs with the signal id, then the list goes on.
-    std::function<void(std::uint32_t id)> on_signal;
+    IdHandler on_signal;
     // FINISH + END: the list is complete; the finish handler runs with the FINISH id.
-    std::function<void(std::uint32_t id)> on_finish;
+    IdHandler on_finish;
 
 private:
     struct List {

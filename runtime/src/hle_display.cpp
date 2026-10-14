@@ -32,8 +32,8 @@ struct DisplayState {
     nx::map<int, Callback> callbacks;  // sceGeSetCallback
 } g_display;
 
-std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> g_renderer_factory;
-std::function<void(std::uint32_t, std::uint32_t, std::uint32_t)> g_flip_handler;
+GeRendererFactory g_renderer_factory;
+FlipHandler g_flip_handler;
 
 std::uint32_t g_pad_buttons = 0;
 std::uint8_t g_pad_lx = 128, g_pad_ly = 128;
@@ -50,22 +50,22 @@ ge::Processor& gpu() {
     if (!g_display.ge) {
         g_display.ge = std::make_unique<ge::Processor>(mem());
         g_display.ge->set_renderer(g_renderer_factory ? g_renderer_factory(mem()) : gpu::make_soft_renderer(mem()));
-        g_display.ge->on_command = [](std::uint32_t pc, std::uint32_t word) {
+        g_display.ge->on_command = ge::Processor::CommandListener([](std::uint32_t pc, std::uint32_t word) {
             if (g_display.dump && g_display.frames == g_display.dump_frame)
                 std::fprintf(g_display.dump, "%08X: %08X  %s\n", pc, word, ge::describe(word).c_str());
-        };
+        });
         // GE interrupts: the handlers run as guest calls inside the sceGe call that is executing the list. They are
         // copied first, since a handler may (un)register callbacks, which invalidates iterators into the map.
-        g_display.ge->on_signal = [](std::uint32_t id) {
+        g_display.ge->on_signal = ge::Processor::IdHandler([](std::uint32_t id) {
             const nx::small_vector<Callback, 4> handlers = registered_callbacks();
             for (const Callback& cb : handlers)
                 if (cb.signal_func) kernel().call_guest(cb.signal_func, {id, cb.signal_arg});
-        };
-        g_display.ge->on_finish = [](std::uint32_t id) {
+        });
+        g_display.ge->on_finish = ge::Processor::IdHandler([](std::uint32_t id) {
             const nx::small_vector<Callback, 4> handlers = registered_callbacks();
             for (const Callback& cb : handlers)
                 if (cb.finish_func) kernel().call_guest(cb.finish_func, {id, cb.finish_arg});
-        };
+        });
     }
     return *g_display.ge;
 }
@@ -185,11 +185,11 @@ constexpr HleBinding kBindings[] = {
 
 void hle_install_display() { hle_bind(kBindings); }
 
-void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory) {
+void set_ge_renderer_factory(GeRendererFactory factory) {
     g_renderer_factory = std::move(factory);
 }
 
-void set_ge_draw_listener(std::function<void(const ge::Draw&)> listener) {
+void set_ge_draw_listener(GeDrawListener listener) {
     if (g_display.ge) g_display.ge->on_draw = std::move(listener);  // (no display list yet: nothing to listen to)
 }
 
@@ -201,7 +201,7 @@ void reset_ge_renderer() {
     g_display.ge->set_renderer(g_renderer_factory ? g_renderer_factory(mem()) : gpu::make_soft_renderer(mem()));
 }
 
-void set_flip_handler(std::function<void(std::uint32_t, std::uint32_t, std::uint32_t)> handler) {
+void set_flip_handler(FlipHandler handler) {
     g_flip_handler = std::move(handler);
 }
 

@@ -3,10 +3,10 @@
 // Window, presentation and input (SDL3 + Vulkan). Runs on the host main thread.
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 
 #include "psprecore/platform/vulkan_context.hpp"
+#include "core/foundation/core/callable.h"
 
 namespace psprecore::platform {
 
@@ -45,7 +45,7 @@ public:
     PadState pad() const;
 
     // Dear ImGui overlay: `ui` runs once per presented frame, between ImGui::NewFrame() and ImGui::Render().
-    void set_ui(std::function<void()> ui);
+    void set_ui(nx::unique_function<void()> ui);
     // Presents the last frame again with the overlay (while the game is paused); false while minimised.
     bool present_again();
     // Drops the reference to the last image given to present_image (before its owner destroys it).
@@ -70,7 +70,8 @@ public:
     ButtonGlyphs button_glyphs() const;  // resolved (never Auto)
 
     // Testing: reads back the next presented window image (overlay included) as RGBA8.
-    void capture_next_present(std::function<void(const std::uint32_t* rgba, int width, int height)> done);
+    using CaptureHandler = nx::unique_function<void(const std::uint32_t* rgba, int width, int height)>;
+    void capture_next_present(CaptureHandler done);
     // Testing: queues a key press and release as if typed (SDL keycode), e.g. to drive the overlay.
     void inject_key(std::uint32_t keycode);
     // Testing: minimises or restores the window.

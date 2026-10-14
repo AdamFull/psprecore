@@ -8,10 +8,10 @@
 
 #include <cstdint>
 #include "core/foundation/platform/filesystem.h"
-#include <functional>
 #include <memory>
 
 #include "psprecore/recomp/recomp.h"
+#include "core/foundation/core/callable.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
@@ -59,15 +59,18 @@ std::uint64_t guest_write_counter();
 std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size);  // newest mark covering the range
 
 // GE renderer used for display lists (call before the game starts; default: the software renderer).
-void set_ge_renderer_factory(std::function<std::unique_ptr<ge::Renderer>(GuestMemory&)> factory);
+using GeRendererFactory = nx::unique_function<std::unique_ptr<ge::Renderer>(GuestMemory&)>;
+void set_ge_renderer_factory(GeRendererFactory factory);
 // Replaces the GE renderer with a new one from the factory (between frames; e.g. the renderer setting changed).
 void reset_ge_renderer();
 // GE counters since start (zero before the first display list).
 ge::Stats ge_stats();
 // Called for every draw before it is decoded (empty function: none).
-void set_ge_draw_listener(std::function<void(const ge::Draw&)> listener);
+using GeDrawListener = nx::unique_function<void(const ge::Draw&)>;
+void set_ge_draw_listener(GeDrawListener listener);
 // Called on every framebuffer flip (sceDisplaySetFrameBuf) with the address, stride and pixel format.
-void set_flip_handler(std::function<void(std::uint32_t address, std::uint32_t stride, std::uint32_t format)> handler);
+using FlipHandler = nx::unique_function<void(std::uint32_t address, std::uint32_t stride, std::uint32_t format)>;
+void set_flip_handler(FlipHandler handler);
 
 // Display output and controller input for the host frontend.
 bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8

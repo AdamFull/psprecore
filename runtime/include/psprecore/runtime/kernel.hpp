@@ -9,7 +9,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <semaphore>
@@ -17,6 +16,7 @@
 
 #include "psprecore/recomp/recomp.h"
 #include "psprecore/runtime/memory.hpp"
+#include "core/foundation/core/callable.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
@@ -154,7 +154,7 @@ public:
 
     bool trace_hle = false;
     bool realtime = false;           // pace virtual time to the host clock (windowed play)
-    std::function<void()> on_vblank;  // runs on the host main thread at every vblank (present, input)
+    nx::unique_function<void()> on_vblank;  // runs on the host main thread at every vblank (present, input)
     void request_quit() { quit_ = true; }
     bool quit_requested() const { return quit_; }
     std::uint64_t max_vblanks = 0;  // stop after this many vblanks (0 = run forever)

@@ -4,9 +4,9 @@
 // the PSP's savedata dialog, and an optional FPS counter. draw() is installed as the Display's UI callback.
 
 #include <cstdint>
-#include <functional>
 
 #include "platform/settings.hpp"
+#include "core/foundation/core/callable.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
 
@@ -17,8 +17,8 @@ class Display;
 class Overlay {
 public:
     struct Hooks {
-        std::function<void(const Settings&)> apply;  // called whenever a setting changes
-        std::function<void()> quit;
+        nx::unique_function<void(const Settings&)> apply;  // called whenever a setting changes
+        nx::unique_function<void()> quit;
         bool renderer_choice = true;                 // false: fixed by the command line (--renderer)
         bool gpu_renderer = true;                    // the renderer in use when the choice is fixed
     };

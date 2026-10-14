@@ -647,7 +647,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             if (vblank == tex_dump_vblank + 2) rt::set_ge_draw_listener({});  // two vblanks: 30 fps scenes draw every other one
             if (vblank != tex_dump_vblank) return;
             (void)nx::fs::create_directories(tex_dump_dir);
-            rt::set_ge_draw_listener([&](const rt::ge::Draw& d) {
+            rt::set_ge_draw_listener(rt::GeDrawListener([&](const rt::ge::Draw& d) {
                 const rt::ge::State& s = *d.state;
                 if (!s.on(rt::ge::TEXTUREMAPENABLE) || !d.count) return;
                 rt::gpu::TextureSampler t;
@@ -681,7 +681,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 }
                 std::fprintf(stderr, "tex-dump: prim %u x%u %s at (%.0f, %.0f) uv %.0f,%.0f-%.0f,%.0f %s\n", d.prim, d.count,
                              s.format.through ? "2d" : "3d", x0, y0, u0, v0, u1, v1, name.c_str());
-            });
+            }));
         };
         const auto bench_tick = [&] {
             tex_dump_tick();
@@ -689,7 +689,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             if (!ge_bench_vblank) return;
             const std::uint64_t vblank = kernel.vblank_count();
             if (vblank == ge_bench_vblank) {
-                rt::set_ge_draw_listener([&](const rt::ge::Draw& d) {
+                rt::set_ge_draw_listener(rt::GeDrawListener([&](const rt::ge::Draw& d) {
                     if (d.indices || !d.count) return;
                     BenchDraw b;
                     b.state = *d.state;
@@ -699,7 +699,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     const std::uint8_t* p = memory.ptr(rt::ge::vram_canonical(d.vertices));
                     b.bytes.assign(p, p + size);
                     bench_draws.push_back(std::move(b));
-                });
+                }));
                 return;
             }
             if (vblank != ge_bench_vblank + 4) return;
@@ -797,7 +797,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             perf_frames = frames;
         };
         if (headless)
-            kernel.on_vblank = [&] {
+            kernel.on_vblank = nx::unique_function<void()>([&] {
                 perf_tick();
                 bench_tick();
                 if (ge_dump_vblank && kernel.vblank_count() == ge_dump_vblank)
@@ -808,7 +808,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 rt::set_pad(buttons, lx, ly);
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
-            };
+            });
         platform::Settings settings = platform::Settings::load(settings_path);
         if (scale) settings.scale = scale;
         std::unique_ptr<platform::Overlay> overlay;
@@ -841,21 +841,22 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             };
             apply(settings);
             platform::Overlay::Hooks hooks;
-            hooks.apply = apply;
-            hooks.quit = [&] { kernel.request_quit(); };
+            hooks.apply = nx::unique_function<void(const platform::Settings&)>(apply);  // a copy: also called below
+            hooks.quit = nx::unique_function<void()>([&] { kernel.request_quit(); });
             hooks.renderer_choice = renderer_choice;
             hooks.gpu_renderer = gpu;
             overlay = std::make_unique<platform::Overlay>(*display, settings, std::move(hooks));
-            display->set_ui([&] { overlay->draw(); });
+            display->set_ui(nx::unique_function<void()>([&] { overlay->draw(); }));
             rt::set_savedata_ui(true);
             // The pause menu stops the game inside on_vblank (the host main thread) until it is closed.
             bool window_shot_armed = false, window_shot_taken = false;
             const auto arm_window_shot = [&] {
                 window_shot_armed = false;
-                display->capture_next_present([&](const std::uint32_t* rgba, int w, int h) {
+                using Capture = platform::Display::CaptureHandler;
+                display->capture_next_present(Capture([&](const std::uint32_t* rgba, int w, int h) {
                     rt::write_png(window_shot_path, rgba, w, h);
                     window_shot_taken = true;
-                });
+                }));
             };
             const auto pause = [&] {
                 const platform::Settings before = settings;
@@ -870,7 +871,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     std::fprintf(stderr, "could not write %s\n", settings_path.c_str());
             };
             {
-                rt::set_ge_renderer_factory([&](rt::GuestMemory& mem) {
+                rt::set_ge_renderer_factory(rt::GeRendererFactory([&](rt::GuestMemory& mem) {
                     vulkan_renderer = nullptr;
                     if (!gpu) return rt::gpu::make_soft_renderer(mem);
                     auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale,
@@ -881,8 +882,9 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     r->set_guest_copies(false);  // the software renderer already copies in guest memory
                     return std::unique_ptr<rt::ge::Renderer>(
                         std::make_unique<TeeRenderer>(rt::gpu::make_soft_renderer(mem), std::move(r)));
-                });
-                rt::set_flip_handler([&](std::uint32_t address, std::uint32_t stride, std::uint32_t format) {
+                }));
+                rt::set_flip_handler(rt::FlipHandler([&](std::uint32_t address, std::uint32_t stride,
+                                                         std::uint32_t format) {
                     if (!vulkan_renderer) return;
                     const bool capture = screenshot_pending;
                     const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
@@ -902,12 +904,12 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                         screenshot(frame, out.width, out.height);
                         screenshot_pending = false;
                     }
-                });
+                }));
             }
             // Host time between the end of one vblank's handling and the start of the next (the game running and
             // rendering): long gaps are logged, so freezes reported from devices leave a trace in the log.
             auto vblank_done = std::chrono::steady_clock::now();
-            kernel.on_vblank = [&, pause, arm_window_shot] {
+            kernel.on_vblank = nx::unique_function<void()>([&, pause, arm_window_shot] {
                 const auto vblank_start = std::chrono::steady_clock::now();
                 if (const auto gap = std::chrono::duration_cast<std::chrono::milliseconds>(vblank_start - vblank_done);
                     gap.count() >= 1000 && !unthrottled)
@@ -982,7 +984,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     if (!screenshot_path.empty()) screenshot(frame, w, h);
                 }
                 vblank_done = std::chrono::steady_clock::now();
-            };
+            });
         }
 
         std::fprintf(stderr, "%s loaded at 0x%08X (%zu bytes), entry 0x%08X\n", module.name.c_str(), kLoadBase,

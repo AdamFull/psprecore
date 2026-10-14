@@ -118,7 +118,7 @@ struct Display::Impl {
     bool imgui = false;
     float ui_dpi = 1.0f, ui_scale = 0.0f;  // the font is rasterised at the DPI scale; ui_scale follows the window
     ImGuiStyle ui_base_style;
-    std::function<void()> ui;
+    nx::unique_function<void()> ui;
     VkImage last_source = VK_NULL_HANDLE;  // the last presented frame, for present_again()
     int last_w = 0, last_h = 0;
     VkSampler ui_sampler = VK_NULL_HANDLE;
@@ -129,7 +129,7 @@ struct Display::Impl {
     };
     nx::map<std::uint64_t, UiTexture> ui_textures;  // by descriptor set
     bool can_capture = false;  // swapchain images support TRANSFER_SRC
-    std::function<void(const std::uint32_t*, int, int)> capture;
+    CaptureHandler capture;
 
     void create_device();
     void init_imgui();
@@ -142,7 +142,7 @@ struct Display::Impl {
     bool try_create_surface();
     void drop_surface();
     void present_failed(const char* what, VkResult r);
-    void blit_and_present(VkImage source, int width, int height, const std::function<void(VkCommandBuffer)>& prepare);
+    void blit_and_present(VkImage source, int width, int height, nx::function_ref<void(VkCommandBuffer)> prepare);
 };
 
 void Display::Impl::create_device() {
@@ -792,7 +792,7 @@ bool Display::Impl::begin_present() {
 }
 
 void Display::Impl::blit_and_present(VkImage source, int width, int height,
-                                     const std::function<void(VkCommandBuffer)>& prepare) {
+                                     nx::function_ref<void(VkCommandBuffer)> prepare) {
     std::uint32_t index = 0;
     // Anything but success leaves `acquired` unsignalled: submitting work that waits on it would never finish and
     // every later frame would wait for it (a frozen game).
@@ -960,8 +960,8 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
             px |= 0xFF000000u;
         }
         vmaDestroyBuffer(allocator, readback, readback_mem);
-        const auto done = std::move(capture);
-        capture = nullptr;
+        auto done = std::move(capture);
+        capture.reset();
         done(rgba.data(), static_cast<int>(extent.width), static_cast<int>(extent.height));
     }
 }
@@ -1009,7 +1009,7 @@ bool Display::present_again() {
     return true;
 }
 
-void Display::capture_next_present(std::function<void(const std::uint32_t*, int, int)> done) {
+void Display::capture_next_present(CaptureHandler done) {
     impl_->capture = std::move(done);
 }
 
@@ -1026,7 +1026,7 @@ void Display::inject_key(std::uint32_t keycode) {
     }
 }
 
-void Display::set_ui(std::function<void()> ui) { impl_->ui = std::move(ui); }
+void Display::set_ui(nx::unique_function<void()> ui) { impl_->ui = std::move(ui); }
 
 bool Display::take_menu_request() {
     const bool touch = impl_->touch.take_menu_request();
