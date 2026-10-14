@@ -48,8 +48,14 @@ public:
     void forget_last_image();
     // True once per press of Escape/F1 or the gamepad Guide button (or both stick clicks).
     bool take_menu_request();
-    void set_fullscreen(bool on);
+    void set_fullscreen(bool on);  // borderless, at the desktop resolution
     bool fullscreen() const;
+    // Off: frames are shown as soon as they are ready (mailbox, or immediate with tearing where the GPU offers
+    // nothing else); with the frame limiter off the game then runs as fast as it can.
+    void set_vsync(bool on);
+    // Android: asks for this panel refresh rate (0: the device's default), e.g. 60 Hz instead of 120 Hz to save
+    // power. Ignored elsewhere.
+    void set_refresh_rate(float hz);
     // On-screen touch controls. They appear on touch input and hide when a key or gamepad button is used.
     void set_touch_controls(bool visible);
     bool touch_controls() const;

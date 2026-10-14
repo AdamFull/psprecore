@@ -6,6 +6,9 @@
 #include "core/foundation/containers/map.h"
 
 #include <SDL3/SDL.h>
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
 #include <SDL3/SDL_vulkan.h>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -62,6 +65,8 @@ struct Display::Impl {
     nx::vector<VkImage> images;
     nx::vector<VkImageView> views;
     bool swapchain_dirty = false;
+    bool vsync = true;
+    float refresh_rate = 0.0f;  // Android: requested panel refresh rate (0: default)
     bool background = false;  // Android: the window surface is gone until the app returns
 
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -308,9 +313,21 @@ void Display::Impl::create_swapchain() {
             sci.compositeAlpha = mode;
             break;
         }
-    sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;  // vsync; always available
+    if (!vsync) {
+        std::uint32_t mode_count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &mode_count, nullptr);
+        nx::vector<VkPresentModeKHR> modes(mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &mode_count, modes.data());
+        const auto has = [&](VkPresentModeKHR m) { return std::find(modes.begin(), modes.end(), m) != modes.end(); };
+        if (has(VK_PRESENT_MODE_MAILBOX_KHR)) sci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        else if (has(VK_PRESENT_MODE_IMMEDIATE_KHR)) sci.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    }
     sci.clipped = VK_TRUE;
     check(vkCreateSwapchainKHR(device, &sci, nullptr, &swapchain), "vkCreateSwapchainKHR");
+    static constexpr const char* kModes[] = {"immediate", "mailbox", "fifo (vsync)", "fifo relaxed"};
+    std::fprintf(stderr, "Swapchain: %ux%u, %u images, %s\n", extent.width, extent.height, sci.minImageCount,
+                 sci.presentMode < 4 ? kModes[sci.presentMode] : "other");
     vkGetSwapchainImagesKHR(device, swapchain, &count, nullptr);
     images.resize(count);
     vkGetSwapchainImagesKHR(device, swapchain, &count, images.data());
@@ -927,6 +944,30 @@ void Display::inject_finger(float x, float y, int polls) {
 }
 
 void Display::set_fullscreen(bool on) { SDL_SetWindowFullscreen(impl_->window, on); }
+
+void Display::set_vsync(bool on) {
+    if (impl_->vsync == on) return;
+    impl_->vsync = on;
+    impl_->swapchain_dirty = true;
+}
+
+void Display::set_refresh_rate(float hz) {
+    if (impl_->refresh_rate == hz) return;
+    impl_->refresh_rate = hz;
+#ifdef __ANDROID__
+    // The window's preferred refresh rate is set on the UI thread (GameActivity.setPreferredRefreshRate posts it):
+    // asking from this thread while the UI thread waits on SDL's surface handling would deadlock.
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !activity) return;
+    jclass cls = env->GetObjectClass(activity);
+    if (jmethodID method = env->GetMethodID(cls, "setPreferredRefreshRate", "(F)V"))
+        env->CallVoidMethod(activity, method, static_cast<jfloat>(hz));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(activity);
+#endif
+}
 
 bool Display::fullscreen() const { return (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_FULLSCREEN) != 0; }
 

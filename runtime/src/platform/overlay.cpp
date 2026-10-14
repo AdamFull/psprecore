@@ -125,6 +125,10 @@ void Overlay::draw_menu() {
         ImGui::SliderInt("Volume", &s.volume, 0, 100, "%d%%");
         ImGui::SeparatorText("Speed");
         ImGui::Checkbox("Frame limiter", &s.frame_limit);
+        ImGui::Checkbox("VSync", &s.vsync);
+#ifdef __ANDROID__
+        ImGui::Checkbox("60 Hz display (saves battery)", &s.refresh_60hz);
+#endif
         ImGui::PopItemWidth();
         if (s != settings_) {
             settings_ = s;

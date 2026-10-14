@@ -39,15 +39,17 @@ Settings Settings::load(nx::fs::path_view path) {
         else if (key == "volume") s.volume = std::clamp(to_int(value, s.volume), 0, 100);
         else if (key == "frame_limit") s.frame_limit = to_int(value, 1) != 0;
         else if (key == "show_fps") s.show_fps = to_int(value, 0) != 0;
+        else if (key == "vsync") s.vsync = to_int(value, 1) != 0;
+        else if (key == "refresh_60hz") s.refresh_60hz = to_int(value, 1) != 0;
     }
     return s;
 }
 
 bool Settings::save(nx::fs::path_view path) const {
     const nx::string text = nx::format("# FF7CCRECOMP settings\nrenderer={}\nscale={}\nmsaa={}\nfullscreen={}\nvolume={}\n"
-                                       "frame_limit={}\nshow_fps={}\n",
+                                       "frame_limit={}\nvsync={}\nrefresh_60hz={}\nshow_fps={}\n",
                                        software_renderer ? "software" : "vulkan", scale, msaa, int{fullscreen}, volume,
-                                       int{frame_limit}, int{show_fps});
+                                       int{frame_limit}, int{vsync}, int{refresh_60hz}, int{show_fps});
     return nx::fs::file_write_text(path, text).has_value();
 }
 

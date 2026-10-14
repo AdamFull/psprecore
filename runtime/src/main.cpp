@@ -52,6 +52,7 @@
 #include <SDL3/SDL_messagebox.h>
 #include <SDL3/SDL_system.h>
 #include <android/log.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -327,14 +328,18 @@ constexpr std::uint32_t kLoadBase = 0x08804000;  // must match the base ccrecomp
 #ifdef __ANDROID__
 // The runtime logs to stderr; on Android forward it line by line to logcat (tag "ff7cc") and to `log_path`
 // (logcat's ring buffer is small and shared with the whole system).
+std::thread g_stderr_reader;
+int g_stderr_pipe = -1;  // write end
+
 void redirect_stderr_to_logcat(nx::fs::path_view log_path) {
     static int fds[2];
     static std::FILE* log = nullptr;
     if (pipe(fds) != 0) return;
     log = io::open_c_file(log_path, "w");
     dup2(fds[1], STDERR_FILENO);
+    g_stderr_pipe = fds[1];
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
-    std::thread([] {
+    g_stderr_reader = std::thread([] {
         char buf[1024];
         nx::string line;
         for (ssize_t n; (n = read(fds[0], buf, sizeof buf)) > 0;)
@@ -351,9 +356,21 @@ void redirect_stderr_to_logcat(nx::fs::path_view log_path) {
                 }
                 line.clear();
             }
-    }).detach();
+    });
 }
 #endif
+
+// Before the process ends: on Android waits until the last lines reached logcat and the log file (the reader
+// thread would otherwise die with the process, losing e.g. the error that ended it).
+void finish_stderr() {
+    std::fflush(stderr);
+#ifdef __ANDROID__
+    if (!g_stderr_reader.joinable()) return;
+    if (const int null_fd = open("/dev/null", O_WRONLY); null_fd >= 0) dup2(null_fd, STDERR_FILENO);
+    close(g_stderr_pipe);  // the reader sees the end of the pipe once both write ends are closed
+    g_stderr_reader.join();
+#endif
+}
 
 }  // namespace
 
@@ -389,6 +406,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s\n", message.c_str());
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, denied ? "Game files not readable" : "Game files not found",
                                  message.c_str(), nullptr);
+        finish_stderr();
         return 1;
     }
 #else
@@ -754,6 +772,8 @@ int main(int argc, char** argv) {
                     vulkan_renderer->set_msaa(s.msaa);
                 }
                 if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
+                display->set_vsync(s.vsync);
+                display->set_refresh_rate(s.refresh_60hz ? 60.0f : 0.0f);
                 if (audio) audio->set_volume(mute ? 0.0f : static_cast<float>(s.volume) / 100.0f);
                 kernel.realtime = s.frame_limit && !unthrottled;
                 if (renderer_choice) switch_renderer = s.software_renderer == gpu;  // applied when the menu closes
@@ -896,10 +916,11 @@ int main(int argc, char** argv) {
         if (recorder) recorder->flush();
         if (recorder_in) recorder_in->flush();
         if (trace || headless) kernel.dump_threads(stderr);
-        std::fflush(stderr);
+        finish_stderr();
         std::_Exit(code);  // guest threads may still be parked on their batons
     } catch (const std::exception& e) {
         std::fprintf(stderr, "ff7cc: %s\n", e.what());
+        finish_stderr();
         return 1;
     }
 }

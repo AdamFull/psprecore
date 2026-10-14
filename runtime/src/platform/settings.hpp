@@ -14,6 +14,8 @@ struct Settings {
     bool fullscreen = false;
     int volume = 100;         // master volume, percent
     bool frame_limit = true;  // run at the PSP's speed (off: as fast as possible)
+    bool vsync = true;        // wait for the display's refresh when presenting
+    bool refresh_60hz = true; // Android: run the panel at 60 Hz (the game's rate) instead of the device's maximum
     bool show_fps = false;
 
     static Settings load(nx::fs::path_view path);  // defaults when the file is missing
