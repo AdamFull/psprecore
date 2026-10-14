@@ -30,6 +30,8 @@ public:
 
     // Processes window/input events; returns false once the user closes the window.
     bool poll_events();
+    // True while the app is in the background (Android): nothing can be presented and the game should pause.
+    bool in_background() const;
     // Shows a frame of 32-bit RGBA pixels (row-major, `width` pixels per row).
     void present(const std::uint32_t* rgba, int width, int height);
     // Shows the top-left width x height region of a GPU image (e.g. a GE render target). The image must be in

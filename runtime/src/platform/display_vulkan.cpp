@@ -57,6 +57,7 @@ struct Display::Impl {
     std::vector<VkImage> images;
     std::vector<VkImageView> views;
     bool swapchain_dirty = false;
+    bool background = false;  // Android: the window surface is gone until the app returns
 
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -265,10 +266,8 @@ void Display::Impl::create_swapchain() {
                  ? caps.currentExtent
                  : VkExtent2D{std::clamp<std::uint32_t>(static_cast<std::uint32_t>(w), caps.minImageExtent.width, caps.maxImageExtent.width),
                               std::clamp<std::uint32_t>(static_cast<std::uint32_t>(h), caps.minImageExtent.height, caps.maxImageExtent.height)};
-    // Android reports the surface in the display's native orientation. We do not pre-rotate: the swapchain uses
-    // the identity transform at the displayed (rotated) size and the compositor rotates it.
-    const bool rotated = caps.currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR);
-    if (rotated) std::swap(extent.width, extent.height);
+    // We do not pre-rotate: on Android (landscape on a portrait panel) the swapchain uses the identity transform at
+    // the surface's current size and the compositor rotates it.
     if (extent.width == 0 || extent.height == 0) return;  // minimised
 
     std::uint32_t count = 0;
@@ -473,7 +472,13 @@ void Display::Impl::update_pad() {
 
 Display::Display(const char* title, int width, int height) : impl_(std::make_unique<Impl>()) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::string("SDL_Init: ") + SDL_GetError());
-    impl_->window = SDL_CreateWindow(title, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+#ifdef __ANDROID__
+    flags |= SDL_WINDOW_FULLSCREEN;  // immersive: hides the status and navigation bars
+    // SDL requests "any orientation" for resizable windows, overriding the manifest; the game is landscape only.
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
+    impl_->window = SDL_CreateWindow(title, width, height, flags);
     if (!impl_->window) throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
     impl_->create_device();
     impl_->create_swapchain();
@@ -568,6 +573,23 @@ bool Display::poll_events() {
                 if (std::abs(e.gaxis.value) > 16000) d.touch_mode = false;
                 break;
             case SDL_EVENT_QUIT: running = false; break;
+            case SDL_EVENT_WILL_ENTER_BACKGROUND:
+            case SDL_EVENT_DID_ENTER_BACKGROUND:
+                if (!d.background) {  // Android destroys the native window: drop everything presented on it
+                    d.background = true;
+                    d.destroy_swapchain();
+                    if (d.surface) vkDestroySurfaceKHR(d.instance, d.surface, nullptr);
+                    d.surface = VK_NULL_HANDLE;
+                    d.touch.release_all();
+                }
+                break;
+            case SDL_EVENT_DID_ENTER_FOREGROUND:
+                if (d.background) {
+                    if (!SDL_Vulkan_CreateSurface(d.window, d.instance, nullptr, &d.surface)) d.surface = VK_NULL_HANDLE;
+                    d.background = d.surface == VK_NULL_HANDLE;
+                    d.swapchain_dirty = true;
+                }
+                break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: d.swapchain_dirty = true; break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
@@ -627,10 +649,13 @@ bool Display::poll_events() {
 
 PadState Display::pad() const { return impl_->pad; }
 
+bool Display::in_background() const { return impl_->background; }
+
 const VulkanContext& Display::vulkan() const { return impl_->ctx; }
 
 // Recreates the swapchain if needed and waits for the previous presentation; false while minimised.
 bool Display::Impl::begin_present() {
+    if (background || !surface) return false;
     if (swapchain_dirty || !swapchain) {
         destroy_swapchain();
         create_swapchain();
@@ -787,7 +812,8 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
     pi.pSwapchains = &swapchain;
     pi.pImageIndices = &index;
     r = vkQueuePresentKHR(queue, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_dirty = true;
+    // SUBOPTIMAL is expected with the identity transform on a rotated display; size changes arrive as events.
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) swapchain_dirty = true;
 
     if (readback) {
         vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);

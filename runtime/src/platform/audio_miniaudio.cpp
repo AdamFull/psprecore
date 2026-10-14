@@ -99,6 +99,12 @@ AudioDevice::~AudioDevice() {
 
 bool AudioDevice::ok() const { return impl_->ok; }
 
+void AudioDevice::set_paused(bool paused) {
+    if (!impl_->ok) return;
+    if (paused) ma_device_stop(&impl_->device);
+    else ma_device_start(&impl_->device);
+}
+
 void AudioDevice::set_volume(float volume) {
     impl_->gain.store(static_cast<std::int32_t>(std::clamp(volume, 0.0f, 1.0f) * 256.0f + 0.5f), std::memory_order_relaxed);
 }

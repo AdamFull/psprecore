@@ -198,10 +198,13 @@ namespace {
 constexpr std::uint32_t kLoadBase = 0x08804000;  // must match the base ccrecomp translated for
 
 #ifdef __ANDROID__
-// The runtime logs to stderr; on Android forward it line by line to logcat (tag "ff7cc").
-void redirect_stderr_to_logcat() {
+// The runtime logs to stderr; on Android forward it line by line to logcat (tag "ff7cc") and to `log_path`
+// (logcat's ring buffer is small and shared with the whole system).
+void redirect_stderr_to_logcat(const fs::path& log_path) {
     static int fds[2];
+    static std::FILE* log = nullptr;
     if (pipe(fds) != 0) return;
+    log = std::fopen(log_path.string().c_str(), "w");
     dup2(fds[1], STDERR_FILENO);
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
     std::thread([] {
@@ -214,6 +217,11 @@ void redirect_stderr_to_logcat() {
                     continue;
                 }
                 __android_log_write(ANDROID_LOG_INFO, "ff7cc", line.c_str());
+                if (log) {
+                    std::fputs(line.c_str(), log);
+                    std::fputc('\n', log);
+                    std::fflush(log);
+                }
                 line.clear();
             }
     }).detach();
@@ -227,9 +235,12 @@ int main(int argc, char** argv) {
     // files directory (Android/data/<package>/files) on Android, next to the extracted game folder.
     fs::path data_dir = fs::current_path();
 #ifdef __ANDROID__
-    redirect_stderr_to_logcat();
     if (const char* ext = SDL_GetAndroidExternalStoragePath()) data_dir = ext;
-    const fs::path game_dir = argc >= 2 ? fs::path(argv[1]) : data_dir / "Crisis Core - Final Fantasy VII EU";
+    redirect_stderr_to_logcat(data_dir / "ff7cc.log");
+    // Options may come from the launch intent (GameActivity); a leading non-option argument is the game folder.
+    const bool explicit_dir = argc >= 2 && std::string_view(argv[1]).substr(0, 2) != "--";
+    const int first_option = explicit_dir ? 2 : 1;
+    const fs::path game_dir = explicit_dir ? fs::path(argv[1]) : data_dir / "Crisis Core - Final Fantasy VII EU";
     if (!fs::exists(game_dir / "PSP_GAME" / "SYSDIR" / "BOOT.BIN")) {
         const std::string message = "Copy your extracted game folder (with PSP_GAME inside) and the cooked folder to:\n\n" +
                                     data_dir.string() + "\n\nExpected: " + game_dir.string();
@@ -242,6 +253,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const fs::path game_dir = argv[1];
+    const int first_option = 2;
 #endif
     try {
         bool trace = false, headless = false;
@@ -264,7 +276,7 @@ int main(int argc, char** argv) {
         std::vector<ScriptedUi> ui_script;
         std::uint64_t window_shot_vblank = 0;
         std::string window_shot_path;
-        for (int i = 2; i < argc; ++i) {
+        for (int i = first_option; i < argc; ++i) {
             const std::string_view a = argv[i];
             if (a == "--trace") trace = true;
             else if (a == "--headless") headless = true;
@@ -471,6 +483,14 @@ int main(int argc, char** argv) {
                 }
                 if (!window_shot_path.empty() && vblank == window_shot_vblank) window_shot_armed = true;
                 if (!display->poll_events()) kernel.request_quit();
+                if (display->in_background()) {  // Android: hold the game until the app returns
+                    if (audio) audio->set_paused(true);
+                    while (display->in_background() && !kernel.quit_requested()) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                        if (!display->poll_events()) kernel.request_quit();
+                    }
+                    if (audio) audio->set_paused(false);
+                }
                 if (display->take_menu_request()) overlay->handle_menu_request();
                 if (overlay->menu_open()) pause();
                 if (window_shot_armed) arm_window_shot();

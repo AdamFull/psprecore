@@ -17,6 +17,7 @@ public:
 
     bool ok() const;
     void set_volume(float volume);  // master volume, 0..1
+    void set_paused(bool paused);   // stops the device (e.g. while the app is in the background)
     void submit(int source, const std::int16_t* frames, std::size_t count) override;
 
 private:
