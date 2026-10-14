@@ -4,12 +4,12 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
-#include <thread>
 
 #include "psprecore/runtime/memory.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/threading/thread.h"
 #include "core/foundation/threading/thread_pool.h"
 
 namespace psprecore::rt::gpu {
@@ -186,7 +186,7 @@ struct TargetRegion {
 class SoftRenderer final : public ge::Renderer {
 public:
     explicit SoftRenderer(GuestMemory& memory) : memory_(memory) {
-        unsigned threads = g_threads > 0 ? static_cast<unsigned>(g_threads) : std::thread::hardware_concurrency();
+        unsigned threads = g_threads > 0 ? static_cast<unsigned>(g_threads) : nx::cpu::logical_core_count();
         threads = std::clamp(threads, 1u, 8u);
         if (threads > 1) {
             nx::thread_pool::config config;

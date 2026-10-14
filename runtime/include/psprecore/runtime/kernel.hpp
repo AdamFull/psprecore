@@ -11,8 +11,6 @@
 #include <cstdio>
 #include <initializer_list>
 #include <memory>
-#include <semaphore>
-#include <thread>
 
 #include "psprecore/recomp/recomp.h"
 #include "psprecore/runtime/memory.hpp"
@@ -20,6 +18,8 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
 
 namespace psprecore::rt {
 
@@ -64,8 +64,8 @@ struct Thread {
     bool delete_on_exit = false;  // ExitDeleteThread / loader-owned module_start thread
     std::uint64_t ready_order = 0;  // FIFO position among equal priorities
 
-    std::binary_semaphore baton{0};
-    std::thread host;
+    nx::semaphore baton{0};  // released when the scheduler hands this thread the guest CPU
+    nx::thread host;
 };
 
 struct Semaphore {
@@ -185,7 +185,7 @@ private:
     int next_id_ = 0x100;
     std::uint64_t ready_counter_ = 0;
     std::uint64_t now_us_ = 0, next_vblank_us_ = 16683, vblanks_ = 0;
-    std::binary_semaphore idle_baton_{0};
+    nx::semaphore idle_baton_{0};
     Context interrupt_ctx_{};
     std::uint32_t interrupt_stack_ = 0;
     bool quit_ = false;

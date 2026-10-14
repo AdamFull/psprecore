@@ -14,16 +14,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <thread>
 
 #include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/thread.h"
 
 
 namespace psprecore::platform {
 
 struct SamplingProfiler::Impl {
     std::atomic<bool> stop{false};
-    std::thread sampler;
+    nx::thread sampler;
     DWORD sampler_id = 0;
     nx::vector<std::uint64_t> samples;  // instruction pointers
 
@@ -68,7 +68,7 @@ struct SamplingProfiler::Impl {
 
 SamplingProfiler::SamplingProfiler() : impl_(std::make_unique<Impl>()) {
     impl_->samples.reserve(1 << 20);
-    impl_->sampler = std::thread([this] { impl_->run(); });
+    impl_->sampler = nx::thread([this] { impl_->run(); }, {.name = "sampling profiler"});
 }
 
 SamplingProfiler::~SamplingProfiler() {

@@ -43,7 +43,6 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 
 #include <SDL3/SDL_keycode.h>
@@ -81,6 +80,7 @@
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
+#include "core/foundation/threading/thread.h"
 
 
 namespace {
@@ -335,7 +335,7 @@ namespace {
 // The runtime logs to stderr; on Android forward it line by line to logcat (tagged with the game's short name) and
 // to `log_path` (logcat's ring buffer is small and shared with the whole system).
 const char* g_log_tag = "psprecore";
-std::thread g_stderr_reader;
+nx::thread g_stderr_reader;
 int g_stderr_pipe = -1;  // write end
 
 void redirect_stderr_to_logcat(nx::fs::path_view log_path) {
@@ -346,7 +346,7 @@ void redirect_stderr_to_logcat(nx::fs::path_view log_path) {
     dup2(fds[1], STDERR_FILENO);
     g_stderr_pipe = fds[1];
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
-    g_stderr_reader = std::thread([] {
+    g_stderr_reader = nx::thread([] {
         char buf[1024];
         nx::string line;
         for (ssize_t n; (n = read(fds[0], buf, sizeof buf)) > 0;)
@@ -865,7 +865,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     if (window_shot_armed && frame == 5) arm_window_shot();  // auto-sized windows show after a frame
                     if (!display->poll_events()) kernel.request_quit();
                     if (display->take_menu_request()) overlay->handle_menu_request();
-                    if (!display->present_again()) std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                    if (!display->present_again()) nx::this_thread::sleep_for(std::chrono::milliseconds(16));
                 }
                 if (settings != before && !settings.save(settings_path))
                     std::fprintf(stderr, "could not write %s\n", settings_path.c_str());
@@ -950,7 +950,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 if (display->in_background()) {  // Android: hold the game until the app returns
                     if (audio) audio->set_paused(true);
                     while (display->in_background() && !kernel.quit_requested()) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                        nx::this_thread::sleep_for(std::chrono::milliseconds(50));
                         if (!display->poll_events()) kernel.request_quit();
                     }
                     if (audio) audio->set_paused(false);

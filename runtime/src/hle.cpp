@@ -4,11 +4,11 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 
 #include "psprecore/runtime/kernel.hpp"
 #include "core/foundation/containers/map.h"
 #include "core/foundation/containers/hash_map.h"
+#include "core/foundation/threading/sync.h"
 
 namespace psprecore::rt {
 
@@ -104,9 +104,9 @@ extern "C" void hle_call(Context* ctx, uint32_t nid) {
         return;
     }
     static nx::set<std::uint32_t> reported;
-    static std::mutex mutex;
+    static nx::mutex mutex;
     {
-        std::lock_guard lock(mutex);
+        nx::scoped_lock lock(mutex);
         if (reported.insert(nid).second)
             std::fprintf(stderr, "HLE: unimplemented %s::%s (NID %08X), returning 0\n",
                          e ? e->import->library : "?", e ? e->import->name : "?", nid);

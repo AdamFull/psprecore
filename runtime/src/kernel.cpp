@@ -98,7 +98,7 @@ std::uint32_t Kernel::start_thread(int id, std::uint32_t arg_size, std::uint32_t
     t->ctx.r[31] = 0;  // returning from the entry function exits the thread
     make_ready(*t);
     if (t->host.joinable()) t->host.join();
-    t->host = std::thread(&Kernel::host_thread_main, this, t);
+    t->host = nx::thread([this, t] { host_thread_main(t); }, {.name = t->name.c_str()});
     yield_to_higher_priority();
     return 0;
 }
@@ -362,7 +362,7 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
         if (realtime && next > now_us_) {
             const auto due = anchor + std::chrono::microseconds(next);
             const auto host = Clock::now();
-            if (due > host) std::this_thread::sleep_until(due);
+            if (due > host) nx::this_thread::sleep_for(due - host);
             else if (host - due > std::chrono::milliseconds(100)) {  // fell behind
                 anchor = host - std::chrono::microseconds(next);
                 ++fell_behind_;
