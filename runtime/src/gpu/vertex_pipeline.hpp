@@ -53,6 +53,11 @@ struct Light {
     int type = 0, kind = 0;  // type: 0 directional, 1 point, 2 spot; kind: 0 diffuse, 1 +specular, 2 powered diffuse
     Vec3 pos, dir, att, ambient, diffuse, specular;
     float exponent = 0, cutoff = 0;
+    // Per draw: a directional light's direction and half vector, and the light colors times the material colors
+    // (used unless the vertex color replaces that material color).
+    Vec3 to_light, half;
+    Vec3 ambient_mat, diffuse_mat, specular_mat;
+    bool specular_black = false;  // the light's specular color is black: no specular term at all
 };
 
 class VertexPipeline {

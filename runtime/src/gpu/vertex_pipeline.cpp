@@ -43,6 +43,18 @@ void VertexPipeline::configure(const State& s, bool texture_on, int tex_w, int t
         l.diffuse = color24(s.param(static_cast<std::uint8_t>(ge::LIGHTCOLOR0 + 3 * i + 1)));
         l.specular = color24(s.param(static_cast<std::uint8_t>(ge::LIGHTCOLOR0 + 3 * i + 2)));
     }
+    const auto mul = [](Vec3 a, Vec3 b) { return Vec3{a.x * b.x, a.y * b.y, a.z * b.z}; };
+    for (Light& l : lights) {
+        if (!l.on) continue;
+        if (l.type == 0) {
+            l.to_light = normalize(l.pos);
+            l.half = normalize(l.to_light + Vec3{0, 0, 1});
+        }
+        l.ambient_mat = mul(l.ambient, mat_ambient);
+        l.diffuse_mat = mul(l.diffuse, mat_diffuse);
+        l.specular_mat = mul(l.specular, mat_specular);
+        l.specular_black = l.specular.x == 0.0f && l.specular.y == 0.0f && l.specular.z == 0.0f;
+    }
     const std::uint32_t map = s.param(ge::TEXMAPMODE), shade = s.param(ge::TEXSHADELS);
     map_mode = static_cast<int>(map & 3);
     proj_source = static_cast<int>((map >> 8) & 3);
@@ -78,10 +90,11 @@ void VertexPipeline::lighting(Vec3 wp, Vec3 wn, const Vertex& v, float color[4],
     const VertexPipeline& d = *this;
     const bool has_color = v.color[0] >= 0.0f;
     const Vec3 vc{v.color[0], v.color[1], v.color[2]};
-    const Vec3 m_ambient = has_color && (d.material_update & 1) ? vc : d.mat_ambient;
-    const float m_alpha = has_color && (d.material_update & 1) ? v.color[3] : d.mat_alpha;
-    const Vec3 m_diffuse = has_color && (d.material_update & 2) ? vc : d.mat_diffuse;
-    const Vec3 m_specular = has_color && (d.material_update & 4) ? vc : d.mat_specular;
+    // Material colors from the vertex color (MATERIALUPDATE); otherwise the per-draw products are used.
+    const bool vc_ambient = has_color && (d.material_update & 1), vc_diffuse = has_color && (d.material_update & 2),
+               vc_specular = has_color && (d.material_update & 4);
+    const Vec3 m_ambient = vc_ambient ? vc : d.mat_ambient;
+    const float m_alpha = vc_ambient ? v.color[3] : d.mat_alpha;
     const auto mul = [](Vec3 a, Vec3 b) { return Vec3{a.x * b.x, a.y * b.y, a.z * b.z}; };
 
     Vec3 n = normalize(d.reverse_normal ? wn * -1.0f : wn);
@@ -92,7 +105,7 @@ void VertexPipeline::lighting(Vec3 wp, Vec3 wn, const Vertex& v, float color[4],
         Vec3 to_light;
         float att = 1.0f;
         if (l.type == 0) {
-            to_light = normalize(l.pos);
+            to_light = l.to_light;
         } else {
             to_light = l.pos - wp;
             const float dist = std::sqrt(dot(to_light, to_light));
@@ -106,13 +119,15 @@ void VertexPipeline::lighting(Vec3 wp, Vec3 wn, const Vertex& v, float color[4],
         }
         float ndotl = dot(n, to_light);
         if (l.kind == 2) ndotl = ndotl > 0.0f ? std::pow(ndotl, d.specular_coef) : 0.0f;
-        sum = sum + mul(l.ambient, m_ambient) * att;
+        sum = sum + (vc_ambient ? mul(l.ambient, vc) : l.ambient_mat) * att;
         if (ndotl > 0.0f) {
-            diffuse_sum = diffuse_sum + mul(l.diffuse, m_diffuse) * (att * ndotl);
-            if (l.kind == 1) {
-                const Vec3 h = normalize(to_light + Vec3{0, 0, 1});
+            diffuse_sum = diffuse_sum + (vc_diffuse ? mul(l.diffuse, vc) : l.diffuse_mat) * (att * ndotl);
+            if (l.kind == 1 && !l.specular_black && (vc_specular || l.specular_mat.x != 0.0f ||
+                                                     l.specular_mat.y != 0.0f || l.specular_mat.z != 0.0f)) {
+                const Vec3 h = l.type == 0 ? l.half : normalize(to_light + Vec3{0, 0, 1});
                 const float ndoth = std::max(dot(n, h), 0.0f);
-                specular_sum = specular_sum + mul(l.specular, m_specular) * (att * std::pow(ndoth, d.specular_coef));
+                specular_sum = specular_sum + (vc_specular ? mul(l.specular, vc) : l.specular_mat) *
+                                                  (att * std::pow(ndoth, d.specular_coef));
             }
         }
     }

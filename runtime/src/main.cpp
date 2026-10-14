@@ -38,6 +38,7 @@
 #include <ctime>
 #include <exception>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -632,6 +633,23 @@ int main(int argc, char** argv) {
                 }
             const auto t2 = std::chrono::steady_clock::now();
             const double n = static_cast<double>(vertices) * kRounds;
+            {  // per format and lighting: where the transform time goes
+                std::map<std::pair<std::uint32_t, bool>, std::pair<double, std::size_t>> by_format;
+                for (std::size_t i = 0; i < bench_draws.size(); ++i) {
+                    const auto& b = bench_draws[i];
+                    const auto s0 = std::chrono::steady_clock::now();
+                    for (int round = 0; round < 20; ++round) {
+                        vp.configure(b.state, b.state.on(rt::ge::TEXTUREMAPENABLE), 256, 256, b.state.on(rt::ge::FOGENABLE));
+                        for (const auto& v : decoded[i]) checksum += vp.transform(b.state, v).clip[3];
+                    }
+                    auto& e = by_format[{b.state.format.raw & 0xFFFFFF, b.state.on(rt::ge::LIGHTINGENABLE)}];
+                    e.first += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - s0).count() / 20;
+                    e.second += b.count;
+                }
+                for (const auto& [k, e] : by_format)
+                    std::fprintf(stderr, "  format %06X lighting %d: %zu vertices, %.1f ns/vertex, %.0f us per capture\n", k.first,
+                                 k.second ? 1 : 0, e.second, e.first / static_cast<double>(e.second), e.first / 1000.0);
+            }
             std::fprintf(stderr, "ge bench: %zu draws, %zu vertices; decode %.2f ns/vertex, transform %.2f ns/vertex (%g)\n",
                          bench_draws.size(), vertices, std::chrono::duration<double, std::nano>(t1 - t0).count() / n,
                          std::chrono::duration<double, std::nano>(t2 - t1).count() / n, checksum);
