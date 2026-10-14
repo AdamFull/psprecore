@@ -863,6 +863,11 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         if (!headless) {
             display = nx::make_unique<platform::Display>(game.title, 960, 544);
             display->set_touch_controls(touch);
+            // Android blocks the game inside poll_events() while the app is in the background; the sound device
+            // would play on.
+            display->set_background_handler(nx::unique_function<void(bool)>([&](bool background) {
+                if (audio) audio->set_paused(background);
+            }));
             // The renderer can change at run time (pause menu) unless the command line fixed it.
             const bool renderer_choice = renderer.empty();
             if (renderer_choice) renderer = settings.software_renderer ? "soft" : "vulkan";
@@ -902,6 +907,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             };
             const auto pause = [&] {
                 const platform::Settings before = settings;
+                display->set_ui_modal(true);
                 for (int frame = 0; overlay->menu_open() && !kernel.quit_requested(); ++frame) {
                     if (window_shot_taken && !ui_script.empty()) overlay->close_menu();  // scripted test run
                     if (window_shot_armed && frame == 5) arm_window_shot();  // auto-sized windows show after a frame
@@ -909,6 +915,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     if (display->take_menu_request()) overlay->handle_menu_request();
                     if (!display->present_again()) nx::this_thread::sleep_for(std::chrono::milliseconds(16));
                 }
+                display->set_ui_modal(overlay->wants_input());
                 if (settings != before && !settings.save(settings_path))
                     std::fprintf(stderr, "could not write %s\n", settings_path.c_str());
             };
@@ -1008,6 +1015,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     std::fprintf(stderr, "renderer: %s\n", gpu ? "Vulkan" : "software");
                 }
                 if (window_shot_armed) arm_window_shot();
+                display->set_ui_modal(overlay->wants_input());  // e.g. the save dialog
                 const auto pad = overlay->wants_input() ? platform::PadState{} : display->pad();
                 std::uint32_t buttons = pad.buttons | scripted_buttons(presses, kernel.vblank_count());
                 std::uint8_t lx = pad.lx, ly = pad.ly;

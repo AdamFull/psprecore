@@ -36,6 +36,9 @@ public:
     bool poll_events();
     // True while the app is in the background (Android): nothing can be presented and the game should pause.
     bool in_background() const;
+    // Called when the app goes to the background (true) and when it can show frames again (false), e.g. to pause
+    // the audio device. On Android it runs inside poll_events(), which SDL blocks while the app is paused.
+    void set_background_handler(nx::unique_function<void(bool background)> handler);
     // Shows a frame of 32-bit RGBA pixels (row-major, `width` pixels per row).
     void present(const std::uint32_t* rgba, int width, int height);
     // Shows the top-left width x height region of a GPU image (e.g. a GE render target). The image must be in
@@ -62,6 +65,9 @@ public:
     void set_refresh_rate(float hz);
     // On-screen touch controls. They appear on touch input and hide when a key or gamepad button is used.
     void set_touch_controls(bool visible);
+    // While the overlay owns input (pause menu, save dialog): touch controls hidden, fingers go to the overlay only
+    // (a tap on a menu button must not also press a control drawn over it).
+    void set_ui_modal(bool modal);
     bool touch_controls() const;
     bool gamepad_connected() const;
     // Auto: those of the last device used (the gamepad's kind, the keyboard's keys, PlayStation for touch); before

@@ -67,6 +67,9 @@ struct Display::Impl {
     float refresh_rate = 0.0f;  // Android: requested panel refresh rate (0: default)
     bool background = false;  // Android: the window surface is gone until the app returns
     bool surface_wanted = false;  // a surface to create as soon as the platform has a window for it
+    nx::unique_function<void(bool)> background_handler;
+    // SDL3 does not queue app lifecycle events: they reach event watches only, while they happen.
+    static bool SDLCALL lifecycle_watch(void* self, SDL_Event* e);
     std::uint32_t present_errors = 0;  // logged ones (the first few)
 
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -107,6 +110,7 @@ struct Display::Impl {
     bool stick_l = false, stick_r = false;
     TouchControls touch;
     bool touch_mode = false;  // the last input came from the touchscreen
+    bool ui_modal = false;    // set_ui_modal
     struct InjectedFinger {
         SDL_FingerID id;
         int polls;
@@ -512,8 +516,35 @@ void Display::Impl::update_pad() {
 
 // ---------------------------------------------------------------------------------------------
 
+bool SDLCALL Display::Impl::lifecycle_watch(void* self, SDL_Event* e) {
+    auto& d = *static_cast<Impl*>(self);
+    switch (e->type) {
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
+            if (!d.background) {  // Android destroys the native window: drop everything presented on it
+                std::fprintf(stderr, "app: background\n");
+                d.background = true;
+                d.surface_wanted = false;
+                d.drop_surface();
+                d.touch.release_all();
+                if (d.background_handler) d.background_handler(true);
+            }
+            break;
+        case SDL_EVENT_DID_ENTER_FOREGROUND:
+            // The new native window may not exist yet (Android creates it after resuming): poll_events() creates
+            // the surface once it does, the game staying paused until then.
+            if (d.background) {
+                std::fprintf(stderr, "app: foreground\n");
+                d.surface_wanted = true;
+            }
+            break;
+        default: break;
+    }
+    return true;
+}
+
 Display::Display(const char* title, int width, int height) : impl_(nx::make_unique<Impl>()) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(nx::format("SDL_Init: {}", SDL_GetError()).c_str());
+    SDL_AddEventWatch(&Impl::lifecycle_watch, impl_.get());
     SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
 #ifdef __ANDROID__
     flags |= SDL_WINDOW_FULLSCREEN;  // immersive: hides the status and navigation bars
@@ -529,6 +560,7 @@ Display::Display(const char* title, int width, int height) : impl_(nx::make_uniq
 
 Display::~Display() {
     auto& d = *impl_;
+    SDL_RemoveEventWatch(&Impl::lifecycle_watch, impl_.get());
     if (d.device) {
         vkDeviceWaitIdle(d.device);
         d.shutdown_imgui();
@@ -628,9 +660,11 @@ bool Display::poll_events() {
             case SDL_EVENT_FINGER_DOWN:
                 d.touch_mode = true;
                 d.last_device = Impl::Device::Touch;
-                d.touch.finger_down(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y);
+                if (!d.ui_modal) d.touch.finger_down(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y);
                 break;
-            case SDL_EVENT_FINGER_MOTION: d.touch.finger_motion(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y); break;
+            case SDL_EVENT_FINGER_MOTION:
+                if (!d.ui_modal) d.touch.finger_motion(e.tfinger.fingerID, e.tfinger.x, e.tfinger.y);
+                break;
             case SDL_EVENT_FINGER_UP:
             case SDL_EVENT_FINGER_CANCELED: d.touch.finger_up(e.tfinger.fingerID); break;
             case SDL_EVENT_GAMEPAD_AXIS_MOTION:
@@ -640,24 +674,6 @@ bool Display::poll_events() {
                 }
                 break;
             case SDL_EVENT_QUIT: running = false; break;
-            case SDL_EVENT_WILL_ENTER_BACKGROUND:
-            case SDL_EVENT_DID_ENTER_BACKGROUND:
-                if (!d.background) {  // Android destroys the native window: drop everything presented on it
-                    std::fprintf(stderr, "app: background\n");
-                    d.background = true;
-                    d.surface_wanted = false;
-                    d.drop_surface();
-                    d.touch.release_all();
-                }
-                break;
-            case SDL_EVENT_DID_ENTER_FOREGROUND:
-                // The new native window may not exist yet (Android creates it after resuming): the surface is
-                // created once it does, the game staying paused until then (see below).
-                if (d.background) {
-                    std::fprintf(stderr, "app: foreground\n");
-                    d.surface_wanted = true;
-                }
-                break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: d.swapchain_dirty = true; break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
@@ -720,6 +736,7 @@ bool Display::poll_events() {
         d.background = false;
         d.surface_wanted = false;
         std::fprintf(stderr, "app: surface recreated\n");
+        if (d.background_handler) d.background_handler(false);
     }
     d.update_pad();
     return running;
@@ -728,6 +745,10 @@ bool Display::poll_events() {
 PadState Display::pad() const { return impl_->pad; }
 
 bool Display::in_background() const { return impl_->background; }
+
+void Display::set_background_handler(nx::unique_function<void(bool)> handler) {
+    impl_->background_handler = std::move(handler);
+}
 
 const VulkanContext& Display::vulkan() const { return impl_->ctx; }
 
@@ -819,7 +840,7 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         if (ui) ui();
-        if (touch_mode) touch.draw(ImGui::GetForegroundDrawList(), resolved_glyphs());
+        if (touch_mode && !ui_modal) touch.draw(ImGui::GetForegroundDrawList(), resolved_glyphs());
         ImGui::Render();
         overlay = ImGui::GetDrawData();
         if (overlay->TotalVtxCount == 0) overlay = nullptr;
@@ -1029,6 +1050,11 @@ void Display::set_ui(nx::unique_function<void()> ui) { impl_->ui = std::move(ui)
 bool Display::take_menu_request() {
     const bool touch = impl_->touch.take_menu_request();
     return std::exchange(impl_->menu_request, false) || touch;
+}
+
+void Display::set_ui_modal(bool modal) {
+    if (modal && !impl_->ui_modal) impl_->touch.release_all();
+    impl_->ui_modal = modal;
 }
 
 void Display::set_touch_controls(bool visible) {
