@@ -1,38 +1,8 @@
 // The front end (psprecore/platform/frontend.hpp): runs the recompiled game in a window (or headless, for testing).
 //
-//   <game> <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
-//       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
-//       [--renderer vulkan|soft|compare] [--scale N]   (window only, default: the setting, which the pause menu
-//                                        changes; headless always uses the software renderer;
-//                                        compare runs both and screenshots show reference | Vulkan | difference)
-//       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
-//       [--soft-threads N]              (software renderer threads; default: one per hardware thread, at most 8)
-//       [--profile VBLANK]              (Windows: samples where the host spends its time from VBLANK on and prints
-//                                        the hottest functions at exit)
-//       [--ge-bench VBLANK]             (captures the draws of the vblanks after VBLANK, times vertex decoding and
-//                                        transform on them in a loop, prints the result and quits)
-//       [--record FILE] [--replay FILE]  (controller input and save picker answers per vblank; a replay
-//                                        reproduces the run, then live input takes over)
-//       [--ram-dump VBLANK FILE]        (writes user RAM, 0x08800000-0x0A000000, at VBLANK)
-//       [--state-hash N]                (prints a hash of user RAM every N vblanks: determinism checks)
-//       [--clock UNIX]                  (guest wall clock at boot; default: now, or the recording's)
-//       [--saves DIR]                   (save data folder; default: saves/ next to the settings; recordings
-//                                        snapshot it to <file>.saves and replays run on a copy of that)
-//       [--mods DIR]                    (mod folders, for the game's mount hook; default ./mods)
-//       [--settings FILE]               (default ./<game>.ini; written when changed in the pause menu)
-//       [--touch]                       (show the on-screen touch controls from the start; default on Android)
-//       [--perf]                        (prints host time per 300 vblanks and display frames)
-//       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
-//       [--mute]                        (testing: open the sound device but play silence)
-//       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
-//       [--audio-dump prefix]           (writes prefix_<source>.wav per audio source at exit)
-//       [--press VBLANK BUTTON]...      (scripted input: holds start/select/cross/circle/square/triangle/
-//                                        up/down/left/right/l/r for 6 vblanks; for automated testing)
-//       [--ui VBLANK ACTION]...         (scripted overlay input: menu, enter, escape, up, down, space,
-//                                        tap:X,Y for a touch at window-normalised coordinates,
-//                                        renderer:vulkan / renderer:software as if chosen in the menu)
-//       [--window-shot VBLANK out.png]  (captures the window, overlay included; a pause menu opened by --ui
-//                                        closes itself after this capture so the run can continue)
+//   <game> <extracted disc folder> [options]     (--help lists them; on Android they come from the launch intent)
+//
+// Options that act at a given vblank take VBLANK:VALUE, e.g. --screenshot 600:shot.png, --press 900:start.
 
 #include <algorithm>
 #include <chrono>
@@ -43,6 +13,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include <SDL3/SDL_keycode.h>
@@ -80,6 +51,7 @@
 #include "core/foundation/containers/map.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
+#include "core/foundation/serialization/arguments.h"
 #include "core/foundation/threading/thread.h"
 
 
@@ -381,6 +353,146 @@ void finish_stderr() {
 
 }  // namespace
 
+namespace {
+
+struct Options {
+    int exit_code = -1;  // >= 0: stop here (help shown, or a usage error)
+    nx::string game_dir;
+    bool trace = false, headless = false, no_audio = false, unthrottled = false, perf = false, mute = false;
+#ifdef __ANDROID__
+    bool touch = true;  // shown until a gamepad is used
+#else
+    bool touch = false;
+#endif
+    std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
+    nx::string screenshot_path, audio_dump, cooked_dir, renderer, settings;
+    int scale = 0, soft_threads = 0;
+    std::uint64_t vblanks = 0, ge_dump = 0, ge_dump_at = 0, ge_bench = 0, profile = 0, state_hash = 0;
+    std::uint64_t tex_dump_vblank = 0, ram_dump_vblank = 0, window_shot_vblank = 0;
+    nx::string tex_dump_dir, ram_dump_path, window_shot_path;
+    nx::string record, replay, saves, mods;
+    std::int64_t clock = 0;
+    bool clock_given = false;
+    nx::vector<ScriptedPress> presses;
+    nx::vector<ScriptedUi> ui_script;
+};
+
+// VBLANK:VALUE (options acting at a vblank) -> vblank and value.
+std::pair<std::uint64_t, nx::string> at_vblank(nx::string_view option, nx::string_view arg) {
+    const auto colon = arg.find(':');
+    if (colon == nx::string_view::npos || colon == 0)
+        throw Error(nx::format("--{} takes VBLANK:VALUE, not '{}'", option, arg));
+    return {parse_u64(arg.substr(0, colon)), nx::string(arg.substr(colon + 1))};
+}
+
+Options parse_options(const platform::GameInfo& game, int argc, char** argv, const nx::string& data_dir) {
+    Options o;
+    nx::string screenshot, screenshot_every, window_shot, tex_dump, ram_dump, clock;
+    nx::vector<nx::string> presses, ui;
+    nx::cli::Parser cli(game.name, nx::format("{} on the psprecore runtime.", game.title));
+    nx::cli::Command& c = cli.root();
+#ifdef __ANDROID__
+    c.positional("disc", o.game_dir, "extracted disc folder (with PSP_GAME); default: the app's files folder",
+                 {.required = false});
+#else
+    c.positional("disc", o.game_dir, "extracted disc folder (with PSP_GAME inside)");
+#endif
+    // Playing.
+    c.option("renderer", o.renderer, "vulkan, soft, or compare (both; screenshots: reference | Vulkan | difference); "
+                                     "default: the setting",
+             {.value_name = "NAME", .choices = {"vulkan", "soft", "compare"}});
+    c.option("scale", o.scale, "Vulkan internal resolution, multiples of 480x272 (default: the setting)",
+             {.value_name = "N"});
+    c.option("settings", o.settings, "settings file, written when changed in the pause menu (default: <game>.ini)",
+             {.value_name = "FILE"});
+    c.option("saves", o.saves, "save data folder (default: saves/ next to the settings)", {.value_name = "DIR"});
+    c.option("mods", o.mods, "mod folders, for the game's mount hook (default: mods/)", {.value_name = "DIR"});
+    c.option("cooked", o.cooked_dir, "cooked media (default: cooked/)", {.value_name = "DIR"});
+    c.flag("touch", o.touch, "show the on-screen touch controls from the start (default on Android)");
+    c.option("soft-threads", o.soft_threads, "software renderer threads (default: one per core, at most 8)",
+             {.value_name = "N"});
+    // Recording and replay.
+    c.option("record", o.record, "record controller input and save picker answers; snapshots the saves",
+             {.value_name = "FILE"});
+    c.option("replay", o.replay, "replay a recording (on a copy of its saves), then live input takes over",
+             {.value_name = "FILE"});
+    c.option("clock", clock, "guest wall clock at boot, UNIX time (default: now, or the recording's)",
+             {.value_name = "UNIX"});
+    // Testing.
+    c.flag("headless", o.headless, "no window or audio; software renderer");
+    c.option("vblanks", o.vblanks, "stop after N vblanks", {.value_name = "N"});
+    c.flag("no-audio", o.no_audio, "no sound device");
+    c.flag("mute", o.mute, "open the sound device but play silence");
+    c.flag("unthrottled", o.unthrottled, "run as fast as possible");
+    c.flag("perf", o.perf, "print host time per 300 vblanks and display frames");
+    c.option("screenshot", screenshot, "write a PNG of the game at VBLANK", {.value_name = "VBLANK:FILE"});
+    c.option("screenshot-every", screenshot_every, "write PREFIX_<vblank>.png every N vblanks",
+             {.value_name = "N:PREFIX"});
+    c.option("window-shot", window_shot, "capture the window, overlay included (a pause menu opened by --ui closes "
+                                         "after it)", {.value_name = "VBLANK:FILE"});
+    c.option_many("press", presses, "hold BUTTON for 6 vblanks: start, select, cross, circle, square, triangle, up, "
+                                    "down, left, right, l, r", {.value_name = "VBLANK:BUTTON"});
+    c.option_many("ui", ui, "overlay input: menu, enter, escape, up, down, space, minimize, restore, tap:X,Y "
+                            "(window-normalised), renderer:vulkan, renderer:software", {.value_name = "VBLANK:ACTION"});
+    c.option("state-hash", o.state_hash, "print a hash of user RAM every N vblanks (determinism checks)",
+             {.value_name = "N"});
+    c.option("ram-dump", ram_dump, "write user RAM (0x08800000-0x0A000000) at VBLANK", {.value_name = "VBLANK:FILE"});
+    c.option("audio-dump", o.audio_dump, "write PREFIX_<source>.wav per audio source at exit",
+             {.value_name = "PREFIX"});
+    c.flag("trace", o.trace, "log every HLE call");
+    c.option("ge-dump", o.ge_dump, "write ge_dump.txt for display frame N", {.value_name = "N"});
+    c.option("ge-dump-at", o.ge_dump_at, "write ge_dump.txt for the first full frame after VBLANK",
+             {.value_name = "VBLANK"});
+    c.option("ge-bench", o.ge_bench, "time vertex decoding and transform on the draws after VBLANK, then quit",
+             {.value_name = "VBLANK"});
+    c.option("tex-dump", tex_dump, "write the textures drawn at VBLANK (named by their texel hash)",
+             {.value_name = "VBLANK:DIR"});
+    c.option("profile", o.profile, "Windows: sample where the host spends its time from VBLANK on",
+             {.value_name = "VBLANK"});
+
+    const nx::cli::ParseResult parsed = cli.parse(argc, argv);
+    if (parsed.status == nx::cli::ParseStatus::Help) {
+        std::fputs(cli.help().c_str(), stderr);
+        o.exit_code = 0;
+        return o;
+    }
+    if (!parsed.parsed()) {
+        std::fprintf(stderr, "%s: %s\n\n%s", game.name, parsed.message.c_str(), cli.help().c_str());
+        o.exit_code = 2;
+        return o;
+    }
+    if (o.game_dir.empty()) o.game_dir = path_join(data_dir, game.folder);
+    try {
+        const auto split = [](nx::string_view option, const nx::string& arg, std::uint64_t& vblank, nx::string& value) {
+            if (!arg.empty()) std::tie(vblank, value) = at_vblank(option, arg);
+        };
+        split("screenshot", screenshot, o.screenshot_vblank, o.screenshot_path);
+        split("screenshot-every", screenshot_every, o.screenshot_every, o.screenshot_path);
+        split("window-shot", window_shot, o.window_shot_vblank, o.window_shot_path);
+        split("tex-dump", tex_dump, o.tex_dump_vblank, o.tex_dump_dir);
+        split("ram-dump", ram_dump, o.ram_dump_vblank, o.ram_dump_path);
+        if (!clock.empty()) {
+            o.clock = parse_i64(clock);
+            o.clock_given = true;
+        }
+        for (const auto& p : presses) {
+            const auto [at, button] = at_vblank("press", p);
+            o.presses.push_back({at, button_from_name(button)});
+        }
+        for (const auto& u : ui) {
+            auto [at, action] = at_vblank("ui", u);
+            o.ui_script.push_back({at, std::move(action)});
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s: %s\n", game.name, e.what());
+        o.exit_code = 2;
+    }
+    if (o.scale < 0) o.scale = 1;
+    return o;
+}
+
+}  // namespace
+
 int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
     const std::uint32_t kLoadBase = game.load_base;  // must match the base psprecomp translated for
     // Saves, settings and cooked media live in the working directory on desktop and in the app's external
@@ -395,10 +507,12 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         for (int i = 1; i < argc; ++i) std::fprintf(stderr, " [%s]", argv[i]);
         std::fprintf(stderr, "\n");
     }
-    // Options may come from the launch intent (GameActivity); a leading non-option argument is the game folder.
-    const bool explicit_dir = argc >= 2 && nx::string_view(argv[1]).substr(0, 2) != "--";
-    const int first_option = explicit_dir ? 2 : 1;
-    const nx::string game_dir = explicit_dir ? nx::string(argv[1]) : path_join(data_dir, game.folder);
+    const Options o = parse_options(game, argc, argv, data_dir);
+    if (o.exit_code >= 0) {
+        finish_stderr();
+        return o.exit_code;
+    }
+    const nx::string& game_dir = o.game_dir;
     // A folder created by `adb push` before the app's first start belongs to the shell user, and the app is then
     // denied access to it.
     const auto probe = nx::fs::open_file(path_join(game_dir, "PSP_GAME", "SYSDIR", "BOOT.BIN"));
@@ -419,107 +533,35 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         return 1;
     }
 #else
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <extracted disc folder> [--trace] [--vblanks N]\n", game.name);
-        return 2;
-    }
-    const nx::string game_dir = argv[1];
-    const int first_option = 2;
+    const Options o = parse_options(game, argc, argv, data_dir);
+    if (o.exit_code >= 0) return o.exit_code;
+    const nx::string& game_dir = o.game_dir;
 #endif
     try {
-        bool trace = false, headless = false;
-        std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
-        nx::string screenshot_path;
-        nx::string audio_dump;
-        nx::string cooked_dir;
-        nx::string renderer;  // empty: the setting (Vulkan or software, switchable in the pause menu)
-        int scale = 0;  // 0: from the settings file
-        nx::string settings_path = path_join(data_dir, nx::format("{}.ini", game.name));
-        bool no_audio = false, unthrottled = false, perf = false, mute = false;
-#ifdef __ANDROID__
-        bool touch = true;  // shown until a gamepad is used
-#else
-        bool touch = false;
-#endif
-        std::uint64_t max_vblanks = 0;
-        std::uint64_t ge_dump_vblank = 0, ge_bench_vblank = 0, profile_vblank = 0, tex_dump_vblank = 0;
-        nx::string tex_dump_dir;
-        std::uint64_t state_hash_every = 0;
-        std::uint64_t ram_dump_vblank = 0;
-        nx::string ram_dump_path;
-        nx::string record_path, replay_path, saves_dir, mods_dir;
-        std::int64_t clock_base = static_cast<std::int64_t>(std::time(nullptr));
-        bool clock_given = false;
-        nx::vector<ScriptedPress> presses;
-        nx::vector<ScriptedUi> ui_script;
-        std::uint64_t window_shot_vblank = 0;
-        nx::string window_shot_path;
-        for (int i = first_option; i < argc; ++i) {
-            const nx::string_view a = argv[i];
-            if (a == "--trace") trace = true;
-            else if (a == "--headless") headless = true;
-            else if (a == "--screenshot" && i + 2 < argc) {
-                screenshot_vblank = parse_u64(argv[++i]);
-                screenshot_path = argv[++i];
-            } else if (a == "--screenshot-every" && i + 2 < argc) {
-                screenshot_every = parse_u64(argv[++i]);
-                screenshot_path = argv[++i];
-            } else if (a == "--unthrottled") {
-                unthrottled = true;
-            } else if (a == "--touch") {
-                touch = true;
-            } else if (a == "--perf") {
-                perf = true;
-            } else if (a == "--no-audio") {
-                no_audio = true;
-            } else if (a == "--mute") {
-                mute = true;
-            } else if (a == "--renderer" && i + 1 < argc) {
-                renderer = argv[++i];
-            } else if (a == "--scale" && i + 1 < argc) {
-                scale = std::max(1, static_cast<int>(parse_i64(argv[++i])));
-            } else if (a == "--settings" && i + 1 < argc) {
-                settings_path = argv[++i];
-            } else if (a == "--cooked" && i + 1 < argc) {
-                cooked_dir = argv[++i];
-            } else if (a == "--audio-dump" && i + 1 < argc) {
-                audio_dump = argv[++i];
-            }
-            else if (a == "--ui" && i + 2 < argc) {
-                const std::uint64_t at = parse_u64(argv[++i]);
-                ui_script.push_back({at, argv[++i]});
-            } else if (a == "--window-shot" && i + 2 < argc) {
-                window_shot_vblank = parse_u64(argv[++i]);
-                window_shot_path = argv[++i];
-            }
-            else if (a == "--press" && i + 2 < argc) {
-                const std::uint64_t at = parse_u64(argv[++i]);
-                presses.push_back({at, button_from_name(argv[++i])});
-            }
-            else if (a == "--vblanks" && i + 1 < argc) max_vblanks = parse_u64(argv[++i]);
-            else if (a == "--ge-dump" && i + 1 < argc) rt::set_ge_dump(parse_u64(argv[++i]), "ge_dump.txt");
-            else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = parse_u64(argv[++i]);
-            else if (a == "--ge-bench" && i + 1 < argc) ge_bench_vblank = parse_u64(argv[++i]);
-            else if (a == "--tex-dump" && i + 2 < argc) {
-                tex_dump_vblank = parse_u64(argv[++i]);
-                tex_dump_dir = argv[++i];
-            }
-            else if (a == "--profile" && i + 1 < argc) profile_vblank = parse_u64(argv[++i]);
-            else if (a == "--soft-threads" && i + 1 < argc) rt::gpu::set_soft_renderer_threads(static_cast<int>(parse_u64(argv[++i])));
-            else if (a == "--state-hash" && i + 1 < argc) state_hash_every = parse_u64(argv[++i]);
-            else if (a == "--ram-dump" && i + 2 < argc) {
-                ram_dump_vblank = parse_u64(argv[++i]);
-                ram_dump_path = argv[++i];
-            }
-            else if (a == "--record" && i + 1 < argc) record_path = argv[++i];
-            else if (a == "--replay" && i + 1 < argc) replay_path = argv[++i];
-            else if (a == "--saves" && i + 1 < argc) saves_dir = argv[++i];
-            else if (a == "--mods" && i + 1 < argc) mods_dir = argv[++i];
-            else if (a == "--clock" && i + 1 < argc) {
-                clock_base = parse_i64(argv[++i]);
-                clock_given = true;
-            }
-        }
+        const bool trace = o.trace, headless = o.headless, no_audio = o.no_audio, unthrottled = o.unthrottled;
+        const bool perf = o.perf, mute = o.mute, touch = o.touch;
+        const std::uint64_t screenshot_vblank = o.screenshot_vblank, screenshot_every = o.screenshot_every;
+        const nx::string& screenshot_path = o.screenshot_path;
+        const nx::string& audio_dump = o.audio_dump;
+        nx::string cooked_dir = o.cooked_dir;  // default below
+        nx::string renderer = o.renderer;  // empty: the setting (Vulkan or software, switchable in the pause menu)
+        const int scale = o.scale;         // 0: from the settings file
+        const nx::string settings_path =
+            o.settings.empty() ? path_join(data_dir, nx::format("{}.ini", game.name)) : o.settings;
+        const std::uint64_t max_vblanks = o.vblanks, ge_dump_vblank = o.ge_dump_at, ge_bench_vblank = o.ge_bench;
+        const std::uint64_t profile_vblank = o.profile, tex_dump_vblank = o.tex_dump_vblank;
+        const nx::string& tex_dump_dir = o.tex_dump_dir;
+        const std::uint64_t state_hash_every = o.state_hash, ram_dump_vblank = o.ram_dump_vblank;
+        const nx::string& ram_dump_path = o.ram_dump_path;
+        const nx::string &record_path = o.record, &replay_path = o.replay, &saves_dir = o.saves, &mods_dir = o.mods;
+        std::int64_t clock_base = o.clock_given ? o.clock : static_cast<std::int64_t>(std::time(nullptr));
+        bool clock_given = o.clock_given;
+        const nx::vector<ScriptedPress>& presses = o.presses;
+        const nx::vector<ScriptedUi>& ui_script = o.ui_script;
+        const std::uint64_t window_shot_vblank = o.window_shot_vblank;
+        const nx::string& window_shot_path = o.window_shot_path;
+        if (o.ge_dump) rt::set_ge_dump(o.ge_dump, "ge_dump.txt");
+        if (o.soft_threads) rt::gpu::set_soft_renderer_threads(o.soft_threads);
 
         rt::install_crash_handler();
         rt::GuestMemory memory;
