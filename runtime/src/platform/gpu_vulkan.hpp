@@ -54,6 +54,9 @@ public:
     void set_button_icons(rt::gpu::IconStyle style);
     // Whether transfer() also performs the block copy in guest memory (off when another renderer already did).
     void set_guest_copies(bool on);
+    // Drops draws until turned off again (fast-forwarding: only the frames that are shown are rendered). Nothing the
+    // game sees changes: rendered pixels never reach guest memory, and transfers still copy there.
+    void set_skip_draws(bool skip);
 
     struct Output {
         VkImage image = VK_NULL_HANDLE;  // TRANSFER_SRC_OPTIMAL until the next frame starts

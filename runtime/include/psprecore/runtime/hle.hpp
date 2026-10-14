@@ -59,10 +59,12 @@ void mark_guest_written_all();
 std::uint64_t guest_write_counter();
 std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size);  // newest mark covering the range
 
-// Movies (sceMpeg): whether one is on screen, whether the player may skip it, and skipping it: the game sees its
-// stream end, as if it had played out. Games list the movies that must not be skipped by the key the log prints
-// ("sceMpeg: movie <key>"), e.g. one that is the background of a title screen.
+// Movies (sceMpeg): whether one is on screen, whether the player may skip it, and skipping it. A skipped movie is
+// fast-forwarded (the game still plays it to the end, with black frames and no sound; movie_skipping() tells the
+// front end to run unthrottled until then). Games list the movies that must not be skipped by the key the log
+// prints ("sceMpeg: movie <key>"), e.g. one that is the background of a title screen.
 bool movie_playing();
+bool movie_skipping();
 bool movie_skippable();
 void skip_movie();
 void set_unskippable_movies(std::span<const std::uint64_t> keys);

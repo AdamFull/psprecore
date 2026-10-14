@@ -35,6 +35,8 @@ public:
         skip_alpha_ = alpha;
         skip_progress_ = progress;
     }
+    // While a skipped movie is fast-forwarded: "Skipping" with a spinning arc in place of the prompt.
+    void set_skipping(bool skipping) { skipping_ = skipping; }
     void open_menu();
     void close_menu();
     // Escape/F1/Guide: cancels an open save dialog, otherwise toggles the menu.
@@ -60,6 +62,7 @@ private:
     Hooks hooks_;
     bool menu_open_ = false;
     float skip_alpha_ = 0.0f, skip_progress_ = 0.0f;
+    bool skipping_ = false;
     bool menu_appearing_ = false;
     bool dialog_appearing_ = true;
     int overwrite_slot_ = -1;

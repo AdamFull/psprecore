@@ -875,7 +875,11 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         if (!headless && !no_audio) audio = nx::make_unique<platform::AudioDevice>();
         audio_device = audio.get();
         if (!audio_dump.empty()) recorder = nx::make_unique<WavRecorder>(audio_dump, audio.get());
-        rt::set_audio_sink(recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get());
+        rt::AudioSink* const audio_sink = recorder ? static_cast<rt::AudioSink*>(recorder.get()) : audio.get();
+        rt::set_audio_sink(audio_sink);
+        // Skipping a movie fast-forwards through it (rt::movie_skipping): unthrottled, silent, a few presents a second.
+        bool fast_forward = false, frame_drawn = true;
+        nx::timestamp fast_forward_present = nx::timestamp::now();
         if (!headless) {
             display = nx::make_unique<platform::Display>(game.title, 960, 544);
             display->set_touch_controls(touch);
@@ -899,7 +903,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 display->set_refresh_rate(s.refresh_60hz ? 60.0f : 0.0f);
                 display->set_button_glyphs(s.button_glyphs);
                 if (audio) audio->set_volume(mute ? 0.0f : static_cast<float>(s.volume) / 100.0f);
-                kernel.realtime = s.frame_limit && !unthrottled;
+                kernel.realtime = s.frame_limit && !unthrottled && !fast_forward;
                 if (renderer_choice) switch_renderer = s.software_renderer == gpu;  // applied when the menu closes
             };
             apply(settings);
@@ -979,7 +983,14 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     if (!vulkan_renderer) return;
                     const bool capture = screenshot_pending;
                     const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
-                    if (out.image) display->present_image(out.image, out.width, out.height);
+                    // Fast-forwarding: only every frame due for a present (10 a second) is drawn and shown.
+                    if (out.image && (!fast_forward || frame_drawn)) {
+                        display->present_image(out.image, out.width, out.height);
+                        fast_forward_present = nx::timestamp::now();
+                    }
+                    frame_drawn = !fast_forward ||
+                                  nx::timestamp::now() - fast_forward_present >= nx::duration::from_millis(100);
+                    vulkan_renderer->set_skip_draws(!frame_drawn);
                     if (capture && renderer == "compare") {
                         nx::vector<std::uint32_t> ref;
                         int w = 0, h = 0;
@@ -1065,6 +1076,18 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 const bool skip = skip_prompt_step(buttons);
                 input_step(buttons, lx, ly, skip);
                 rt::set_pad(buttons, lx, ly);
+                if (rt::movie_skipping() != fast_forward) {
+                    fast_forward = !fast_forward;
+                    std::fprintf(stderr, "fast-forward %s at vblank %llu\n", fast_forward ? "on" : "off",
+                                 static_cast<unsigned long long>(vblank));
+                    kernel.realtime = settings.frame_limit && !unthrottled && !fast_forward;
+                    rt::set_audio_sink(fast_forward ? nullptr : audio_sink);
+                    overlay->set_skipping(fast_forward);
+                    if (!fast_forward && vulkan_renderer) {  // the frame in progress is drawn and shown again
+                        frame_drawn = true;
+                        vulkan_renderer->set_skip_draws(false);
+                    }
+                }
                 if (gpu && !screenshot_path.empty()) {  // captured at the next flip
                     const std::uint64_t n = kernel.vblank_count();
                     if ((screenshot_every && n % screenshot_every == 0) || (!screenshot_every && n == screenshot_vblank)) {

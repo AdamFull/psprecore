@@ -5,8 +5,9 @@
 // real timestamps, so playback lasts as long as the movie and ends the way the game expects. Pictures and
 // sound come from the cooked movie (AV1 + Vorbis, see cccook); without it frames are black and audio silent.
 //
-// Skipping (skip_movie): the game's stream callback keeps reading the movie file to its end, but the data is
-// dropped and no further access units are handed out, so the game sees the stream end as if it had played out.
+// Skipping (skip_movie) fast-forwards: the game plays the rest of the movie as usual, so its scripts see a normal
+// playthrough (cutting the stream short leaves the scene after the prologue movie waiting forever), while the
+// frames are no longer decoded (black) and the sound is silent. The front end runs the game unthrottled meanwhile.
 
 #include <algorithm>
 #include <cstdio>
@@ -48,7 +49,7 @@ struct Mpeg {
     std::uint64_t written = 0, freed = 0;  // cumulative packet counts
     bool eof = false;
     std::uint64_t key = 0;               // the movie (cooked::fnv1a64 of its PSMF header)
-    bool skipping = false;               // skip_movie: drop the rest of the stream
+    bool skipping = false;               // skip_movie: fast-forward to the end (black frames, silence)
     bool decoding = false;               // a frame was decoded since the video stream was registered
     std::uint64_t last_decode_vblank = 0;
     psmf::Demuxer demux;
@@ -96,7 +97,6 @@ void release_packets() {
 
 // Pops the next complete unit of a stream, or returns false (no data yet / end of stream).
 bool next_unit(int stream, AccessUnit& out) {
-    if (g_mpeg.skipping) return false;
     auto& units = g_mpeg.demux.units(static_cast<psmf::Stream>(stream));
     if (units.empty() && g_mpeg.eof) g_mpeg.demux.finish();
     if (units.empty()) return false;
@@ -159,17 +159,13 @@ void Delete(Context& c) {
 void RingbufferPut(Context& c) {
     const std::uint32_t r = arg(c, 0);
     std::uint32_t wanted = std::min(arg(c, 1), arg(c, 2));
-    // Skipping: the game streams a little per frame and ends the movie only once its callback has read the whole
-    // file, so read (and drop) many of its chunks per call. Its callback takes at most what it asked for.
-    if (g_mpeg.skipping) wanted *= 64;
-    const std::uint32_t chunk_limit = std::min(arg(c, 1), arg(c, 2));
     const std::uint32_t packets = mem().read32(r + kPackets), data = mem().read32(r + kData);
     const std::uint32_t callback = mem().read32(r + kCallback), callback_arg = mem().read32(r + kCallbackArg);
     g_mpeg.ringbuffer = r;
     std::uint32_t added = 0;
     while (wanted > 0 && packets && callback) {
         const std::uint32_t slot = static_cast<std::uint32_t>(g_mpeg.written % packets);
-        const std::uint32_t chunk = std::min({wanted, packets - slot, chunk_limit});
+        const std::uint32_t chunk = std::min(wanted, packets - slot);
         const auto got = static_cast<std::int32_t>(kernel().call_guest(callback, {data + slot * kPacketSize, chunk, callback_arg}));
         if (got <= 0) {
             if (got == 0 && !g_mpeg.eof) {
@@ -180,13 +176,10 @@ void RingbufferPut(Context& c) {
             break;
         }
         const std::uint32_t n = std::min(static_cast<std::uint32_t>(got), chunk);
-        if (!g_mpeg.skipping)
-            for (std::uint32_t i = 0; i < n; ++i)
-                g_mpeg.demux.feed({reinterpret_cast<const std::byte*>(mem().ptr(data + (slot + i) * kPacketSize)),
-                                   kPacketSize},
-                                  g_mpeg.written + i);
+        for (std::uint32_t i = 0; i < n; ++i)
+            g_mpeg.demux.feed({reinterpret_cast<const std::byte*>(mem().ptr(data + (slot + i) * kPacketSize)), kPacketSize},
+                              g_mpeg.written + i);
         g_mpeg.written += n;
-        if (g_mpeg.skipping) g_mpeg.freed = g_mpeg.written;  // dropped as soon as read
         added += n;
         wanted -= n;
         if (n < chunk) break;
@@ -238,7 +231,7 @@ void RegistStream(Context& c) {
 void UnRegistStream(Context& c) {
     const int type = g_mpeg.stream_type[arg(c, 1) & 15];
     if (type == kAvc || type == kAtrac) g_mpeg.registered[type] = false;
-    if (type == kAvc) g_mpeg.decoding = false;  // the game is done with the movie
+    if (type == kAvc) g_mpeg.decoding = g_mpeg.skipping = false;  // the game is done with the movie
     release_packets();
     ret(c, 0);
 }
@@ -298,13 +291,24 @@ void AvcDecode(Context& c) {
     g_mpeg.decoding = true;
     g_mpeg.last_decode_vblank = kernel().vblank_count();
     const std::uint32_t width = arg(c, 2), buffer = arg(c, 3) ? mem().read32(arg(c, 3)) : 0;
-    if (g_mpeg.video && g_mpeg.video->next(g_mpeg.frame)) g_mpeg.frame_width = g_mpeg.video->width();
+    if (!g_mpeg.skipping && g_mpeg.video && g_mpeg.video->next(g_mpeg.frame))
+        g_mpeg.frame_width = g_mpeg.video->width();
     if (buffer && width) {
         const std::uint32_t bpp = g_mpeg.pixel_mode == 3 ? 4 : 2;
         const int fw = g_mpeg.frame_width;
         const bool have = !g_mpeg.frame.empty() && fw > 0;
+        constexpr std::uint32_t kBlack = 0xFF000000u;
+        const std::uint16_t black16 = g_mpeg.pixel_mode == 1 ? 0x8000 : g_mpeg.pixel_mode == 2 ? 0xF000 : 0;
         for (std::uint32_t y = 0; y < 272; ++y) {
             std::uint8_t* row = mem().ptr(buffer + y * width * bpp);
+            if (!have) {  // black (no cooked movie, or skipping): no per-pixel conversion
+                if (bpp == 4) {
+                    for (std::uint32_t x = 0; x < 480; ++x) std::memcpy(row + x * 4, &kBlack, 4);
+                } else {
+                    for (std::uint32_t x = 0; x < 480; ++x) store16(row + x * 2, black16);
+                }
+                continue;
+            }
             for (std::uint32_t x = 0; x < 480; ++x) {
                 const bool inside = have && static_cast<int>(x) < fw &&
                                     (y + 1) * static_cast<std::uint32_t>(fw) <= g_mpeg.frame.size();
@@ -330,7 +334,7 @@ void AtracDecode(Context& c) {
     const std::uint32_t au = arg(c, 1), buffer = arg(c, 2);
     if (!buffer) return ret(c, 0);
     mem().fill(buffer, 0, kAtracOutputBytes);
-    if (g_mpeg.audio && au) {
+    if (g_mpeg.audio && au && !g_mpeg.skipping) {
         const std::uint64_t pts = (std::uint64_t{mem().read32(au)} << 32) | mem().read32(au + 4);
         if (!g_mpeg.have_audio_base) {
             g_mpeg.audio_base = pts;
@@ -388,23 +392,24 @@ nx::vector<std::uint64_t> g_unskippable;  // set_unskippable_movies
 
 bool movie_playing() {
     // A movie is on screen while the game decodes its frames (it stops at the end without telling sceMpeg).
-    return g_mpeg.registered[kAvc] && g_mpeg.decoding && !g_mpeg.skipping &&
-           kernel().vblank_count() - g_mpeg.last_decode_vblank < 30;
+    return g_mpeg.registered[kAvc] && g_mpeg.decoding && kernel().vblank_count() - g_mpeg.last_decode_vblank < 30;
 }
 
+bool movie_skipping() { return g_mpeg.skipping && movie_playing(); }
+
 bool movie_skippable() {
-    return movie_playing() && std::find(g_unskippable.begin(), g_unskippable.end(), g_mpeg.key) == g_unskippable.end();
+    return movie_playing() && !g_mpeg.skipping &&
+           std::find(g_unskippable.begin(), g_unskippable.end(), g_mpeg.key) == g_unskippable.end();
 }
 
 void set_unskippable_movies(std::span<const std::uint64_t> keys) { g_unskippable.assign(keys.begin(), keys.end()); }
 
 void skip_movie() {
-    if (!movie_playing()) return;
-    std::fprintf(stderr, "sceMpeg: movie skipped\n");
+    if (!movie_playing() || g_mpeg.skipping) return;
+    std::fprintf(stderr, "sceMpeg: skipping the movie from vblank %llu\n",
+                 static_cast<unsigned long long>(kernel().vblank_count()));
     g_mpeg.skipping = true;
-    g_mpeg.demux.reset();
-    g_mpeg.freed = g_mpeg.written;
-    sync_ring();
+    g_mpeg.frame.clear();  // black from now on
 }
 
 }  // namespace psprecore::rt

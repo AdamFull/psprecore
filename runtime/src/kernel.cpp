@@ -1,6 +1,7 @@
 #include "psprecore/runtime/kernel.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -16,6 +17,23 @@ namespace psprecore::rt {
 namespace {
 
 thread_local Thread* tl_current = nullptr;  // null on the idle (host main) thread and in interrupts
+
+// Takes a baton, spinning briefly before sleeping: guest threads hand the baton back and forth many times per
+// vblank, and waking a sleeping host thread costs tens of microseconds (more on phones), while the baton usually
+// comes back within that time. Unthrottled (fast-forwarding) the handoffs are what limits the speed, so the spin is
+// longer there: 0.1 ms per vblank on a phone instead of 5 ms without spinning; in real time a short spin saves the
+// CPU (and battery) the waiting threads would burn.
+std::atomic<std::int64_t> g_baton_spin_us{50};
+
+void take_baton(nx::semaphore& baton) {
+    const nx::timestamp until =
+        nx::timestamp::now() + nx::duration::from_micros(g_baton_spin_us.load(std::memory_order_relaxed));
+    do {
+        for (int i = 0; i < 256; ++i)
+            if (baton.try_acquire()) return;
+    } while (nx::timestamp::now() < until);
+    baton.acquire();
+}
 Kernel* g_kernel = nullptr;
 
 constexpr std::uint64_t kVblankPeriodUs = 16683;  // 59.94 Hz
@@ -106,7 +124,7 @@ std::uint32_t Kernel::start_thread(int id, std::uint32_t arg_size, std::uint32_t
 
 void Kernel::host_thread_main(Thread* t) {
     tl_current = t;
-    t->baton.acquire();
+    take_baton(t->baton);
     std::uint32_t status = 0;
     try {
         const RecompFunc entry = recomp_lookup(t->entry);
@@ -177,7 +195,7 @@ void Kernel::schedule_from(Thread* from) {
         idle_baton_.release();
     }
     if (from) {
-        from->baton.acquire();  // until the scheduler picks this thread again
+        take_baton(from->baton);  // until the scheduler picks this thread again
         tl_current = from;
     }
 }
@@ -349,7 +367,7 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
     start_thread(main_id, arg_size, arg_ptr);
     for (;;) {
         schedule_from(nullptr);
-        idle_baton_.acquire();  // no guest thread is ready
+        take_baton(idle_baton_);  // no guest thread is ready
         if (quit_) break;
         const bool alive = std::any_of(threads_.begin(), threads_.end(), [](const auto& kv) {
             return kv.second->state != Thread::State::Dead && kv.second->state != Thread::State::Dormant;
@@ -367,6 +385,10 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
                 anchor = host - nx::duration::from_micros(static_cast<std::int64_t>(next));
                 ++fell_behind_;
             }
+        }
+        g_baton_spin_us.store(realtime ? 50 : 300, std::memory_order_relaxed);
+        if (!realtime) {  // unthrottled: when real time resumes, it continues from here
+            anchor = nx::timestamp::now() - nx::duration::from_micros(static_cast<std::int64_t>(now_us_));
         }
         now_us_ = std::max(now_us_, next);
         if (now_us_ >= next_vblank_us_) {

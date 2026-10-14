@@ -158,6 +158,7 @@ struct VulkanGeRenderer::Impl {
     VkShaderModule copy_vs = VK_NULL_HANDLE, copy_fs = VK_NULL_HANDLE;
     std::array<VkPipeline, 4> copy_pipelines{};  // by log2(samples) - 1
     bool guest_copies = true;
+    bool skip_draws = false;
 
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -1341,6 +1342,9 @@ struct VulkanGeRenderer::Impl {
                                           nx::vector<std::uint32_t>* capture) {
         // Saved once no new pipeline has appeared for ~10 s (the app may be killed rather than closed on Android).
         if (cache_dirty_frame && frame_number - cache_dirty_frame > 300) save_pipeline_cache();
+        // A frame whose draws were all skipped, with nothing else recorded: no GPU work at all (each submit costs
+        // a render target transition and a fence wait, which on mobile GPUs adds up when fast-forwarding).
+        if (skip_draws && !recording && !capture) return {};
         begin_frame();
         Target& t = target(address, stride ? stride : 512, format);
         end_rendering();
@@ -1385,7 +1389,7 @@ VulkanGeRenderer::VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& mem
 VulkanGeRenderer::~VulkanGeRenderer() { impl_->shutdown(); }
 
 void VulkanGeRenderer::draw(const rt::ge::State& state, rt::ge::Prim prim, const nx::vector<rt::ge::Vertex>& vertices) {
-    impl_->draw(state, prim, vertices);
+    if (!impl_->skip_draws) impl_->draw(state, prim, vertices);
 }
 
 void VulkanGeRenderer::transfer(const rt::ge::State& state) { impl_->transfer(state); }
@@ -1416,6 +1420,8 @@ int VulkanGeRenderer::msaa() const { return static_cast<int>(impl_->samples); }
 int VulkanGeRenderer::scale() const { return impl_->scale; }
 
 void VulkanGeRenderer::set_guest_copies(bool on) { impl_->guest_copies = on; }
+
+void VulkanGeRenderer::set_skip_draws(bool skip) { impl_->skip_draws = skip; }
 
 VulkanGeRenderer::Output VulkanGeRenderer::finish_frame(std::uint32_t address, std::uint32_t stride, int format,
                                                        nx::vector<std::uint32_t>* capture) {
