@@ -25,6 +25,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FF7CCCompilerOptions)
 
 include(FF7CCStb)
+include(FF7CCDav1d)
 
 option(FF7CC_BUILD_GAME "Build the game executable (needs SDL3/ImGui/miniaudio, fetched at configure time)" ON)
 if(FF7CC_BUILD_GAME)

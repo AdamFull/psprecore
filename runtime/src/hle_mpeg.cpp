@@ -2,16 +2,21 @@
 //
 // The game streams a PSMF file (MPEG-PS, 2048-byte packs) into a ring buffer through a guest callback and pulls
 // access units (AVC video, ATRAC audio) out of it. This module implements the ring buffer and a demuxer with
-// real timestamps, so playback lasts as long as the movie and ends the way the game expects. Video frames are
-// black and audio is silent until the media phase adds decoding of cooked movies (PORT_PLAN.md Phase 6).
+// real timestamps, so playback lasts as long as the movie and ends the way the game expects. Pictures and
+// sound come from the cooked movie (AV1 + Vorbis, see cccook); without it frames are black and audio silent.
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <vector>
 
+#include "audio/vorbis.hpp"
+#include "ff7cc/formats/cooked.hpp"
 #include "ff7cc/formats/psmf.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/kernel.hpp"
+#include "media/av1_video.hpp"
 
 namespace ff7cc::rt {
 
@@ -43,7 +48,19 @@ struct Mpeg {
     int next_stream_id = 1;
     int stream_type[16] = {};
     std::uint32_t pixel_mode = 3;
+    // Cooked media for the current movie (ff7cc/formats/cooked.hpp).
+    std::unique_ptr<media::Av1Video> video;
+    std::unique_ptr<audio::VorbisStream> audio;
+    std::vector<std::uint32_t> frame;
+    int frame_width = 0;
+    std::uint64_t audio_base = 0;
+    bool have_audio_base = false;
 } g_mpeg;
+
+void store16(std::uint8_t* p, std::uint32_t v) {
+    const auto x = static_cast<std::uint16_t>(v);
+    std::memcpy(p, &x, 2);
+}
 
 void sync_ring() {
     const std::uint32_t r = g_mpeg.ringbuffer;
@@ -169,6 +186,16 @@ void QueryStreamOffset(Context& c) {
         return;
     }
     mem().write32(arg(c, 2), header.data_offset);
+
+    // Identify the movie by its header and open the cooked streams.
+    const std::uint64_t key = cooked::fnv1a64({reinterpret_cast<const std::byte*>(mem().ptr(arg(c, 1))), psmf::kPackSize});
+    g_mpeg.video = media::Av1Video::open(cooked::movie_video_path(cooked_root(), key));
+    g_mpeg.audio = audio::VorbisStream::open(cooked::movie_audio_path(cooked_root(), key));
+    g_mpeg.frame.clear();
+    g_mpeg.have_audio_base = false;
+    if (!g_mpeg.video)
+        std::fprintf(stderr, "sceMpeg: no cooked movie %s (run cccook); showing black\n",
+                     cooked::movie_video_path(cooked_root(), key).string().c_str());
     ret(c, 0);
 }
 
@@ -234,17 +261,28 @@ void AvcDecodeMode(Context& c) {
     ret(c, 0);
 }
 
-// sceMpegAvcDecode(mpeg, au, frame_width, buffer*, init*): no decoder yet; outputs a black 480x272 frame.
+// sceMpegAvcDecode(mpeg, au, frame_width, buffer*, init*): the next frame of the cooked movie, in display order
+// (black without cooked media). Writes 480x272 pixels in the pixel mode chosen by sceMpegAvcDecodeMode.
 void AvcDecode(Context& c) {
     const std::uint32_t width = arg(c, 2), buffer = arg(c, 3) ? mem().read32(arg(c, 3)) : 0;
+    if (g_mpeg.video && g_mpeg.video->next(g_mpeg.frame)) g_mpeg.frame_width = g_mpeg.video->width();
     if (buffer && width) {
         const std::uint32_t bpp = g_mpeg.pixel_mode == 3 ? 4 : 2;
+        const int fw = g_mpeg.frame_width;
+        const bool have = !g_mpeg.frame.empty() && fw > 0;
         for (std::uint32_t y = 0; y < 272; ++y) {
             std::uint8_t* row = mem().ptr(buffer + y * width * bpp);
-            if (bpp == 4) {
-                for (std::uint32_t x = 0; x < 480; ++x) std::memcpy(row + x * 4, "\0\0\0\xFF", 4);
-            } else {
-                std::memset(row, 0, 480 * 2);
+            for (std::uint32_t x = 0; x < 480; ++x) {
+                const bool inside = have && static_cast<int>(x) < fw &&
+                                    (y + 1) * static_cast<std::uint32_t>(fw) <= g_mpeg.frame.size();
+                const std::uint32_t p = inside ? g_mpeg.frame[y * static_cast<std::uint32_t>(fw) + x] : 0xFF000000u;
+                const std::uint32_t r = p & 0xFF, g = (p >> 8) & 0xFF, b = (p >> 16) & 0xFF;
+                switch (g_mpeg.pixel_mode) {
+                    case 0: store16(row + x * 2, (r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11)); break;
+                    case 1: store16(row + x * 2, (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10) | 0x8000); break;
+                    case 2: store16(row + x * 2, (r >> 4) | ((g >> 4) << 4) | ((b >> 4) << 8) | 0xF000); break;
+                    default: std::memcpy(row + x * 4, &p, 4); break;
+                }
             }
         }
     }
@@ -253,9 +291,29 @@ void AvcDecode(Context& c) {
 }
 void AvcDecodeFlush(Context& c) { ret(c, 0); }
 
-// sceMpegAtracDecode(mpeg, au, buffer, init): silence.
+// sceMpegAtracDecode(mpeg, au, buffer, init): 2048 stereo samples of the cooked movie audio at the unit's
+// timestamp (silence without cooked media).
 void AtracDecode(Context& c) {
-    if (arg(c, 2)) mem().fill(arg(c, 2), 0, kAtracOutputBytes);
+    const std::uint32_t au = arg(c, 1), buffer = arg(c, 2);
+    if (!buffer) return ret(c, 0);
+    mem().fill(buffer, 0, kAtracOutputBytes);
+    if (g_mpeg.audio && au) {
+        const std::uint64_t pts = (std::uint64_t{mem().read32(au)} << 32) | mem().read32(au + 4);
+        if (!g_mpeg.have_audio_base) {
+            g_mpeg.audio_base = pts;
+            g_mpeg.have_audio_base = true;
+        }
+        const std::uint64_t ticks = pts >= g_mpeg.audio_base ? pts - g_mpeg.audio_base : 0;
+        const std::uint64_t frame = (ticks * 44100 / 90000 + 1024) / 2048;  // nearest ATRAC frame
+        auto* out = reinterpret_cast<std::int16_t*>(mem().ptr(buffer));
+        if (g_mpeg.audio->channels() == 2) {
+            g_mpeg.audio->read(frame * 2048, out, 2048);
+        } else {
+            std::int16_t mono[2048] = {};
+            const std::uint32_t got = g_mpeg.audio->read(frame * 2048, mono, 2048);
+            for (std::uint32_t i = 0; i < got; ++i) out[2 * i] = out[2 * i + 1] = mono[i];
+        }
+    }
     ret(c, 0);
 }
 
