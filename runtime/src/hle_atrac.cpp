@@ -77,12 +77,10 @@ void SetDataAndGetID(Context& c) {
         s.loop_start = info.loops[0].start - std::min(info.loops[0].start, info.delay);
         s.loop_end = std::min(info.loops[0].end - std::min(info.loops[0].end, info.delay), s.end_sample);
     }
-    static bool warned = false;
-    if (!s.stream && !warned) {
-        std::fprintf(stderr, "sceAtrac: no cooked audio %s (run cccook); playing silence\n",
-                     cooked::audio_path(g_cooked_root, s.key).string().c_str());
-        warned = true;
-    }
+    static int warnings = 0;
+    if (!s.stream && warnings++ < 8)
+        std::fprintf(stderr, "sceAtrac: no cooked audio %s (buffer %u bytes, RIFF data ends at %u); playing silence\n",
+                     cooked::audio_path(g_cooked_root, s.key).string().c_str(), size, info.data_offset + info.data_size);
     ret(c, static_cast<std::uint32_t>(it - std::begin(g_slots)));
 }
 

@@ -7,6 +7,7 @@
 
 #include "ff7cc/runtime/memory.hpp"
 #include "gpu/texture.hpp"
+#include "gpu/vertex_pipeline.hpp"
 
 namespace ff7cc::rt::gpu {
 
@@ -16,43 +17,7 @@ using ge::Prim;
 using ge::State;
 using ge::Vertex;
 
-struct Vec3 {
-    float x = 0, y = 0, z = 0;
-};
-Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
-Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-Vec3 operator*(Vec3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
-float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-Vec3 normalize(Vec3 v) {
-    const float l = std::sqrt(dot(v, v));
-    return l > 0.0f ? v * (1.0f / l) : v;
-}
-// 4x3 matrices are stored column by column: x' = m0*x + m3*y + m6*z + m9*w.
-Vec3 mul43(const float* m, Vec3 v, float w = 1.0f) {
-    return {m[0] * v.x + m[3] * v.y + m[6] * v.z + m[9] * w, m[1] * v.x + m[4] * v.y + m[7] * v.z + m[10] * w,
-            m[2] * v.x + m[5] * v.y + m[8] * v.z + m[11] * w};
-}
-void mul44(const float* m, Vec3 v, float out[4]) {
-    for (int i = 0; i < 4; ++i) out[i] = m[i] * v.x + m[4 + i] * v.y + m[8 + i] * v.z + m[12 + i];
-}
-Vec3 color24(std::uint32_t p) {
-    return {static_cast<float>(p & 0xFF) / 255.0f, static_cast<float>((p >> 8) & 0xFF) / 255.0f,
-            static_cast<float>((p >> 16) & 0xFF) / 255.0f};
-}
-Vec3 vec_reg(const State& s, int cmd) {
-    return {s.flt(static_cast<std::uint8_t>(cmd)), s.flt(static_cast<std::uint8_t>(cmd + 1)),
-            s.flt(static_cast<std::uint8_t>(cmd + 2))};
-}
 
-// Vertex after transform, before clipping (clip space) and after projection (screen space). Texture coordinates
-// are kept projective (s, t, q) so perspective-correct interpolation and texture projection share one path.
-struct ClipVertex {
-    float clip[4];
-    float s, t, q;
-    float color[4];  // 0..255
-    float spec[3];   // separate specular, 0..255
-    float fog;       // 1 = no fog
-};
 struct ScreenVertex {
     float x, y, z, iw;  // drawing-space pixels, depth 0..65535, 1/w
     float s, t, q;      // multiplied by iw
@@ -74,12 +39,6 @@ bool compare(int func, int a, int b) {
     }
 }
 
-struct Light {
-    bool on = false;
-    int type = 0, kind = 0;  // type: 0 directional, 1 point, 2 spot; kind: 0 diffuse, 1 +specular, 2 powered diffuse
-    Vec3 pos, dir, att, ambient, diffuse, specular;
-    float exponent = 0, cutoff = 0;
-};
 
 struct Setup {
     // Targets.
@@ -122,18 +81,6 @@ struct Setup {
     // Culling.
     bool cull = false;
     int cull_mode = 0;
-    // Vertex processing.
-    bool lighting = false, separate_specular = false;
-    Light lights[4];
-    Vec3 emissive, mat_ambient, mat_diffuse, mat_specular, ambient;
-    float mat_alpha = 1, ambient_alpha = 1, specular_coef = 0;
-    std::uint32_t material_update = 0;
-    bool reverse_normal = false;
-    int map_mode = 0, proj_source = 0, shade_u = 0, shade_v = 0;
-    float tex_scale[2] = {1, 1}, tex_offset[2] = {0, 0};
-    float fog_end = 0, fog_slope = 0;
-    float vp_scale[3] = {}, vp_center[3] = {};
-    float offset_x = 0, offset_y = 0;
 };
 
 std::uint16_t load16(const std::uint8_t* p) {
@@ -210,9 +157,7 @@ public:
 
 private:
     void configure(const State& s);
-    ClipVertex transform(const State& s, const Vertex& v) const;
     ScreenVertex project(const ClipVertex& v) const;
-    void lighting(Vec3 world_pos, Vec3 world_normal, const Vertex& v, float color[4], float spec[3]) const;
 
     void triangle(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c);
     void raster_triangle(const ScreenVertex& a, const ScreenVertex& b, const ScreenVertex& c, const ScreenVertex& provoking);
@@ -225,6 +170,7 @@ private:
 
     GuestMemory& memory_;
     Setup d_;
+    VertexPipeline vp_;
     std::vector<ClipVertex> clip_;
 };
 
@@ -274,8 +220,6 @@ void SoftRenderer::configure(const State& s) {
     d.fog = s.on(ge::FOGENABLE) && !d.through && !d.clear;
     const std::uint32_t fog_color = s.param(ge::FOGCOLOR);
     for (int i = 0; i < 3; ++i) d.fog_color[i] = static_cast<int>((fog_color >> (i * 8)) & 0xFF);
-    d.fog_end = s.flt(ge::FOG1);
-    d.fog_slope = s.flt(ge::FOG2);
 
     d.alpha_test = s.on(ge::ALPHATESTENABLE);
     const std::uint32_t at = s.param(ge::ALPHATEST);
@@ -324,190 +268,8 @@ void SoftRenderer::configure(const State& s) {
     d.gouraud = s.param(ge::SHADEMODE) & 1;
     d.cull = s.on(ge::CULLFACEENABLE) && !d.through;
     d.cull_mode = static_cast<int>(s.param(ge::CULL) & 1);
+    vp_.configure(s, d.texture, d.texture ? d.sampler.width() : 1, d.texture ? d.sampler.height() : 1, d.fog);
 
-    // Vertex processing state.
-    d.lighting = s.on(ge::LIGHTINGENABLE) && !d.through;
-    d.separate_specular = s.param(ge::LIGHTMODE) & 1;
-    d.emissive = color24(s.param(ge::MATERIALEMISSIVE));
-    d.mat_ambient = color24(s.param(ge::MATERIALAMBIENT));
-    d.mat_alpha = static_cast<float>(s.param(ge::MATERIALALPHA) & 0xFF) / 255.0f;
-    d.mat_diffuse = color24(s.param(ge::MATERIALDIFFUSE));
-    d.mat_specular = color24(s.param(ge::MATERIALSPECULAR));
-    d.specular_coef = s.flt(ge::MATERIALSPECULARCOEF);
-    d.ambient = color24(s.param(ge::AMBIENTCOLOR));
-    d.ambient_alpha = static_cast<float>(s.param(ge::AMBIENTALPHA) & 0xFF) / 255.0f;
-    d.material_update = s.param(ge::MATERIALUPDATE) & 7;
-    d.reverse_normal = s.on(ge::REVERSENORMAL);
-    for (int i = 0; i < 4; ++i) {
-        Light& l = d.lights[i];
-        l.on = d.lighting && s.on(static_cast<std::uint8_t>(ge::LIGHTENABLE0 + i));
-        if (!l.on) continue;
-        const std::uint32_t type = s.param(static_cast<std::uint8_t>(ge::LIGHTTYPE0 + i));
-        l.kind = static_cast<int>(type & 3);
-        l.type = static_cast<int>((type >> 8) & 3);
-        l.pos = vec_reg(s, ge::LIGHTPOSITION0 + 3 * i);
-        l.dir = normalize(vec_reg(s, ge::LIGHTDIRECTION0 + 3 * i));
-        l.att = vec_reg(s, ge::LIGHTATTENUATION0 + 3 * i);
-        l.exponent = s.flt(static_cast<std::uint8_t>(ge::LIGHTSPOTEXPONENT0 + i));
-        l.cutoff = s.flt(static_cast<std::uint8_t>(ge::LIGHTSPOTCUTOFF0 + i));
-        l.ambient = color24(s.param(static_cast<std::uint8_t>(ge::LIGHTCOLOR0 + 3 * i)));
-        l.diffuse = color24(s.param(static_cast<std::uint8_t>(ge::LIGHTCOLOR0 + 3 * i + 1)));
-        l.specular = color24(s.param(static_cast<std::uint8_t>(ge::LIGHTCOLOR0 + 3 * i + 2)));
-    }
-    const std::uint32_t map = s.param(ge::TEXMAPMODE), shade = s.param(ge::TEXSHADELS);
-    d.map_mode = static_cast<int>(map & 3);
-    d.proj_source = static_cast<int>((map >> 8) & 3);
-    d.shade_u = static_cast<int>(shade & 3);
-    d.shade_v = static_cast<int>((shade >> 8) & 3);
-    d.tex_scale[0] = s.flt(ge::TEXSCALEU);
-    d.tex_scale[1] = s.flt(ge::TEXSCALEV);
-    d.tex_offset[0] = s.flt(ge::TEXOFFSETU);
-    d.tex_offset[1] = s.flt(ge::TEXOFFSETV);
-    for (int i = 0; i < 3; ++i) {
-        d.vp_scale[i] = s.flt(static_cast<std::uint8_t>(ge::VIEWPORTXSCALE + i));
-        d.vp_center[i] = s.flt(static_cast<std::uint8_t>(ge::VIEWPORTXCENTER + i));
-    }
-    d.offset_x = static_cast<float>(s.param(ge::OFFSETX) & 0xFFFF) / 16.0f;
-    d.offset_y = static_cast<float>(s.param(ge::OFFSETY) & 0xFFFF) / 16.0f;
-}
-
-void SoftRenderer::lighting(Vec3 wp, Vec3 wn, const Vertex& v, float color[4], float spec[3]) const {
-    const Setup& d = d_;
-    const bool has_color = v.color[0] >= 0.0f;
-    const Vec3 vc{v.color[0], v.color[1], v.color[2]};
-    const Vec3 m_ambient = has_color && (d.material_update & 1) ? vc : d.mat_ambient;
-    const float m_alpha = has_color && (d.material_update & 1) ? v.color[3] : d.mat_alpha;
-    const Vec3 m_diffuse = has_color && (d.material_update & 2) ? vc : d.mat_diffuse;
-    const Vec3 m_specular = has_color && (d.material_update & 4) ? vc : d.mat_specular;
-    const auto mul = [](Vec3 a, Vec3 b) { return Vec3{a.x * b.x, a.y * b.y, a.z * b.z}; };
-
-    Vec3 n = normalize(d.reverse_normal ? wn * -1.0f : wn);
-    Vec3 diffuse_sum, specular_sum;
-    Vec3 sum = d.emissive + mul(d.ambient, m_ambient);
-    for (const Light& l : d.lights) {
-        if (!l.on) continue;
-        Vec3 to_light;
-        float att = 1.0f;
-        if (l.type == 0) {
-            to_light = normalize(l.pos);
-        } else {
-            to_light = l.pos - wp;
-            const float dist = std::sqrt(dot(to_light, to_light));
-            to_light = dist > 0.0f ? to_light * (1.0f / dist) : to_light;
-            const float denom = l.att.x + l.att.y * dist + l.att.z * dist * dist;
-            att = denom > 0.0f ? std::min(1.0f / denom, 1.0f) : 1.0f;
-            if (l.type == 2) {
-                const float spot = dot(to_light * -1.0f, l.dir);
-                att = spot >= l.cutoff ? att * std::pow(std::max(spot, 0.0f), l.exponent) : 0.0f;
-            }
-        }
-        float ndotl = dot(n, to_light);
-        if (l.kind == 2) ndotl = ndotl > 0.0f ? std::pow(ndotl, d.specular_coef) : 0.0f;
-        sum = sum + mul(l.ambient, m_ambient) * att;
-        if (ndotl > 0.0f) {
-            diffuse_sum = diffuse_sum + mul(l.diffuse, m_diffuse) * (att * ndotl);
-            if (l.kind == 1) {
-                const Vec3 h = normalize(to_light + Vec3{0, 0, 1});
-                const float ndoth = std::max(dot(n, h), 0.0f);
-                specular_sum = specular_sum + mul(l.specular, m_specular) * (att * std::pow(ndoth, d.specular_coef));
-            }
-        }
-    }
-    sum = sum + diffuse_sum;
-    if (!d.separate_specular) {
-        sum = sum + specular_sum;
-        specular_sum = {};
-    }
-    color[0] = std::clamp(sum.x, 0.0f, 1.0f) * 255.0f;
-    color[1] = std::clamp(sum.y, 0.0f, 1.0f) * 255.0f;
-    color[2] = std::clamp(sum.z, 0.0f, 1.0f) * 255.0f;
-    color[3] = std::clamp(d.ambient_alpha * m_alpha, 0.0f, 1.0f) * 255.0f;
-    spec[0] = std::clamp(specular_sum.x, 0.0f, 1.0f) * 255.0f;
-    spec[1] = std::clamp(specular_sum.y, 0.0f, 1.0f) * 255.0f;
-    spec[2] = std::clamp(specular_sum.z, 0.0f, 1.0f) * 255.0f;
-}
-
-ClipVertex SoftRenderer::transform(const State& s, const Vertex& v) const {
-    const Setup& d = d_;
-    ClipVertex out{};
-    out.fog = 1.0f;
-    if (d.through) {
-        out.clip[0] = v.pos[0];
-        out.clip[1] = v.pos[1];
-        out.clip[2] = v.pos[2];
-        out.clip[3] = 1.0f;
-        const float w = d.texture ? static_cast<float>(d.sampler.width()) : 1.0f;
-        const float h = d.texture ? static_cast<float>(d.sampler.height()) : 1.0f;
-        out.s = v.uv[0] / w;
-        out.t = v.uv[1] / h;
-        out.q = 1.0f;
-        if (v.color[0] >= 0.0f) {
-            for (int i = 0; i < 4; ++i) out.color[i] = v.color[i] * 255.0f;
-        } else {
-            out.color[0] = d.mat_ambient.x * 255.0f;
-            out.color[1] = d.mat_ambient.y * 255.0f;
-            out.color[2] = d.mat_ambient.z * 255.0f;
-            out.color[3] = d.mat_alpha * 255.0f;
-        }
-        return out;
-    }
-
-    Vec3 pos{v.pos[0], v.pos[1], v.pos[2]}, normal{v.normal[0], v.normal[1], v.normal[2]};
-    if (s.format.weight) {  // skinning: blend the bone transforms by the vertex weights
-        Vec3 p, n;
-        for (int i = 0; i < s.format.weights; ++i) {
-            if (v.weights[i] == 0.0f) continue;
-            p = p + mul43(s.bones[i], pos) * v.weights[i];
-            n = n + mul43(s.bones[i], normal, 0.0f) * v.weights[i];
-        }
-        pos = p;
-        normal = n;
-    }
-    const Vec3 world = mul43(s.world, pos);
-    const Vec3 world_normal = mul43(s.world, normal, 0.0f);
-    const Vec3 view = mul43(s.view, world);
-    mul44(s.proj, view, out.clip);
-
-    if (d.lighting) {
-        lighting(world, world_normal, v, out.color, out.spec);
-    } else if (v.color[0] >= 0.0f) {
-        for (int i = 0; i < 4; ++i) out.color[i] = v.color[i] * 255.0f;
-    } else {
-        out.color[0] = d.mat_ambient.x * 255.0f;
-        out.color[1] = d.mat_ambient.y * 255.0f;
-        out.color[2] = d.mat_ambient.z * 255.0f;
-        out.color[3] = d.mat_alpha * 255.0f;
-    }
-
-    out.q = 1.0f;
-    switch (d.map_mode) {
-        case 1: {  // projection through the texture generation matrix
-            Vec3 src;
-            switch (d.proj_source) {
-                case 0: src = pos; break;
-                case 1: src = {v.uv[0], v.uv[1], 0.0f}; break;
-                case 2: src = normalize(normal); break;
-                default: src = normal; break;
-            }
-            const Vec3 t = mul43(s.tgen, src);
-            out.s = t.x;
-            out.t = t.y;
-            out.q = t.z;
-            break;
-        }
-        case 2: {  // environment map from two light directions
-            const Vec3 n = normalize(world_normal);
-            out.s = (1.0f + dot(normalize(vec_reg(s, ge::LIGHTPOSITION0 + 3 * d.shade_u)), n)) * 0.5f;
-            out.t = (1.0f + dot(normalize(vec_reg(s, ge::LIGHTPOSITION0 + 3 * d.shade_v)), n)) * 0.5f;
-            break;
-        }
-        default:
-            out.s = v.uv[0] * d.tex_scale[0] + d.tex_offset[0];
-            out.t = v.uv[1] * d.tex_scale[1] + d.tex_offset[1];
-            break;
-    }
-    if (d.fog) out.fog = std::clamp((view.z + d.fog_end) * d.fog_slope, 0.0f, 1.0f);
-    return out;
 }
 
 ScreenVertex SoftRenderer::project(const ClipVertex& v) const {
@@ -519,9 +281,9 @@ ScreenVertex SoftRenderer::project(const ClipVertex& v) const {
         o.iw = 1.0f;
     } else {
         o.iw = 1.0f / v.clip[3];
-        o.x = v.clip[0] * o.iw * d_.vp_scale[0] + d_.vp_center[0] - d_.offset_x;
-        o.y = v.clip[1] * o.iw * d_.vp_scale[1] + d_.vp_center[1] - d_.offset_y;
-        o.z = std::clamp(v.clip[2] * o.iw * d_.vp_scale[2] + d_.vp_center[2], 0.0f, 65535.0f);
+        o.x = v.clip[0] * o.iw * vp_.vp_scale[0] + vp_.vp_center[0] - vp_.offset_x;
+        o.y = v.clip[1] * o.iw * vp_.vp_scale[1] + vp_.vp_center[1] - vp_.offset_y;
+        o.z = std::clamp(v.clip[2] * o.iw * vp_.vp_scale[2] + vp_.vp_center[2], 0.0f, 65535.0f);
     }
     o.s = v.s * o.iw;
     o.t = v.t * o.iw;
@@ -535,7 +297,7 @@ ScreenVertex SoftRenderer::project(const ClipVertex& v) const {
 void SoftRenderer::draw(const State& s, Prim prim, const std::vector<Vertex>& vertices) {
     configure(s);
     clip_.resize(vertices.size());
-    for (std::size_t i = 0; i < vertices.size(); ++i) clip_[i] = transform(s, vertices[i]);
+    for (std::size_t i = 0; i < vertices.size(); ++i) clip_[i] = vp_.transform(s, vertices[i]);
     const auto& v = clip_;
     const std::size_t n = v.size();
     switch (prim) {
