@@ -33,6 +33,8 @@ public:
     // Changes the internal resolution scale from the next frame on (render targets are recreated).
     void set_scale(int scale);
     int scale() const;
+    // Whether transfer() also performs the block copy in guest memory (off when another renderer already did).
+    void set_guest_copies(bool on);
 
     struct Output {
         VkImage image = VK_NULL_HANDLE;  // TRANSFER_SRC_OPTIMAL until the next frame starts

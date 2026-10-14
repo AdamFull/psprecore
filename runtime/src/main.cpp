@@ -2,8 +2,9 @@
 //
 //   ff7cc <extracted disc folder> [--headless] [--trace] [--vblanks N] [--ge-dump FRAME] [--screenshot VBLANK out.png]
 //       [--screenshot-every N prefix]   (writes prefix_<vblank>.png every N vblanks)
-//       [--renderer vulkan|soft] [--scale N]   (window only; headless always uses the software renderer)
-//       [--ge-dump-at VBLANK]           (headless: writes ge_dump.txt for the first full frame after VBLANK)
+//       [--renderer vulkan|soft|compare] [--scale N]   (window only; headless always uses the software renderer;
+//                                        compare runs both and screenshots show reference | Vulkan | difference)
+//       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
 //       [--settings FILE]               (default ./ff7cc.ini; written when changed in the pause menu)
 //       [--no-audio] [--unthrottled]       (testing: no sound device; run as fast as possible)
 //       [--cooked DIR]                  (cooked media from cccook; default ./cooked)
@@ -14,6 +15,7 @@
 //       [--window-shot VBLANK out.png]  (captures the window, overlay included; a pause menu opened by --ui
 //                                        closes itself after this capture so the run can continue)
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +39,7 @@
 #include "platform/gpu_vulkan.hpp"
 #include "platform/overlay.hpp"
 #include "platform/settings.hpp"
+#include "gpu/soft_renderer.hpp"
 #include "ff7cc/runtime/hle.hpp"
 #include "ff7cc/runtime/io.hpp"
 #include "ff7cc/runtime/kernel.hpp"
@@ -88,6 +91,60 @@ private:
     ff7cc::rt::AudioSink* next_;
     std::vector<std::int16_t> samples_[kSources];
 };
+
+// Sends every display list to two renderers (--renderer compare).
+class TeeRenderer final : public ff7cc::rt::ge::Renderer {
+public:
+    TeeRenderer(std::unique_ptr<Renderer> a, std::unique_ptr<Renderer> b) : a_(std::move(a)), b_(std::move(b)) {}
+    void draw(const ff7cc::rt::ge::State& s, ff7cc::rt::ge::Prim prim, const std::vector<ff7cc::rt::ge::Vertex>& v) override {
+        a_->draw(s, prim, v);
+        b_->draw(s, prim, v);
+    }
+    void transfer(const ff7cc::rt::ge::State& s) override {
+        a_->transfer(s);
+        b_->transfer(s);
+    }
+
+private:
+    std::unique_ptr<Renderer> a_, b_;
+};
+
+// Reference frame (w x h) next to the GPU frame (box-filtered down from `scale` times the size) and their
+// difference (x4). Returns the composite; `mean` is the mean per-pixel max-channel difference and `bad` the
+// share of pixels differing by more than 32.
+std::vector<std::uint32_t> compare_frames(const std::vector<std::uint32_t>& ref, const std::vector<std::uint32_t>& gpu, int w,
+                                          int h, int scale, double& mean, double& bad) {
+    std::vector<std::uint32_t> out(static_cast<std::size_t>(w) * 3 * h, 0xFF000000u);
+    double total = 0;
+    std::size_t over = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            int acc[3] = {0, 0, 0};
+            for (int sy = 0; sy < scale; ++sy)
+                for (int sx = 0; sx < scale; ++sx) {
+                    const std::uint32_t px = gpu[static_cast<std::size_t>(y * scale + sy) * (w * scale) + (x * scale + sx)];
+                    for (int c = 0; c < 3; ++c) acc[c] += static_cast<int>((px >> (c * 8)) & 0xFF);
+                }
+            const std::uint32_t r = ref[static_cast<std::size_t>(y) * w + x];
+            std::uint32_t g = 0xFF000000u;
+            int diff = 0;
+            for (int c = 0; c < 3; ++c) {
+                const int gv = acc[c] / (scale * scale);
+                g |= static_cast<std::uint32_t>(gv) << (c * 8);
+                diff = std::max(diff, std::abs(gv - static_cast<int>((r >> (c * 8)) & 0xFF)));
+            }
+            total += diff;
+            if (diff > 32) ++over;
+            const std::size_t row = static_cast<std::size_t>(y) * w * 3;
+            out[row + x] = r | 0xFF000000u;
+            out[row + w + x] = g;
+            const std::uint32_t d = static_cast<std::uint32_t>(std::min(255, diff * 4));
+            out[row + 2 * w + x] = 0xFF000000u | d | (d << 8) | (d << 16);
+        }
+    mean = total / (static_cast<double>(w) * h);
+    bad = 100.0 * static_cast<double>(over) / (static_cast<double>(w) * h);
+    return out;
+}
 
 struct ScriptedPress {
     std::uint64_t vblank;
@@ -291,14 +348,28 @@ int main(int argc, char** argv) {
                 rt::set_ge_renderer_factory([&](rt::GuestMemory& mem) {
                     auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale);
                     vulkan_renderer = r.get();
-                    return std::unique_ptr<rt::ge::Renderer>(std::move(r));
+                    if (renderer != "compare") return std::unique_ptr<rt::ge::Renderer>(std::move(r));
+                    r->set_guest_copies(false);  // the software renderer already copies in guest memory
+                    return std::unique_ptr<rt::ge::Renderer>(
+                        std::make_unique<TeeRenderer>(rt::gpu::make_soft_renderer(mem), std::move(r)));
                 });
                 rt::set_flip_handler([&](std::uint32_t address, std::uint32_t stride, std::uint32_t format) {
                     if (!vulkan_renderer) return;
                     const bool capture = screenshot_pending;
                     const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
                     if (out.image) display->present_image(out.image, out.width, out.height);
-                    if (capture) {
+                    if (capture && renderer == "compare") {
+                        std::vector<std::uint32_t> ref;
+                        int w = 0, h = 0;
+                        if (rt::read_framebuffer(ref, w, h) && w * vulkan_renderer->scale() == out.width) {
+                            double mean = 0, bad = 0;
+                            const auto composite = compare_frames(ref, frame, w, h, vulkan_renderer->scale(), mean, bad);
+                            std::fprintf(stderr, "compare vblank %llu: mean difference %.2f, %.2f%% of pixels over 32\n",
+                                         static_cast<unsigned long long>(screenshot_at), mean, bad);
+                            screenshot(composite, w * 3, h);
+                        }
+                        screenshot_pending = false;
+                    } else if (capture) {
                         screenshot(frame, out.width, out.height);
                         screenshot_pending = false;
                     }
@@ -306,6 +377,7 @@ int main(int argc, char** argv) {
             }
             kernel.on_vblank = [&, gpu, pause, arm_window_shot] {
                 const std::uint64_t vblank = kernel.vblank_count();
+                if (ge_dump_vblank && vblank == ge_dump_vblank) rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 for (const auto& u : ui_script) {
                     if (u.vblank != vblank) continue;
                     if (u.action == "menu") overlay->handle_menu_request();

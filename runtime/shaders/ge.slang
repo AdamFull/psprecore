@@ -13,12 +13,16 @@
 [[vk::constant_id(5)]] const int kAlphaTest = 1;        // GE compare function; 1 = always
 [[vk::constant_id(6)]] const int kColorTest = 1;        // 0 never, 1 always, 2 equal, 3 not equal
 [[vk::constant_id(7)]] const bool kClearMode = false;
-[[vk::constant_id(8)]] const bool kFixedSourceBlend = false;  // multiply by BLENDFIXEDA (Vulkan has one constant)
+// Blend factors Vulkan lacks are applied here, with the fixed-function source factor set to ONE:
+// 1 BLENDFIXEDA (Vulkan has one constant color), 2 2*srcA, 3 1-2*srcA (GE doubled alpha, clamped),
+// 4 srcA, 5 1-srcA (when the destination factor needs the doubled alpha output).
+[[vk::constant_id(8)]] const int kSourceFactor = 0;
+[[vk::constant_id(9)]] const bool kDoubleAlpha = false;  // output min(2a, 1) for a 2*srcA destination factor
 
 struct Constants {
     float4 env_color;      // texture environment color (blend function)
     float4 fog_color;
-    float4 fixed_a;        // BLENDFIXEDA, applied in the shader when kFixedSourceBlend
+    float4 fixed_a;        // BLENDFIXEDA, applied in the shader when kSourceFactor == 1
     uint alpha_ref, alpha_mask;
     uint color_ref, color_mask;
 };
@@ -110,6 +114,15 @@ float4 fragment_main(Varyings input) : SV_Target {
         const bool equal = (rgb & pc.color_mask) == (pc.color_ref & pc.color_mask);
         if (kColorTest == 0 || (kColorTest == 2 && !equal) || (kColorTest == 3 && equal)) discard;
     }
-    if (kFixedSourceBlend) c.rgb *= pc.fixed_a.rgb;
+    const float a2 = min(c.a * 2.0, 1.0);
+    switch (kSourceFactor) {
+        case 1: c.rgb *= pc.fixed_a.rgb; break;
+        case 2: c.rgb *= a2; break;
+        case 3: c.rgb *= 1.0 - a2; break;
+        case 4: c.rgb *= c.a; break;
+        case 5: c.rgb *= 1.0 - c.a; break;
+        default: break;
+    }
+    if (kDoubleAlpha) c.a = a2;
     return c;
 }

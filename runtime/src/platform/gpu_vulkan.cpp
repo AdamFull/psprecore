@@ -95,7 +95,7 @@ struct PipelineKey {
     std::uint8_t logic = 0, logic_op = 0;
     // Fragment specialization constants (shaders/ge.slang).
     std::uint8_t texture = 0, tex_func = 0, tex_alpha = 0, color_double = 0, fog = 0, alpha_test = 1, color_test = 1,
-                 clear = 0, fixed_src = 0;
+                 clear = 0, src_factor = 0, double_alpha = 0;
     bool operator==(const PipelineKey& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
 };
 struct PipelineKeyHash {
@@ -148,6 +148,7 @@ struct VulkanGeRenderer::Impl {
     rt::GuestMemory& memory;
     int scale;
     int pending_scale;
+    bool guest_copies = true;
 
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -650,11 +651,11 @@ struct VulkanGeRenderer::Impl {
     VkPipeline pipeline(const PipelineKey& k) {
         auto& p = pipelines[k];
         if (p) return p;
-        const std::uint32_t spec_data[9] = {k.texture, k.tex_func, k.tex_alpha, k.color_double, k.fog,
-                                            k.alpha_test, k.color_test, k.clear, k.fixed_src};
-        VkSpecializationMapEntry entries[9];
-        for (std::uint32_t i = 0; i < 9; ++i) entries[i] = {i, i * 4, 4};
-        VkSpecializationInfo spec{9, entries, sizeof spec_data, spec_data};
+        const std::uint32_t spec_data[10] = {k.texture, k.tex_func, k.tex_alpha, k.color_double, k.fog,
+                                             k.alpha_test, k.color_test, k.clear, k.src_factor, k.double_alpha};
+        VkSpecializationMapEntry entries[10];
+        for (std::uint32_t i = 0; i < 10; ++i) entries[i] = {i, i * 4, 4};
+        VkSpecializationInfo spec{10, entries, sizeof spec_data, spec_data};
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
         stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", &spec};
@@ -989,7 +990,17 @@ struct VulkanGeRenderer::Impl {
                     VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_DST_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
                     VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_DST_ALPHA,
                     VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA};
-                if (a < 10) {
+                // Doubled source alpha (codes 6/7) has no Vulkan factor: the shader applies the source factor and,
+                // for a doubled destination factor, outputs min(2a, 1) as alpha. Doubled destination alpha
+                // (codes 8/9) is approximated with plain destination alpha.
+                const bool dst_double = b == 6 || b == 7;
+                if (a == 6 || a == 7) {
+                    key.src = VK_BLEND_FACTOR_ONE;
+                    key.src_factor = a == 6 ? 2 : 3;
+                } else if (dst_double && (a == 2 || a == 3)) {
+                    key.src = VK_BLEND_FACTOR_ONE;
+                    key.src_factor = a == 2 ? 4 : 5;
+                } else if (a < 10) {
                     key.src = static_cast<std::uint8_t>(kSrc[a]);
                 } else if ((fa & 0xFFFFFF) == 0xFFFFFF) {
                     key.src = VK_BLEND_FACTOR_ONE;
@@ -997,10 +1008,13 @@ struct VulkanGeRenderer::Impl {
                     key.src = VK_BLEND_FACTOR_ZERO;
                 } else {  // Vulkan has one constant color: apply BLENDFIXEDA in the shader
                     key.src = VK_BLEND_FACTOR_ONE;
-                    key.fixed_src = 1;
+                    key.src_factor = 1;
                     for (int i = 0; i < 3; ++i) pc.fixed_a[i] = static_cast<float>((fa >> (i * 8)) & 0xFF) / 255.0f;
                 }
-                if (b < 10) {
+                if (dst_double) {
+                    key.dst = b == 6 ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                    key.double_alpha = 1;
+                } else if (b < 10) {
                     key.dst = static_cast<std::uint8_t>(kDst[b]);
                 } else if ((fb & 0xFFFFFF) == 0xFFFFFF) {
                     key.dst = VK_BLEND_FACTOR_ONE;
@@ -1084,8 +1098,9 @@ struct VulkanGeRenderer::Impl {
         const std::uint32_t sx = sp & 0x3FF, sy = (sp >> 10) & 0x3FF, dx = dp & 0x3FF, dy = (dp >> 10) & 0x3FF;
         const std::uint32_t w = (sz & 0x3FF) + 1, h = ((sz >> 10) & 0x3FF) + 1;
         const std::uint32_t bpp = (s.param(ge::TRANSFERSTART) & 1) ? 4 : 2;
-        for (std::uint32_t y = 0; y < h; ++y)
-            std::memmove(memory.ptr(dst + ((dy + y) * dst_stride + dx) * bpp), memory.ptr(src + ((sy + y) * src_stride + sx) * bpp), w * bpp);
+        if (guest_copies)
+            for (std::uint32_t y = 0; y < h; ++y)
+                std::memmove(memory.ptr(dst + ((dy + y) * dst_stride + dx) * bpp), memory.ptr(src + ((sy + y) * src_stride + sx) * bpp), w * bpp);
         if (Target* t = target_containing(dst); t && t->address == dst && t->stride == dst_stride) {
             begin_frame();
             upload_region(*t, static_cast<int>(dx), static_cast<int>(dy), static_cast<int>(w), static_cast<int>(h));
@@ -1145,6 +1160,8 @@ void VulkanGeRenderer::transfer(const rt::ge::State& state) { impl_->transfer(st
 void VulkanGeRenderer::set_scale(int scale) { impl_->pending_scale = std::max(1, scale); }
 
 int VulkanGeRenderer::scale() const { return impl_->scale; }
+
+void VulkanGeRenderer::set_guest_copies(bool on) { impl_->guest_copies = on; }
 
 VulkanGeRenderer::Output VulkanGeRenderer::finish_frame(std::uint32_t address, std::uint32_t stride, int format,
                                                        std::vector<std::uint32_t>* capture) {
