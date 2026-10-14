@@ -1047,6 +1047,8 @@ void Display::inject_key(std::uint32_t keycode) {
 
 void Display::set_ui(nx::unique_function<void()> ui) { impl_->ui = std::move(ui); }
 
+bool Display::screen_held() const { return impl_->touch_mode && !impl_->ui_modal && impl_->touch.free_touch(); }
+
 bool Display::take_menu_request() {
     const bool touch = impl_->touch.take_menu_request();
     return std::exchange(impl_->menu_request, false) || touch;

@@ -30,6 +30,11 @@ public:
     void draw();
 
     bool menu_open() const { return menu_open_; }
+    // "Hold <Circle> to skip" in the corner: `alpha` 0 hides it, `progress` 0..1 fills its ring.
+    void set_skip_prompt(float alpha, float progress) {
+        skip_alpha_ = alpha;
+        skip_progress_ = progress;
+    }
     void open_menu();
     void close_menu();
     // Escape/F1/Guide: cancels an open save dialog, otherwise toggles the menu.
@@ -41,6 +46,7 @@ private:
     void draw_menu();
     void draw_save_dialog();
     void draw_fps();
+    void draw_skip_prompt();
     // Gamepad glyphs in the overlay: with a gamepad connected, or when the glyphs were chosen in the settings.
     bool pad_glyphs() const;
     // A button; with pad_glyphs(), showing the face button that presses it (the focused item takes Cross).
@@ -53,6 +59,7 @@ private:
     Settings& settings_;
     Hooks hooks_;
     bool menu_open_ = false;
+    float skip_alpha_ = 0.0f, skip_progress_ = 0.0f;
     bool menu_appearing_ = false;
     bool dialog_appearing_ = true;
     int overwrite_slot_ = -1;

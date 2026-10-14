@@ -83,6 +83,7 @@ void TouchControls::finger_down(std::uint64_t id, float x, float y) {
     f.y = f.origin_y = y * height_;
     f.control = hit(f.x, f.y);
     if (f.control == Control::Menu) menu_request_ = true;
+    if (f.control == Control::None) free_hold_polls_ = kMinHoldPolls;  // a quick tap still counts as a touch
     fingers_[id] = f;
     std::uint32_t bits = 0;
     switch (f.control) {
@@ -102,6 +103,7 @@ void TouchControls::finger_down(std::uint64_t id, float x, float y) {
 void TouchControls::tick() {
     for (int b = 0; b < 32; ++b)
         if (hold_polls_[b] > 0 && --hold_polls_[b] == 0) held_bits_ &= ~(1u << b);
+    if (free_hold_polls_ > 0) --free_hold_polls_;
 }
 
 void TouchControls::finger_motion(std::uint64_t id, float x, float y) {
@@ -117,6 +119,14 @@ void TouchControls::release_all() {
     fingers_.clear();
     held_bits_ = 0;
     for (int& h : hold_polls_) h = 0;
+    free_hold_polls_ = 0;
+}
+
+bool TouchControls::free_touch() const {
+    if (free_hold_polls_ > 0) return true;
+    for (const auto& [_, f] : fingers_)
+        if (f.control == Control::None) return true;
+    return false;
 }
 
 bool TouchControls::take_menu_request() {

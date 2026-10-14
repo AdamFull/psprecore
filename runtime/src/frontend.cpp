@@ -162,6 +162,7 @@ nx::vector<std::uint32_t> compare_frames(const nx::vector<std::uint32_t>& ref, c
 //     psprecore-input 1 <wall clock base>    (older recordings: ff7cc-input)
 //     <vblank> pad <buttons, hex> <lx> <ly>
 //     <vblank> dialog <slot>            (save picker answer; -1 = cancel)
+//     <vblank> skip                     (the playing movie was skipped)
 // With the same game data, saves and clock base the run is reproduced exactly (virtual time is deterministic).
 class InputRecorder {
 public:
@@ -184,6 +185,10 @@ public:
     }
     void dialog(std::uint64_t vblank, int slot) {
         std::fprintf(f_, "%llu dialog %d\n", static_cast<unsigned long long>(vblank), slot);
+        std::fflush(f_);
+    }
+    void skip(std::uint64_t vblank) {
+        std::fprintf(f_, "%llu skip\n", static_cast<unsigned long long>(vblank));
         std::fflush(f_);
     }
     void flush() { std::fflush(f_); }
@@ -221,6 +226,8 @@ public:
             } else if (nx::string_view(kind) == "dialog") {
                 if (std::fscanf(f, "%d", &e.dialog) != 1) break;
                 e.is_dialog = true;
+            } else if (nx::string_view(kind) == "skip") {
+                e.is_skip = true;
             } else {
                 break;
             }
@@ -233,13 +240,17 @@ public:
     bool finished() const { return next_ >= events_.size(); }
     std::uint64_t last_vblank() const { return events_.empty() ? 0 : events_.back().vblank; }
 
-    // Advances to `vblank`: updates the pad state and returns save picker answers due now (-2: none).
-    int advance(std::uint64_t vblank) {
+    // Advances to `vblank`: updates the pad state and returns save picker answers due now (-2: none); `skip`
+    // tells whether the movie was skipped now.
+    int advance(std::uint64_t vblank, bool& skip) {
         int dialog = -2;
+        skip = false;
         for (; next_ < events_.size() && events_[next_].vblank <= vblank; ++next_) {
             const Event& e = events_[next_];
             if (e.is_dialog) {
                 dialog = e.dialog;
+            } else if (e.is_skip) {
+                skip = true;
             } else {
                 buttons_ = e.buttons;
                 lx_ = e.lx;
@@ -257,7 +268,7 @@ private:
         std::uint64_t vblank;
         std::uint32_t buttons = 0;
         std::uint8_t lx = 128, ly = 128;
-        bool is_dialog = false;
+        bool is_dialog = false, is_skip = false;
         int dialog = -1;
     };
     nx::vector<Event> events_;
@@ -432,7 +443,7 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
                                          "after it)", {.value_name = "VBLANK:FILE"});
     c.option_many("press", presses, "hold BUTTON for 6 vblanks: start, select, cross, circle, square, triangle, up, "
                                     "down, left, right, l, r", {.value_name = "VBLANK:BUTTON"});
-    c.option_many("ui", ui, "overlay input: menu, enter, escape, up, down, space, minimize, restore, tap:X,Y "
+    c.option_many("ui", ui, "overlay input: menu, enter, escape, up, down, space, minimize, restore, skip-movie, tap:X,Y "
                             "(window-normalised), renderer:vulkan, renderer:software", {.value_name = "VBLANK:ACTION"});
     c.option("state-hash", o.state_hash, "print a hash of user RAM every N vblanks (determinism checks)",
              {.value_name = "N"});
@@ -613,7 +624,8 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             rt::set_save_dialog_deferred(true);
         }
         // Per vblank: applies due save picker answers and replayed input; records what the game sees.
-        const auto input_step = [&](std::uint32_t& buttons, std::uint8_t& lx, std::uint8_t& ly) {
+        // `skip`: the player skipped the movie this vblank (ignored, like live input, while a replay runs).
+        const auto input_step = [&](std::uint32_t& buttons, std::uint8_t& lx, std::uint8_t& ly, bool skip) {
             const std::uint64_t vblank = kernel.vblank_count();
             if (!ram_dump_path.empty() && vblank == ram_dump_vblank) {  // debugging: user RAM to a file
                 std::FILE* f = io::open_c_file(ram_dump_path, "wb");
@@ -630,7 +642,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                              static_cast<unsigned long long>(h));
             }
             if (replay && !replay->finished()) {
-                const int dialog = replay->advance(vblank);
+                const int dialog = replay->advance(vblank, skip);
                 if (dialog != -2) rt::answer_save_dialog(dialog);
                 buttons = replay->buttons();
                 lx = replay->lx();
@@ -640,6 +652,10 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             // Headless runs have no picker: answer with the slot the PSP dialog would focus (recorded like a pick).
             if (headless && !(replay && !replay->finished()))
                 if (const rt::SaveDialog* d = rt::pending_save_dialog()) rt::answer_save_dialog(d->slots.empty() ? -1 : d->focus);
+            if (skip && rt::movie_playing()) {
+                rt::skip_movie();
+                if (recorder_in) recorder_in->skip(vblank);
+            }
             int slot = 0;
             if (rt::apply_save_dialog_answer(slot) && recorder_in) recorder_in->dialog(vblank, slot);
             if (recorder_in) recorder_in->pad(vblank, buttons, lx, ly);
@@ -846,7 +862,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 std::uint32_t buttons = scripted_buttons(presses, kernel.vblank_count());
                 std::uint8_t lx = 128, ly = 128;
-                input_step(buttons, lx, ly);
+                input_step(buttons, lx, ly, false);
                 rt::set_pad(buttons, lx, ly);
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
@@ -904,6 +920,32 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     rt::write_png(window_shot_path, rgba, w, h);
                     window_shot_taken = true;
                 }));
+            };
+            // Skipping a movie: any press shows "Hold <Circle> to skip"; holding Circle (or a finger on the picture)
+            // fills its ring, and a full ring skips. Circle does not reach the game while the prompt is up.
+            constexpr float kHoldSeconds = 0.8f, kShowSeconds = 3.0f, kVblank = 1.0f / 59.94f;
+            float skip_shown = 0.0f, skip_progress = 0.0f;
+            std::uint32_t skip_previous = 0;
+            const auto skip_prompt_step = [&](std::uint32_t& buttons) {
+                const std::uint32_t pressed = buttons & ~skip_previous;
+                skip_previous = buttons;
+                bool skip = false;
+                if (!rt::movie_skippable() || overlay->wants_input()) {
+                    skip_shown = skip_progress = 0.0f;
+                } else {
+                    const bool held = (buttons & platform::kCircle) || display->screen_held();
+                    if (pressed || held) skip_shown = kShowSeconds;
+                    skip_progress = held ? skip_progress + kVblank / kHoldSeconds
+                                         : std::max(0.0f, skip_progress - 2.0f * kVblank / kHoldSeconds);
+                    if (skip_progress >= 1.0f) {
+                        skip = true;
+                        skip_shown = skip_progress = 0.0f;
+                    }
+                    if (skip_shown > 0.0f) buttons &= ~platform::kCircle;
+                    skip_shown = std::max(0.0f, skip_shown - kVblank);
+                }
+                overlay->set_skip_prompt(std::min(1.0f, skip_shown / 0.3f), std::min(1.0f, skip_progress));
+                return skip;
             };
             const auto pause = [&] {
                 const platform::Settings before = settings;
@@ -977,6 +1019,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     else if (u.action == "down") display->inject_key(SDLK_DOWN);
                     else if (u.action == "space") display->inject_key(SDLK_SPACE);
                     else if (u.action == "minimize" || u.action == "restore") display->set_minimized(u.action == "minimize");
+                    else if (u.action == "skip-movie") rt::skip_movie();
                     else if (u.action == "renderer:vulkan" || u.action == "renderer:software") {
                         settings.software_renderer = u.action == "renderer:software";
                         apply(settings);
@@ -1019,7 +1062,8 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 const auto pad = overlay->wants_input() ? platform::PadState{} : display->pad();
                 std::uint32_t buttons = pad.buttons | scripted_buttons(presses, kernel.vblank_count());
                 std::uint8_t lx = pad.lx, ly = pad.ly;
-                input_step(buttons, lx, ly);
+                const bool skip = skip_prompt_step(buttons);
+                input_step(buttons, lx, ly, skip);
                 rt::set_pad(buttons, lx, ly);
                 if (gpu && !screenshot_path.empty()) {  // captured at the next flip
                     const std::uint64_t n = kernel.vblank_count();

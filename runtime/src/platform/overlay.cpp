@@ -3,6 +3,8 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
+#include <numbers>
 #include <ctime>
 
 #include "psprecore/platform/display.hpp"
@@ -70,6 +72,7 @@ bool Overlay::wants_input() const { return menu_open_ || rt::pending_save_dialog
 
 void Overlay::draw() {
     if (settings_.show_fps) draw_fps();
+    if (skip_alpha_ > 0.0f && !menu_open_) draw_skip_prompt();
     if (rt::pending_save_dialog()) {
         draw_save_dialog();
     } else {
@@ -95,6 +98,47 @@ void Overlay::pad_hint(std::uint32_t pad_button, const char* text) {
     glyph(pad_button, display_.button_glyphs());
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::TextDisabled("%s", text);
+}
+
+// Bottom right (bottom centre with touch controls, whose face buttons sit in that corner): a disc with the button
+// (a fingertip for touch) and a ring that fills while it is held, then the label. While nothing is held the ring
+// breathes slowly, so the prompt reads as "do something here".
+void Overlay::draw_skip_prompt() {
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float h = ImGui::GetFontSize();
+    const float r = h * 0.95f, margin = h * 1.4f;
+    const char* label = "Hold to skip";
+    const ImVec2 text = ImGui::CalcTextSize(label);
+    const float width = 2.0f * r + h * 0.6f + text.x;
+    const float left = display_.touch_controls() ? vp->Pos.x + (vp->Size.x - width) * 0.5f
+                                                 : vp->Pos.x + vp->Size.x - margin - width;
+    const ImVec2 c{left + r, vp->Pos.y + vp->Size.y - margin - r};
+    const auto alpha = [](float a) { return static_cast<int>(a * 255.0f); };
+    const int first_vertex = dl->VtxBuffer.Size;  // the whole prompt fades below, the button glyph included
+
+    dl->AddRectFilled({c.x - r - h * 0.5f, c.y - r - h * 0.4f}, {c.x + r + h * 0.6f + text.x + h * 0.5f, c.y + r + h * 0.4f},
+                      IM_COL32(0, 0, 0, alpha(0.45f)), r);
+    const float thick = std::max(2.0f, r * 0.16f);
+    const float pulse = skip_progress_ > 0.0f ? 1.0f : 0.55f + 0.25f * std::sin(static_cast<float>(ImGui::GetTime()) * 3.0f);
+    dl->AddCircle(c, r, IM_COL32(255, 255, 255, alpha(0.25f * pulse)), 48, thick);
+    if (skip_progress_ > 0.0f) {
+        const float start = -std::numbers::pi_v<float> / 2.0f;
+        dl->PathArcTo(c, r, start, start + skip_progress_ * 2.0f * std::numbers::pi_v<float>, 48);
+        dl->PathStroke(IM_COL32(255, 255, 255, alpha(1.0f)), 0, thick);
+    }
+    if (!display_.touch_controls()) {
+        const float inner = r - thick * 1.5f;
+        draw_face_glyph(dl, c, inner, kCircle, display_.button_glyphs());
+    } else {
+        dl->AddCircleFilled(c, r * 0.3f, IM_COL32(255, 255, 255, alpha(0.8f)), 24);  // a fingertip
+    }
+    dl->AddText({c.x + r + h * 0.6f, c.y - text.y * 0.5f}, IM_COL32(255, 255, 255, alpha(0.95f)), label);
+    for (int i = first_vertex; i < dl->VtxBuffer.Size; ++i) {
+        ImU32& col = dl->VtxBuffer[i].col;
+        const auto a = static_cast<ImU32>(static_cast<float>((col >> IM_COL32_A_SHIFT) & 0xFF) * std::clamp(skip_alpha_, 0.0f, 1.0f));
+        col = (col & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+    }
 }
 
 void Overlay::draw_fps() {

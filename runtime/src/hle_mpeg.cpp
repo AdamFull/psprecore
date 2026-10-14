@@ -4,11 +4,15 @@
 // access units (AVC video, ATRAC audio) out of it. This module implements the ring buffer and a demuxer with
 // real timestamps, so playback lasts as long as the movie and ends the way the game expects. Pictures and
 // sound come from the cooked movie (AV1 + Vorbis, see cccook); without it frames are black and audio silent.
+//
+// Skipping (skip_movie): the game's stream callback keeps reading the movie file to its end, but the data is
+// dropped and no further access units are handed out, so the game sees the stream end as if it had played out.
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <span>
 
 #include "audio/vorbis.hpp"
 #include "psprecore/formats/cooked.hpp"
@@ -43,6 +47,10 @@ struct Mpeg {
     std::uint32_t handle = 0, ringbuffer = 0;
     std::uint64_t written = 0, freed = 0;  // cumulative packet counts
     bool eof = false;
+    std::uint64_t key = 0;               // the movie (cooked::fnv1a64 of its PSMF header)
+    bool skipping = false;               // skip_movie: drop the rest of the stream
+    bool decoding = false;               // a frame was decoded since the video stream was registered
+    std::uint64_t last_decode_vblank = 0;
     psmf::Demuxer demux;
     bool registered[2] = {};
     int next_stream_id = 1;
@@ -88,6 +96,7 @@ void release_packets() {
 
 // Pops the next complete unit of a stream, or returns false (no data yet / end of stream).
 bool next_unit(int stream, AccessUnit& out) {
+    if (g_mpeg.skipping) return false;
     auto& units = g_mpeg.demux.units(static_cast<psmf::Stream>(stream));
     if (units.empty() && g_mpeg.eof) g_mpeg.demux.finish();
     if (units.empty()) return false;
@@ -140,29 +149,44 @@ void Create(Context& c) {
     if (ring) mem().write32(ring + kMpeg, mpeg);
     ret(c, 0);
 }
-void Delete(Context& c) { ret(c, 0); }
+void Delete(Context& c) {
+    g_mpeg.skipping = false;
+    g_mpeg.decoding = false;
+    ret(c, 0);
+}
 
 // sceMpegRingbufferPut(ringbuffer, packets, available): fills packets through the guest callback.
 void RingbufferPut(Context& c) {
     const std::uint32_t r = arg(c, 0);
     std::uint32_t wanted = std::min(arg(c, 1), arg(c, 2));
+    // Skipping: the game streams a little per frame and ends the movie only once its callback has read the whole
+    // file, so read (and drop) many of its chunks per call. Its callback takes at most what it asked for.
+    if (g_mpeg.skipping) wanted *= 64;
+    const std::uint32_t chunk_limit = std::min(arg(c, 1), arg(c, 2));
     const std::uint32_t packets = mem().read32(r + kPackets), data = mem().read32(r + kData);
     const std::uint32_t callback = mem().read32(r + kCallback), callback_arg = mem().read32(r + kCallbackArg);
     g_mpeg.ringbuffer = r;
     std::uint32_t added = 0;
     while (wanted > 0 && packets && callback) {
         const std::uint32_t slot = static_cast<std::uint32_t>(g_mpeg.written % packets);
-        const std::uint32_t chunk = std::min(wanted, packets - slot);
+        const std::uint32_t chunk = std::min({wanted, packets - slot, chunk_limit});
         const auto got = static_cast<std::int32_t>(kernel().call_guest(callback, {data + slot * kPacketSize, chunk, callback_arg}));
         if (got <= 0) {
-            if (got == 0) g_mpeg.eof = true;
+            if (got == 0 && !g_mpeg.eof) {
+                g_mpeg.eof = true;
+                std::fprintf(stderr, "sceMpeg: end of stream at vblank %llu\n",
+                             static_cast<unsigned long long>(kernel().vblank_count()));
+            }
             break;
         }
         const std::uint32_t n = std::min(static_cast<std::uint32_t>(got), chunk);
-        for (std::uint32_t i = 0; i < n; ++i)
-            g_mpeg.demux.feed({reinterpret_cast<const std::byte*>(mem().ptr(data + (slot + i) * kPacketSize)), kPacketSize},
-                              g_mpeg.written + i);
+        if (!g_mpeg.skipping)
+            for (std::uint32_t i = 0; i < n; ++i)
+                g_mpeg.demux.feed({reinterpret_cast<const std::byte*>(mem().ptr(data + (slot + i) * kPacketSize)),
+                                   kPacketSize},
+                                  g_mpeg.written + i);
         g_mpeg.written += n;
+        if (g_mpeg.skipping) g_mpeg.freed = g_mpeg.written;  // dropped as soon as read
         added += n;
         wanted -= n;
         if (n < chunk) break;
@@ -193,6 +217,11 @@ void QueryStreamOffset(Context& c) {
     g_mpeg.audio = audio::VorbisStream::open(cooked::movie_audio_path(cooked_root(), key));
     g_mpeg.frame.clear();
     g_mpeg.have_audio_base = false;
+    g_mpeg.key = key;
+    g_mpeg.skipping = false;
+    g_mpeg.decoding = false;
+    std::fprintf(stderr, "sceMpeg: movie %016llX at vblank %llu\n", static_cast<unsigned long long>(key),
+                 static_cast<unsigned long long>(kernel().vblank_count()));
     if (!g_mpeg.video)
         std::fprintf(stderr, "sceMpeg: no cooked movie %s (run cccook); showing black\n",
                      cooked::movie_video_path(cooked_root(), key).string().c_str());
@@ -209,6 +238,7 @@ void RegistStream(Context& c) {
 void UnRegistStream(Context& c) {
     const int type = g_mpeg.stream_type[arg(c, 1) & 15];
     if (type == kAvc || type == kAtrac) g_mpeg.registered[type] = false;
+    if (type == kAvc) g_mpeg.decoding = false;  // the game is done with the movie
     release_packets();
     ret(c, 0);
 }
@@ -265,6 +295,8 @@ void AvcDecodeMode(Context& c) {
 // (black without cooked media). Writes 480x272 pixels in the pixel mode chosen by sceMpegAvcDecodeMode.
 void AvcDecode(Context& c) {
     mark_guest_written_all();  // the decoded frame lands in the game's buffer
+    g_mpeg.decoding = true;
+    g_mpeg.last_decode_vblank = kernel().vblank_count();
     const std::uint32_t width = arg(c, 2), buffer = arg(c, 3) ? mem().read32(arg(c, 3)) : 0;
     if (g_mpeg.video && g_mpeg.video->next(g_mpeg.frame)) g_mpeg.frame_width = g_mpeg.video->width();
     if (buffer && width) {
@@ -349,5 +381,30 @@ constexpr HleBinding kBindings[] = {
 }  // namespace
 
 void hle_install_mpeg() { hle_bind(kBindings); }
+
+namespace {
+nx::vector<std::uint64_t> g_unskippable;  // set_unskippable_movies
+}  // namespace
+
+bool movie_playing() {
+    // A movie is on screen while the game decodes its frames (it stops at the end without telling sceMpeg).
+    return g_mpeg.registered[kAvc] && g_mpeg.decoding && !g_mpeg.skipping &&
+           kernel().vblank_count() - g_mpeg.last_decode_vblank < 30;
+}
+
+bool movie_skippable() {
+    return movie_playing() && std::find(g_unskippable.begin(), g_unskippable.end(), g_mpeg.key) == g_unskippable.end();
+}
+
+void set_unskippable_movies(std::span<const std::uint64_t> keys) { g_unskippable.assign(keys.begin(), keys.end()); }
+
+void skip_movie() {
+    if (!movie_playing()) return;
+    std::fprintf(stderr, "sceMpeg: movie skipped\n");
+    g_mpeg.skipping = true;
+    g_mpeg.demux.reset();
+    g_mpeg.freed = g_mpeg.written;
+    sync_ring();
+}
 
 }  // namespace psprecore::rt

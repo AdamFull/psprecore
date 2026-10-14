@@ -28,6 +28,7 @@ public:
     std::uint32_t buttons() const;           // PSP button bits (PspButton)
     bool stick(float& x, float& y) const;     // -1..1 while the stick is held
     bool take_menu_request();
+    bool free_touch() const;  // a finger is down outside every control (on the picture)
 
     void draw(ImDrawList* list, ButtonGlyphs glyphs) const;
 
@@ -58,6 +59,7 @@ private:
     static constexpr int kMinHoldPolls = 3;
     std::uint32_t held_bits_ = 0;
     int hold_polls_[32] = {};
+    int free_hold_polls_ = 0;  // a finger touched the picture lately
     bool menu_request_ = false;
 };
 

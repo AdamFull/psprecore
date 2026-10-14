@@ -55,6 +55,8 @@ public:
     void forget_last_image();
     // True once per press of Escape/F1 or the gamepad Guide button (or both stick clicks).
     bool take_menu_request();
+    // A finger on the picture rather than on a touch control (e.g. held to skip a movie).
+    bool screen_held() const;
     void set_fullscreen(bool on);  // borderless, at the desktop resolution
     bool fullscreen() const;
     // Off: frames are shown as soon as they are ready (mailbox, or immediate with tearing where the GPU offers
