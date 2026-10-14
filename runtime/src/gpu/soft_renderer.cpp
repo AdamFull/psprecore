@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <thread>
 
 #include "ff7cc/runtime/memory.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/threading/thread_pool.h"
 
 namespace ff7cc::rt::gpu {
 
@@ -148,30 +151,92 @@ std::uint32_t logic_op(int op, std::uint32_t s, std::uint32_t d) {
     }
 }
 
+int g_threads = 0;  // set_soft_renderer_threads
+
+// The rows a rasterizer thread owns: 16-row blocks, every `count`-th starting at block `index`.
+struct Band {
+    int index = 0, count = 1;
+
+    bool owns(int y) const { return count == 1 || (y >> 4) % count == index; }
+    // The first owned row at or after y (y >= 0).
+    int first(int y) const {
+        if (count == 1) return y;
+        const int block = y >> 4, owner = block % count;
+        return owner == index ? y : (block + (index - owner + count) % count) << 4;
+    }
+    int next(int y) const { return ((y + 1) & 15) ? y + 1 : first(y + 1); }
+};
+
+// A primitive waiting for flush(): screen-space vertices and the state of the draw it came from.
+struct Queued {
+    enum class Kind : std::uint8_t { Triangle, Sprite, Line, Point } kind;
+    std::uint32_t setup;
+    ScreenVertex v[4];  // triangle: a, b, c, provoking (flat colors); sprite and line: a, b; point: a
+};
+
+// A framebuffer or depth buffer region queued drawing writes: guest addresses [begin, end), and the layout that
+// maps them to pixels (a band owns the same address in every draw only when the layout is the same).
+struct TargetRegion {
+    const std::uint8_t* begin;
+    const std::uint8_t* end;
+    const std::uint8_t* base;
+    int row_bytes, pixel_bytes;
+};
+
 class SoftRenderer final : public ge::Renderer {
 public:
-    explicit SoftRenderer(GuestMemory& memory) : memory_(memory) {}
+    explicit SoftRenderer(GuestMemory& memory) : memory_(memory) {
+        unsigned threads = g_threads > 0 ? static_cast<unsigned>(g_threads) : std::thread::hardware_concurrency();
+        threads = std::clamp(threads, 1u, 8u);
+        if (threads > 1) {
+            nx::thread_pool::config config;
+            config.thread_count = threads;
+            config.name = "ff7cc-raster";
+            pool_ = std::make_unique<nx::thread_pool>(config);
+        }
+        threads_ = static_cast<int>(threads);
+    }
+    ~SoftRenderer() override { flush(); }
 
     void draw(const State& s, Prim prim, const nx::vector<Vertex>& vertices) override;
     void transfer(const State& s) override;
+    void flush() override;
 
 private:
     void configure(const State& s);
     ScreenVertex project(const ClipVertex& v) const;
 
+    // Queueing (draw time).
     void triangle(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c);
-    void raster_triangle(const ScreenVertex& a, const ScreenVertex& b, const ScreenVertex& c, const ScreenVertex& provoking);
     void sprite(const ClipVertex& a, const ClipVertex& b);
     void line(const ClipVertex& a, const ClipVertex& b);
     void point(const ClipVertex& a);
-    void pick_level(float texels_per_pixel, int& level, bool& linear) const;
-    void pixel(int x, int y, int z, const float color[4], const float spec[3], float fog, float u, float v,
-               int level, bool linear);
+    void queue(Queued::Kind kind, const ScreenVertex* v, int count);
+    bool overlaps_queued(const std::uint8_t* begin, const std::uint8_t* end) const;
+    void add_target(const TargetRegion& region);
+
+    // Rasterization (flush time, one call per band).
+    void rasterize(Band band) const;
+    void raster_triangle(const Setup& d, Band band, const ScreenVertex& a, const ScreenVertex& b, const ScreenVertex& c,
+                         const ScreenVertex& provoking) const;
+    void raster_sprite(const Setup& d, Band band, const ScreenVertex& a, const ScreenVertex& b) const;
+    void raster_line(const Setup& d, Band band, const ScreenVertex& a, const ScreenVertex& b) const;
+    void raster_point(const Setup& d, Band band, const ScreenVertex& a) const;
+    static void pick_level(const Setup& d, float texels_per_pixel, int& level, bool& linear);
+    static void pixel(const Setup& d, int x, int y, int z, const float color[4], const float spec[3], float fog, float u,
+                      float v, int level, bool linear);
 
     GuestMemory& memory_;
     Setup d_;
     VertexPipeline vp_;
     nx::vector<ClipVertex> clip_;
+
+    nx::vector<Setup> setups_;    // states of the queued draws
+    nx::vector<Queued> queue_;
+    nx::vector<TargetRegion> targets_;  // what the queue writes
+    int current_setup_ = -1;      // setups_ index of the draw being queued (-1: not added yet)
+    int threads_ = 1;
+    std::unique_ptr<nx::thread_pool> pool_;
 };
 
 std::unique_ptr<ge::Renderer> make_soft_renderer_impl(GuestMemory& memory) {
@@ -296,6 +361,15 @@ ScreenVertex SoftRenderer::project(const ClipVertex& v) const {
 
 void SoftRenderer::draw(const State& s, Prim prim, const nx::vector<Vertex>& vertices) {
     configure(s);
+    current_setup_ = -1;
+    if (d_.texture && !queue_.empty())  // render to texture: the queued drawing comes first
+        for (int l = 0; l < d_.sampler.levels(); ++l) {
+            const std::uint8_t* data = d_.sampler.level_data(l);
+            if (overlaps_queued(data, data + d_.sampler.level_size(l))) {
+                flush();
+                break;
+            }
+        }
     clip_.resize(vertices.size());
     for (std::size_t i = 0; i < vertices.size(); ++i) clip_[i] = vp_.transform(s, vertices[i]);
     const auto& v = clip_;
@@ -331,7 +405,8 @@ void SoftRenderer::draw(const State& s, Prim prim, const nx::vector<Vertex>& ver
 void SoftRenderer::triangle(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c) {
     if (d_.through) {
         const ScreenVertex sc = project(c);
-        raster_triangle(project(a), project(b), sc, sc);
+        const ScreenVertex v[4] = {project(a), project(b), sc, sc};
+        queue(Queued::Kind::Triangle, v, 4);
         return;
     }
     // Clip against the near plane (z >= -w); the screen-space rasterizer handles the other planes via scissor.
@@ -368,27 +443,34 @@ void SoftRenderer::triangle(const ClipVertex& a, const ClipVertex& b, const Clip
     ScreenVertex provoking{};  // flat shading takes the last vertex's colors, even if it was clipped away
     std::copy(std::begin(c.color), std::end(c.color), provoking.color);
     std::copy(std::begin(c.spec), std::end(c.spec), provoking.spec);
-    for (int i = 1; i + 1 < count; ++i) raster_triangle(sv[0], sv[i], sv[i + 1], provoking);
+    for (int i = 1; i + 1 < count; ++i) {
+        const ScreenVertex v[4] = {sv[0], sv[i], sv[i + 1], provoking};
+        queue(Queued::Kind::Triangle, v, 4);
+    }
 }
 
-void SoftRenderer::pick_level(float texels_per_pixel, int& level, bool& linear) const {
+void SoftRenderer::pick_level(const Setup& d, float texels_per_pixel, int& level, bool& linear) {
     float lod = texels_per_pixel > 0.0f ? std::log2(texels_per_pixel) : 0.0f;
-    lod = d_.lod_mode == 1 ? d_.lod_bias : lod + d_.lod_bias;
+    lod = d.lod_mode == 1 ? d.lod_bias : lod + d.lod_bias;
     if (lod > 0.0f) {
-        linear = d_.min_linear;
-        level = d_.mipmap ? std::clamp(static_cast<int>(lod + 0.5f), 0, d_.sampler.levels() - 1) : 0;
+        linear = d.min_linear;
+        level = d.mipmap ? std::clamp(static_cast<int>(lod + 0.5f), 0, d.sampler.levels() - 1) : 0;
     } else {
-        linear = d_.mag_linear;
+        linear = d.mag_linear;
         level = 0;
     }
 }
 
-void SoftRenderer::raster_triangle(const ScreenVertex& a0, const ScreenVertex& b0, const ScreenVertex& c0,
-                                   const ScreenVertex& provoking) {
+void SoftRenderer::raster_triangle(const Setup& d, Band band, const ScreenVertex& a0, const ScreenVertex& b0,
+                                   const ScreenVertex& c0, const ScreenVertex& provoking) const {
     float area = (b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y);
     if (area == 0.0f || !std::isfinite(area)) return;
+    // Rows first: most triangles are small and lie in other threads' bands.
+    const int y0 = std::max(d.sy1, static_cast<int>(std::floor(std::min({a0.y, b0.y, c0.y}))));
+    const int y1 = std::min(d.sy2, static_cast<int>(std::ceil(std::max({a0.y, b0.y, c0.y}))));
+    if (y0 > y1 || band.first(y0) > y1) return;
     // Screen y points down, so positive area is clockwise on screen. CULL=1 keeps clockwise faces.
-    if (d_.cull && ((d_.cull_mode == 1) ? area < 0.0f : area > 0.0f)) return;
+    if (d.cull && ((d.cull_mode == 1) ? area < 0.0f : area > 0.0f)) return;
     const ScreenVertex* a = &a0;
     const ScreenVertex* b = &b0;
     const ScreenVertex* c = &c0;
@@ -399,20 +481,18 @@ void SoftRenderer::raster_triangle(const ScreenVertex& a0, const ScreenVertex& b
 
     int level = 0;
     bool linear = false;
-    if (d_.texture) {
-        const float w = static_cast<float>(d_.sampler.width()), h = static_cast<float>(d_.sampler.height());
+    if (d.texture) {
+        const float w = static_cast<float>(d.sampler.width()), h = static_cast<float>(d.sampler.height());
         const float ua = a->s / a->q * w, va = a->t / a->q * h;
         const float ub = b->s / b->q * w, vb = b->t / b->q * h;
         const float uc = c->s / c->q * w, vc = c->t / c->q * h;
         const float tex_area = std::fabs((ub - ua) * (vc - va) - (uc - ua) * (vb - va));
-        pick_level(std::sqrt(tex_area / area), level, linear);
+        pick_level(d, std::sqrt(tex_area / area), level, linear);
     }
 
-    const int x0 = std::max(d_.sx1, static_cast<int>(std::floor(std::min({a->x, b->x, c->x}))));
-    const int x1 = std::min(d_.sx2, static_cast<int>(std::ceil(std::max({a->x, b->x, c->x}))));
-    const int y0 = std::max(d_.sy1, static_cast<int>(std::floor(std::min({a->y, b->y, c->y}))));
-    const int y1 = std::min(d_.sy2, static_cast<int>(std::ceil(std::max({a->y, b->y, c->y}))));
-    if (x0 > x1 || y0 > y1) return;
+    const int x0 = std::max(d.sx1, static_cast<int>(std::floor(std::min({a->x, b->x, c->x}))));
+    const int x1 = std::min(d.sx2, static_cast<int>(std::ceil(std::max({a->x, b->x, c->x}))));
+    if (x0 > x1) return;
 
     // Edge (p -> q) owns its pixels-on-the-line when it is a top or left edge.
     const auto top_left = [](const ScreenVertex* p, const ScreenVertex* q) {
@@ -421,11 +501,30 @@ void SoftRenderer::raster_triangle(const ScreenVertex& a0, const ScreenVertex& b
     };
     const bool tl0 = top_left(b, c), tl1 = top_left(c, a), tl2 = top_left(a, b);
     const float inv_area = 1.0f / area;
-    const bool flat = !d_.gouraud;
+    const bool flat = !d.gouraud;
     float color[4], spec[3];
-    for (int y = y0; y <= y1; ++y) {
+    // The pixels of a row where an edge function can be >= 0, from the edge equation, with two pixels of margin:
+    // only a bound, the exact test below decides.
+    const auto narrow = [](const ScreenVertex* p, const ScreenVertex* q, float py, int& lo, int& hi) {
+        const float k = (q->x - p->x) * (py - p->y), dy = q->y - p->y;
+        if (dy == 0.0f) {
+            if (k < 0.0f) hi = lo - 1;  // w = k for the whole row
+            return;
+        }
+        const float edge = p->x + k / dy - 0.5f;  // x where px = x + 0.5 crosses the edge
+        if (!std::isfinite(edge)) return;
+        const float limit = dy > 0.0f ? std::floor(edge) + 2.0f : std::ceil(edge) - 2.0f;
+        if (limit >= 1e9f || limit <= -1e9f) return;
+        if (dy > 0.0f) hi = std::min(hi, static_cast<int>(limit));
+        else lo = std::max(lo, static_cast<int>(limit));
+    };
+    for (int y = band.first(y0); y <= y1; y = band.next(y)) {
         const float py = static_cast<float>(y) + 0.5f;
-        for (int x = x0; x <= x1; ++x) {
+        int xa = x0, xb = x1;
+        narrow(b, c, py, xa, xb);
+        narrow(c, a, py, xa, xb);
+        narrow(a, b, py, xa, xb);
+        for (int x = xa; x <= xb; ++x) {
             const float px = static_cast<float>(x) + 0.5f;
             const float w0 = (c->x - b->x) * (py - b->y) - (c->y - b->y) * (px - b->x);
             const float w1 = (a->x - c->x) * (py - c->y) - (a->y - c->y) * (px - c->x);
@@ -442,19 +541,23 @@ void SoftRenderer::raster_triangle(const ScreenVertex& a0, const ScreenVertex& b
                 for (int k = 0; k < 3; ++k) spec[k] = l0 * a->spec[k] + l1 * b->spec[k] + l2 * c->spec[k];
             }
             float u = 0, v = 0;
-            if (d_.texture) {
+            if (d.texture) {
                 const float q = l0 * a->q + l1 * b->q + l2 * c->q;
                 u = (l0 * a->s + l1 * b->s + l2 * c->s) / q;
                 v = (l0 * a->t + l1 * b->t + l2 * c->t) / q;
             }
             const float fog = l0 * a->fog + l1 * b->fog + l2 * c->fog;
-            pixel(x, y, z, color, spec, fog, u, v, level, linear);
+            pixel(d, x, y, z, color, spec, fog, u, v, level, linear);
         }
     }
 }
 
 void SoftRenderer::sprite(const ClipVertex& ca, const ClipVertex& cb) {
-    const ScreenVertex a = project(ca), b = project(cb);
+    const ScreenVertex v[2] = {project(ca), project(cb)};
+    queue(Queued::Kind::Sprite, v, 2);
+}
+
+void SoftRenderer::raster_sprite(const Setup& d, Band band, const ScreenVertex& a, const ScreenVertex& b) const {
     float x0 = a.x, x1 = b.x, y0 = a.y, y1 = b.y;
     float u0 = a.s / a.q, u1 = b.s / b.q, v0 = a.t / a.q, v1 = b.t / b.q;
     if (x0 > x1) {
@@ -466,30 +569,36 @@ void SoftRenderer::sprite(const ClipVertex& ca, const ClipVertex& cb) {
         std::swap(v0, v1);
     }
     if (x1 - x0 <= 0.0f || y1 - y0 <= 0.0f) return;
-    const int ix0 = std::max(d_.sx1, static_cast<int>(std::ceil(x0 - 0.5f)));
-    const int ix1 = std::min(d_.sx2, static_cast<int>(std::ceil(x1 - 0.5f)) - 1);
-    const int iy0 = std::max(d_.sy1, static_cast<int>(std::ceil(y0 - 0.5f)));
-    const int iy1 = std::min(d_.sy2, static_cast<int>(std::ceil(y1 - 0.5f)) - 1);
+    const int iy0 = std::max(d.sy1, static_cast<int>(std::ceil(y0 - 0.5f)));
+    const int iy1 = std::min(d.sy2, static_cast<int>(std::ceil(y1 - 0.5f)) - 1);
+    if (iy0 > iy1 || band.first(iy0) > iy1) return;
+    const int ix0 = std::max(d.sx1, static_cast<int>(std::ceil(x0 - 0.5f)));
+    const int ix1 = std::min(d.sx2, static_cast<int>(std::ceil(x1 - 0.5f)) - 1);
     const float du = (u1 - u0) / (x1 - x0), dv = (v1 - v0) / (y1 - y0);
     int level = 0;
     bool linear = false;
-    if (d_.texture)
-        pick_level(std::max(std::fabs(du) * static_cast<float>(d_.sampler.width()),
-                            std::fabs(dv) * static_cast<float>(d_.sampler.height())),
+    if (d.texture)
+        pick_level(d,
+                   std::max(std::fabs(du) * static_cast<float>(d.sampler.width()),
+                            std::fabs(dv) * static_cast<float>(d.sampler.height())),
                    level, linear);
     const int z = static_cast<int>(b.z);
-    for (int y = iy0; y <= iy1; ++y) {
+    for (int y = band.first(iy0); y <= iy1; y = band.next(y)) {
         const float v = v0 + (static_cast<float>(y) + 0.5f - y0) * dv;
         for (int x = ix0; x <= ix1; ++x) {
             const float u = u0 + (static_cast<float>(x) + 0.5f - x0) * du;
-            pixel(x, y, z, b.color, b.spec, b.fog, u, v, level, linear);
+            pixel(d, x, y, z, b.color, b.spec, b.fog, u, v, level, linear);
         }
     }
 }
 
 void SoftRenderer::line(const ClipVertex& ca, const ClipVertex& cb) {
     if (!d_.through && (ca.clip[2] + ca.clip[3] < 0.0f || cb.clip[2] + cb.clip[3] < 0.0f)) return;
-    const ScreenVertex a = project(ca), b = project(cb);
+    const ScreenVertex v[2] = {project(ca), project(cb)};
+    queue(Queued::Kind::Line, v, 2);
+}
+
+void SoftRenderer::raster_line(const Setup& d, Band band, const ScreenVertex& a, const ScreenVertex& b) const {
     const float dx = b.x - a.x, dy = b.y - a.y;
     const int steps = static_cast<int>(std::ceil(std::max(std::fabs(dx), std::fabs(dy))));
     if (steps <= 0 || steps > 4096) return;
@@ -497,27 +606,95 @@ void SoftRenderer::line(const ClipVertex& ca, const ClipVertex& cb) {
     for (int i = 0; i < steps; ++i) {
         const float t = static_cast<float>(i) / static_cast<float>(steps);
         const int x = static_cast<int>(std::floor(a.x + dx * t)), y = static_cast<int>(std::floor(a.y + dy * t));
-        if (x < d_.sx1 || x > d_.sx2 || y < d_.sy1 || y > d_.sy2) continue;
-        for (int k = 0; k < 4; ++k) color[k] = d_.gouraud ? a.color[k] + (b.color[k] - a.color[k]) * t : b.color[k];
+        if (x < d.sx1 || x > d.sx2 || y < d.sy1 || y > d.sy2 || !band.owns(y)) continue;
+        for (int k = 0; k < 4; ++k) color[k] = d.gouraud ? a.color[k] + (b.color[k] - a.color[k]) * t : b.color[k];
         for (int k = 0; k < 3; ++k) spec[k] = a.spec[k] + (b.spec[k] - a.spec[k]) * t;
         const float q = a.q + (b.q - a.q) * t;
         const float u = (a.s + (b.s - a.s) * t) / q, v = (a.t + (b.t - a.t) * t) / q;
-        pixel(x, y, static_cast<int>(a.z + (b.z - a.z) * t), color, spec, a.fog + (b.fog - a.fog) * t, u, v, 0,
-              d_.mag_linear);
+        pixel(d, x, y, static_cast<int>(a.z + (b.z - a.z) * t), color, spec, a.fog + (b.fog - a.fog) * t, u, v, 0,
+              d.mag_linear);
     }
 }
 
 void SoftRenderer::point(const ClipVertex& ca) {
     if (!d_.through && ca.clip[2] + ca.clip[3] < 0.0f) return;
-    const ScreenVertex a = project(ca);
-    const int x = static_cast<int>(std::floor(a.x)), y = static_cast<int>(std::floor(a.y));
-    if (x < d_.sx1 || x > d_.sx2 || y < d_.sy1 || y > d_.sy2) return;
-    pixel(x, y, static_cast<int>(a.z), a.color, a.spec, a.fog, a.s / a.q, a.t / a.q, 0, false);
+    const ScreenVertex v = project(ca);
+    queue(Queued::Kind::Point, &v, 1);
 }
 
-void SoftRenderer::pixel(int x, int y, int z, const float color[4], const float spec[3], float fog, float u,
-                         float v, int level, bool linear) {
-    const Setup& d = d_;
+void SoftRenderer::raster_point(const Setup& d, Band band, const ScreenVertex& a) const {
+    const int x = static_cast<int>(std::floor(a.x)), y = static_cast<int>(std::floor(a.y));
+    if (x < d.sx1 || x > d.sx2 || y < d.sy1 || y > d.sy2 || !band.owns(y)) return;
+    pixel(d, x, y, static_cast<int>(a.z), a.color, a.spec, a.fog, a.s / a.q, a.t / a.q, 0, false);
+}
+
+// ---- queue -------------------------------------------------------------------------------------------------
+
+bool SoftRenderer::overlaps_queued(const std::uint8_t* begin, const std::uint8_t* end) const {
+    for (const TargetRegion& t : targets_)
+        if (begin < t.end && t.begin < end) return true;
+    return false;
+}
+
+// Queued drawing into overlapping memory through a different layout (another stride or pixel size) would map the
+// same bytes to rows of different bands: such drawing is completed first.
+void SoftRenderer::add_target(const TargetRegion& region) {
+    for (const TargetRegion& t : targets_) {
+        const bool same_layout = t.base == region.base && t.row_bytes == region.row_bytes && t.pixel_bytes == region.pixel_bytes;
+        if (same_layout && t.begin == region.begin && t.end == region.end) return;  // already listed
+        if (!same_layout && region.begin < t.end && t.begin < region.end) {
+            flush();
+            break;
+        }
+    }
+    targets_.push_back(region);
+}
+
+void SoftRenderer::queue(Queued::Kind kind, const ScreenVertex* v, int count) {
+    if (current_setup_ < 0) {
+        const Setup& d = d_;
+        if (d.sx1 > d.sx2 || d.sy1 > d.sy2) return;  // empty scissor: nothing to draw
+        const int fb_row = d.fb_stride * d.bpp, z_row = d.z_stride * 2;
+        add_target({d.fb + d.sy1 * fb_row, d.fb + (d.sy2 + 1) * fb_row, d.fb, fb_row, d.bpp});
+        if (d.depth_test || d.clear_depth || d.z_write)
+            add_target({d.zb + d.sy1 * z_row, d.zb + (d.sy2 + 1) * z_row, d.zb, z_row, 2});
+        current_setup_ = static_cast<int>(setups_.size());
+        setups_.push_back(d_);
+    }
+    Queued& q = queue_.emplace_back();
+    q.kind = kind;
+    q.setup = static_cast<std::uint32_t>(current_setup_);
+    std::copy(v, v + count, q.v);
+}
+
+void SoftRenderer::flush() {
+    if (!queue_.empty()) {
+        if (pool_)
+            pool_->parallel_for(0, static_cast<std::size_t>(threads_), 1,
+                                [this](std::size_t i) { rasterize(Band{static_cast<int>(i), threads_}); });
+        else
+            rasterize(Band{});
+    }
+    queue_.clear();
+    setups_.clear();
+    targets_.clear();
+    current_setup_ = -1;
+}
+
+void SoftRenderer::rasterize(Band band) const {
+    for (const Queued& q : queue_) {
+        const Setup& d = setups_[q.setup];
+        switch (q.kind) {
+            case Queued::Kind::Triangle: raster_triangle(d, band, q.v[0], q.v[1], q.v[2], q.v[3]); break;
+            case Queued::Kind::Sprite: raster_sprite(d, band, q.v[0], q.v[1]); break;
+            case Queued::Kind::Line: raster_line(d, band, q.v[0], q.v[1]); break;
+            case Queued::Kind::Point: raster_point(d, band, q.v[0]); break;
+        }
+    }
+}
+
+void SoftRenderer::pixel(const Setup& d, int x, int y, int z, const float color[4], const float spec[3], float fog,
+                         float u, float v, int level, bool linear) {
     std::uint8_t* fp = d.fb + (static_cast<std::ptrdiff_t>(y) * d.fb_stride + x) * d.bpp;
     std::uint8_t* zp = d.zb + (static_cast<std::ptrdiff_t>(y) * d.z_stride + x) * 2;
     const std::uint32_t dst = read_pixel(fp, d.fb_format);
@@ -637,6 +814,7 @@ void SoftRenderer::pixel(int x, int y, int z, const float color[4], const float 
 }
 
 void SoftRenderer::transfer(const State& s) {
+    flush();  // the copy reads and writes memory queued drawing may write
     const std::uint32_t src_w = s.param(ge::TRANSFERSRCW), dst_w = s.param(ge::TRANSFERDSTW);
     const std::uint32_t src = ge::vram_canonical(((src_w & 0xFF0000) << 8) | (s.param(ge::TRANSFERSRC) & 0xFFFFF0));
     const std::uint32_t dst = ge::vram_canonical(((dst_w & 0xFF0000) << 8) | (s.param(ge::TRANSFERDST) & 0xFFFFF0));
@@ -653,5 +831,7 @@ void SoftRenderer::transfer(const State& s) {
 }  // namespace
 
 std::unique_ptr<ge::Renderer> make_soft_renderer(GuestMemory& memory) { return make_soft_renderer_impl(memory); }
+
+void set_soft_renderer_threads(int threads) { g_threads = threads; }
 
 }  // namespace ff7cc::rt::gpu

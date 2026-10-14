@@ -103,6 +103,10 @@ public:
     virtual ~Renderer() = default;
     virtual void draw(const State& state, Prim prim, const nx::vector<Vertex>& vertices) = 0;
     virtual void transfer(const State& state) = 0;  // TRANSFERSTART block copy
+    // Completes queued drawing. A renderer may defer work (the GE runs asynchronously on the PSP too); it is
+    // flushed wherever the game can observe the results: a list's end, signal/finish handlers, sceGeDrawSync /
+    // sceGeListSync, the display, and GE reads of VRAM the queued work may write.
+    virtual void flush() {}
 };
 
 // Normalizes VRAM mirror addresses (0x04200000 and up) to the 2 MiB of real VRAM.
@@ -146,6 +150,9 @@ public:
     const State& state() const { return state_; }
     const Stats& stats() const { return stats_; }
     void set_renderer(std::unique_ptr<Renderer> renderer) { renderer_ = std::move(renderer); }
+    void flush() {
+        if (renderer_) renderer_->flush();
+    }
 
     // Optional listeners.
     std::function<void(const Draw&)> on_draw;

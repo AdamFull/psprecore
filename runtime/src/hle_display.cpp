@@ -75,6 +75,7 @@ ge::Processor& gpu() {
 void SetMode(Context& c) { ret(c, 0); }
 void SetFrameBuf(Context& c) {
     mark_guest_written_all();  // once per frame: catches CPU writes through uncached addresses
+    if (g_display.ge) g_display.ge->flush();  // the frame being shown is complete
     if (g_display.dump && g_display.frames == g_display.dump_frame) {
         const auto& st = gpu().stats();
         std::fprintf(g_display.dump, "--- end of frame %llu (totals: %llu lists, %llu draws, %llu vertices)\n",
@@ -117,8 +118,18 @@ void UpdateStallAddr(Context& c) {
     gpu().update_stall(static_cast<int>(arg(c, 0)), arg(c, 1));
     ret(c, 0);
 }
-void ListSync(Context& c) { ret(c, 0); }  // lists complete immediately until the renderer exists
-void DrawSync(Context& c) { ret(c, 0); }
+// Lists run to completion when enqueued; queued drawing completes here.
+void flush_renderer() {
+    if (g_display.ge) g_display.ge->flush();
+}
+void ListSync(Context& c) {
+    flush_renderer();
+    ret(c, 0);
+}
+void DrawSync(Context& c) {
+    flush_renderer();
+    ret(c, 0);
+}
 // sceGeSetCallback(SceGeCbParam*): {signal func, signal cookie, finish func, finish cookie}.
 void SetCallback(Context& c) {
     const std::uint32_t p = arg(c, 0);
@@ -202,6 +213,7 @@ void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly) {
 
 bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height) {
     if (!g_display.framebuffer) return false;
+    if (g_display.ge) g_display.ge->flush();
     width = 480;
     height = 272;
     rgba.resize(static_cast<std::size_t>(width) * height);

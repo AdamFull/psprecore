@@ -6,6 +6,7 @@
 //                                        changes; headless always uses the software renderer;
 //                                        compare runs both and screenshots show reference | Vulkan | difference)
 //       [--ge-dump-at VBLANK]           (writes ge_dump.txt for the first full frame after VBLANK)
+//       [--soft-threads N]              (software renderer threads; default: one per hardware thread, at most 8)
 //       [--profile VBLANK]              (Windows: samples where the host spends its time from VBLANK on and prints
 //                                        the hottest functions at exit)
 //       [--ge-bench VBLANK]             (captures the draws of the vblanks after VBLANK, times vertex decoding and
@@ -133,6 +134,10 @@ public:
     void transfer(const ff7cc::rt::ge::State& s) override {
         a_->transfer(s);
         b_->transfer(s);
+    }
+    void flush() override {
+        a_->flush();
+        b_->flush();
     }
 
 private:
@@ -468,6 +473,7 @@ int main(int argc, char** argv) {
             else if (a == "--ge-dump-at" && i + 1 < argc) ge_dump_vblank = parse_u64(argv[++i]);
             else if (a == "--ge-bench" && i + 1 < argc) ge_bench_vblank = parse_u64(argv[++i]);
             else if (a == "--profile" && i + 1 < argc) profile_vblank = parse_u64(argv[++i]);
+            else if (a == "--soft-threads" && i + 1 < argc) rt::gpu::set_soft_renderer_threads(static_cast<int>(parse_u64(argv[++i])));
             else if (a == "--state-hash" && i + 1 < argc) state_hash_every = parse_u64(argv[++i]);
             else if (a == "--ram-dump" && i + 2 < argc) {
                 ram_dump_vblank = parse_u64(argv[++i]);

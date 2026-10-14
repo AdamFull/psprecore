@@ -3,9 +3,11 @@
 // GE texture sampling for the software renderer: formats 5650/5551/4444/8888, CLUT4/8/16/32 and the PSP
 // DXT1/3/5 variants, swizzled layouts, wrap/clamp, nearest/bilinear and mip levels.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
+#include "core/foundation/core/foundation.h"
 #include "ff7cc/runtime/ge.hpp"
 
 namespace ff7cc::rt {
@@ -45,10 +47,20 @@ private:
     struct Level {
         const std::uint8_t* data = nullptr;
         int width = 1, height = 1, buffer_width = 0;
+        std::uint32_t row_bytes = 0, blocks_per_row = 1;  // plain formats: bytes per row, 16-byte swizzle blocks per row
     };
     std::uint32_t texel(const Level& level, int x, int y) const;
-    std::uint32_t clut(std::uint32_t index) const;
-    int wrap(int c, int size, bool clamp) const;
+    std::uint32_t clut(std::uint32_t index) const { return palette_[(index >> clut_shift_) & clut_mask_]; }
+    void build_palette();
+
+    // Sampling specialised per texel format and swizzle (chosen in setup); the generic path handles the rest.
+    using SampleFn = std::uint32_t (*)(const TextureSampler&, float u, float v, int level, bool linear);
+    template <int Format, bool Swizzled>
+    NX_FORCE_INLINE static std::uint32_t fetch(const TextureSampler& t, const Level& l, int x, int y);
+    template <int Format, bool Swizzled>
+    static std::uint32_t sample_fixed(const TextureSampler& t, float u, float v, int level, bool linear);
+    static std::uint32_t sample_generic(const TextureSampler& t, float u, float v, int level, bool linear);
+    SampleFn sample_fn_ = &sample_generic;
 
     Level level_[8];
     int levels_ = 1;
@@ -56,6 +68,12 @@ private:
     bool swizzled_ = false, clamp_u_ = false, clamp_v_ = false;
     std::uint32_t clut_format_ = 0;
     const std::uint8_t* clut_ = nullptr;
+    // The CLUT decoded to RGBA8 by masked index ((index >> shift) & mask; the start offset is applied), rebuilt only
+    // when the CLUT data or format change.
+    std::uint32_t clut_shift_ = 0, clut_mask_ = 0;
+    std::array<std::uint32_t, 256> palette_{};
+    std::array<std::uint8_t, 1024> palette_source_{};
+    std::uint32_t palette_format_ = 0, palette_count_ = 0;
 };
 
 }  // namespace ff7cc::rt::gpu

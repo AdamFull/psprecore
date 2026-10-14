@@ -269,6 +269,8 @@ void Processor::draw(std::uint32_t p) {
     stats_.vertices += count;
     if (on_draw) on_draw(Draw{0, static_cast<std::uint32_t>(prim), count, f.raw, vaddr_, iaddr_, &state_});
 
+    const auto in_vram = [](std::uint32_t a) { return (vram_canonical(a) & 0x0F000000) == 0x04000000; };
+    if (in_vram(vaddr_) || (f.index_size() && in_vram(iaddr_))) flush();  // vertices drawn into VRAM first
     const std::uint64_t decode_start = now_ns();
     float morph_weights[8];
     for (int i = 0; i < 8; ++i) morph_weights[i] = state_.flt(static_cast<std::uint8_t>(MORPHWEIGHT0 + i));
@@ -380,9 +382,11 @@ void Processor::run(List& l) {
                     switch (behaviour) {
                         case 1:  // wait: the GE resumes once the handler returns
                         case 2:  // no wait
+                            flush();
                             if (on_signal) on_signal(id);
                             break;
                         case 3:  // pause until sceGeContinue: not modelled, the list continues
+                            flush();
                             if (on_signal) on_signal(id);
                             [[fallthrough]];
                         default:
@@ -396,6 +400,7 @@ void Processor::run(List& l) {
                     break;
                 }
                 l.done = true;
+                flush();
                 if (l.finish_pending) {
                     l.finish_pending = false;
                     if (on_finish) on_finish(l.finish & 0xFFFF);
@@ -430,6 +435,7 @@ void Processor::run(List& l) {
                 const std::uint32_t addr = vram_canonical(((state_.param(CLUTADDRUPPER) & 0x0F0000) << 8) |
                                                           (state_.param(CLUTADDR) & 0xFFFFF0));
                 const std::uint32_t bytes = std::min<std::uint32_t>((p & 0x3F) * 32, 1024);
+                if ((addr & 0x0F000000) == 0x04000000) flush();  // VRAM: may be a render target
                 if (addr) std::memcpy(state_.clut.data(), memory_.ptr(addr), bytes);
                 break;
             }

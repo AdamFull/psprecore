@@ -70,6 +70,7 @@ void TextureSampler::setup(const ge::State& s, const GuestMemory& memory) {
     clamp_v_ = (wrap >> 8) & 1;
     clut_format_ = s.param(ge::CLUTFORMAT);
     clut_ = s.clut.data();
+    if (uses_clut()) build_palette();
     for (int i = 0; i < levels_; ++i) {
         const auto n = static_cast<std::uint8_t>(i);
         const std::uint32_t bufw = s.param(static_cast<std::uint8_t>(ge::TEXBUFWIDTH0 + n));
@@ -81,19 +82,65 @@ void TextureSampler::setup(const ge::State& s, const GuestMemory& memory) {
         l.width = 1 << std::min<std::uint32_t>(size & 15, 10);
         l.height = 1 << std::min<std::uint32_t>((size >> 8) & 15, 10);
         l.buffer_width = static_cast<int>(bufw & 0x7FF);
+        static constexpr std::uint32_t kBits[8] = {16, 16, 16, 32, 4, 8, 16, 32};
+        l.row_bytes = static_cast<std::uint32_t>(l.buffer_width) * kBits[format_ & 7] / 8;
+        l.blocks_per_row = std::max<std::uint32_t>(l.row_bytes / 16, 1);
+    }
+    // Specialised sampling for the plain (non-DXT) formats.
+    static constexpr SampleFn kFixed[8][2] = {
+        {&sample_fixed<0, false>, &sample_fixed<0, true>}, {&sample_fixed<1, false>, &sample_fixed<1, true>},
+        {&sample_fixed<2, false>, &sample_fixed<2, true>}, {&sample_fixed<3, false>, &sample_fixed<3, true>},
+        {&sample_fixed<4, false>, &sample_fixed<4, true>}, {&sample_fixed<5, false>, &sample_fixed<5, true>},
+        {&sample_fixed<6, false>, &sample_fixed<6, true>}, {&sample_fixed<7, false>, &sample_fixed<7, true>},
+    };
+    sample_fn_ = format_ < 8 ? kFixed[format_][swizzled_ ? 1 : 0] : &sample_generic;
+}
+
+// Entry k of the palette is CLUT entry (k | start); only the entries a texel can reach are decoded.
+void TextureSampler::build_palette() {
+    clut_shift_ = (clut_format_ >> 2) & 31;
+    clut_mask_ = (clut_format_ >> 8) & 0xFF;
+    static constexpr std::uint32_t kMaxIndex[4] = {15, 255, 65535, 0xFFFFFFFF};  // CLUT4/8/16/32
+    const std::uint32_t count = std::min(clut_mask_, kMaxIndex[(format_ - 4) & 3] >> clut_shift_) + 1;
+    if (count <= palette_count_ && clut_format_ == palette_format_ &&
+        std::memcmp(palette_source_.data(), clut_, palette_source_.size()) == 0)
+        return;
+    std::memcpy(palette_source_.data(), clut_, palette_source_.size());
+    palette_format_ = clut_format_;
+    palette_count_ = count;
+    const std::uint32_t start = ((clut_format_ >> 16) & 31) << 4;
+    for (std::uint32_t k = 0; k < count; ++k) {
+        const std::uint32_t index = k | start;
+        switch (clut_format_ & 3) {
+            case 0: palette_[k] = decode_5650(load16(clut_ + ((index * 2) & 1023))); break;
+            case 1: palette_[k] = decode_5551(load16(clut_ + ((index * 2) & 1023))); break;
+            case 2: palette_[k] = decode_4444(load16(clut_ + ((index * 2) & 1023))); break;
+            default: palette_[k] = load32(clut_ + ((index * 4) & 1023)); break;
+        }
     }
 }
 
-std::uint32_t TextureSampler::clut(std::uint32_t index) const {
-    const std::uint32_t shift = (clut_format_ >> 2) & 31, mask = (clut_format_ >> 8) & 0xFF;
-    const std::uint32_t start = ((clut_format_ >> 16) & 31) << 4;
-    index = ((index >> shift) & mask) | start;
-    switch (clut_format_ & 3) {
-        case 0: return decode_5650(load16(clut_ + ((index * 2) & 1023)));
-        case 1: return decode_5551(load16(clut_ + ((index * 2) & 1023)));
-        case 2: return decode_4444(load16(clut_ + ((index * 2) & 1023)));
-        default: return load32(clut_ + ((index * 4) & 1023));
-    }
+// x and y are wrapped (non-negative), so the divisions are shifts.
+template <int Format, bool Swizzled>
+NX_FORCE_INLINE std::uint32_t TextureSampler::fetch(const TextureSampler& t, const Level& l, int x, int y) {
+    static constexpr std::uint32_t kBits[8] = {16, 16, 16, 32, 4, 8, 16, 32};
+    constexpr std::uint32_t bits = kBits[Format];
+    const auto ux = static_cast<std::uint32_t>(x), uy = static_cast<std::uint32_t>(y);
+    const std::uint32_t xb = ux * bits / 8;
+    std::size_t offset;
+    if constexpr (Swizzled)
+        offset = (static_cast<std::size_t>(uy / 8) * l.blocks_per_row + xb / 16) * 128 + (uy % 8) * 16 + xb % 16;
+    else
+        offset = static_cast<std::size_t>(uy) * l.row_bytes + xb;
+    const std::uint8_t* p = l.data + offset;
+    if constexpr (Format == 0) return decode_5650(load16(p));
+    else if constexpr (Format == 1) return decode_5551(load16(p));
+    else if constexpr (Format == 2) return decode_4444(load16(p));
+    else if constexpr (Format == 3) return load32(p);
+    else if constexpr (Format == 4) return t.clut((x & 1) ? *p >> 4 : *p & 15);
+    else if constexpr (Format == 5) return t.clut(*p);
+    else if constexpr (Format == 6) return t.clut(load16(p));
+    else return t.clut(load32(p));
 }
 
 std::uint32_t TextureSampler::texel(const Level& l, int x, int y) const {
@@ -162,25 +209,28 @@ std::size_t TextureSampler::level_size(int level) const {
     return static_cast<std::size_t>(l.buffer_width) * static_cast<std::size_t>(l.height) * static_cast<std::size_t>(kBits[format_ & 7]) / 8;
 }
 
-int TextureSampler::wrap(int c, int size, bool clamp) const {
-    return clamp ? std::clamp(c, 0, size - 1) : c & (size - 1);
+std::uint32_t TextureSampler::sample(float u, float v, int level, bool linear) const {
+    return sample_fn_(*this, u, v, level, linear);
 }
 
-std::uint32_t TextureSampler::sample(float u, float v, int level, bool linear) const {
-    const Level& l = level_[std::clamp(level, 0, levels_ - 1)];
-    const float fu = u * static_cast<float>(l.width), fv = v * static_cast<float>(l.height);
+namespace {
+
+// Nearest or bilinear (4-bit fractions, like the hardware's fixed-point filter) over `fetch(x, y)`.
+template <class Fetch>
+std::uint32_t filter(float u, float v, int width, int height, bool clamp_u, bool clamp_v, bool linear, Fetch&& fetch) {
+    const auto wrap = [](int c, int size, bool clamp) { return clamp ? std::clamp(c, 0, size - 1) : c & (size - 1); };
+    const float fu = u * static_cast<float>(width), fv = v * static_cast<float>(height);
     if (!linear) {
-        const int x = wrap(static_cast<int>(std::floor(fu)), l.width, clamp_u_);
-        const int y = wrap(static_cast<int>(std::floor(fv)), l.height, clamp_v_);
-        return texel(l, x, y);
+        const int x = wrap(static_cast<int>(std::floor(fu)), width, clamp_u);
+        const int y = wrap(static_cast<int>(std::floor(fv)), height, clamp_v);
+        return fetch(x, y);
     }
-    // Bilinear with 4-bit fractions, like the hardware's fixed-point filter.
     const float su = fu - 0.5f, sv = fv - 0.5f;
     const int x0 = static_cast<int>(std::floor(su)), y0 = static_cast<int>(std::floor(sv));
     const int fx = static_cast<int>((su - static_cast<float>(x0)) * 16.0f), fy = static_cast<int>((sv - static_cast<float>(y0)) * 16.0f);
-    const int xa = wrap(x0, l.width, clamp_u_), xb = wrap(x0 + 1, l.width, clamp_u_);
-    const int ya = wrap(y0, l.height, clamp_v_), yb = wrap(y0 + 1, l.height, clamp_v_);
-    const std::uint32_t t00 = texel(l, xa, ya), t10 = texel(l, xb, ya), t01 = texel(l, xa, yb), t11 = texel(l, xb, yb);
+    const int xa = wrap(x0, width, clamp_u), xb = wrap(x0 + 1, width, clamp_u);
+    const int ya = wrap(y0, height, clamp_v), yb = wrap(y0 + 1, height, clamp_v);
+    const std::uint32_t t00 = fetch(xa, ya), t10 = fetch(xb, ya), t01 = fetch(xa, yb), t11 = fetch(xb, yb);
     std::uint32_t out = 0;
     for (int s = 0; s < 32; s += 8) {
         const int c00 = static_cast<int>((t00 >> s) & 0xFF), c10 = static_cast<int>((t10 >> s) & 0xFF);
@@ -189,6 +239,20 @@ std::uint32_t TextureSampler::sample(float u, float v, int level, bool linear) c
         out |= static_cast<std::uint32_t>((top * (16 - fy) + bottom * fy) / 256) << s;
     }
     return out;
+}
+
+}  // namespace
+
+template <int Format, bool Swizzled>
+std::uint32_t TextureSampler::sample_fixed(const TextureSampler& t, float u, float v, int level, bool linear) {
+    const Level& l = t.level_[std::clamp(level, 0, t.levels_ - 1)];
+    return filter(u, v, l.width, l.height, t.clamp_u_, t.clamp_v_, linear,
+                  [&](int x, int y) { return fetch<Format, Swizzled>(t, l, x, y); });
+}
+
+std::uint32_t TextureSampler::sample_generic(const TextureSampler& t, float u, float v, int level, bool linear) {
+    const Level& l = t.level_[std::clamp(level, 0, t.levels_ - 1)];
+    return filter(u, v, l.width, l.height, t.clamp_u_, t.clamp_v_, linear, [&](int x, int y) { return t.texel(l, x, y); });
 }
 
 }  // namespace ff7cc::rt::gpu
