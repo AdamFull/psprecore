@@ -355,6 +355,11 @@ int main(int argc, char** argv) {
 #ifdef __ANDROID__
     if (const char* ext = SDL_GetAndroidExternalStoragePath()) data_dir = ext;
     redirect_stderr_to_logcat(data_dir / "ff7cc.log");
+    if (argc > 1) {  // launch-intent options (testing)
+        std::fprintf(stderr, "arguments:");
+        for (int i = 1; i < argc; ++i) std::fprintf(stderr, " [%s]", argv[i]);
+        std::fprintf(stderr, "\n");
+    }
     // Options may come from the launch intent (GameActivity); a leading non-option argument is the game folder.
     const bool explicit_dir = argc >= 2 && std::string_view(argv[1]).substr(0, 2) != "--";
     const int first_option = explicit_dir ? 2 : 1;
