@@ -1,10 +1,14 @@
-﻿// psptex â€” HD textures baked offline. `bake` upscales a texture collection (--tex-collect,
+// psptex — HD textures baked offline. `bake` upscales a texture collection (--tex-collect,
 // psprecore/gpu/texture_collection.hpp) with an external upscaler into <cooked>/textures/<content hash>.png, which the
 // runtime draws in place of the game's textures (psprecore/gpu/texture_replacement.hpp).
 //
+// Only scene textures (drawn in 3D) are baked. Interface textures (drawn in 2D: menus, HUD, text) look wrong
+// upscaled; they are left to hand-drawn replacements in mods (mods/<mod>/textures), and ones baked before are
+// removed.
+//
 // The upscaler is any command that upscales a folder of PNG files 4x into another folder, keeping the names: a
-// Real-ESRGAN ncnn build (--realesrgan) or a template (--upscaler) with {in}, {out} and {model}. Interface textures
-// (drawn in 2D) and scene textures get separate models. 8x runs two passes and halves the result; 2x halves one.
+// Real-ESRGAN ncnn build (--realesrgan) or a template (--upscaler) with {in}, {out} and {model}. 8x runs two passes
+// and halves the result; 2x halves one.
 // Before upscaling, every texture gets a border of its own edges, from the opposite side for repeating ones, so tiles
 // still meet. Colours under alpha 0 are kept as they are: games draw some textures ignoring their alpha (the GE's
 // RGB texture function, fixed blend factors). Afterwards, what the upscaler smoothed away is put back (--detail):
@@ -55,12 +59,11 @@ namespace {
 
 struct Options {
     nx::string realesrgan, upscaler;
-    nx::string model_2d = "realesrgan-x4plus-anime", model_3d = "realesrgan-x4plus";
+    nx::string model = "realesrgan-x4plus";
     int scale = 4, max_size = 2048, pad = 8;  // max_size: the runtime's limit
     int detail = 100;                         // percent of the lost detail put back
     nx::string formats = "png,bc7,astc";
     nx::string quality = "medium";  // block compression effort: fast, medium, thorough
-    nx::string only;
     std::size_t limit = static_cast<std::size_t>(-1);
     bool force = false, keep_temp = false;
 };
@@ -370,7 +373,7 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
     }
     const auto settings = [&](const Texture& t) {
         return nx::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", t.hash, t.w, t.h, t.scale,
-                          t.two_d ? opt.model_2d : opt.model_3d, opt.detail, opt.formats, opt.quality) +
+                          opt.model, opt.detail, opt.formats, opt.quality) +
                "\ta2";  // a2: transparency kept (keep_transparent), atlases not wrapped
     };
     const bool want_png = opt.formats.find("png") != nx::string::npos,
@@ -381,20 +384,34 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
         return (!want_png || nx::fs::exists(base + ".png")) && (!want_bc7 || nx::fs::exists(base + ".bc7.ktx2")) &&
                (!want_astc || nx::fs::exists(base + ".astc.ktx2"));
     };
+    // Written after each batch (an interrupted run keeps what it finished) and at the end.
+    const auto save_manifest = [&] {
+        nx::vector<nx::string> sorted;
+        for (const auto& [hash, line] : baked) sorted.push_back(line);
+        std::sort(sorted.begin(), sorted.end());
+        nx::string text;
+        for (const nx::string& line : sorted) text += line + "\n";
+        (void)nx::fs::file_write_text(manifest, text);
+    };
     bc7enc_compress_block_init();
 
     nx::vector<Batch> batches;
-    std::size_t queued = 0, up_to_date = 0, too_big = 0, flat = 0;
+    std::size_t queued = 0, up_to_date = 0, too_big = 0, flat = 0, removed = 0;
     for (const nx::string& line : lines(path_join(collection, "index.tsv"))) {
         const auto cols = split(line, '\t');
         if (cols.size() < 5 || cols[0].size() != 16) continue;
         Texture t{nx::string(cols[0]), to_int(cols[1]), to_int(cols[2]), cols[4] == "2d"};
-        if ((opt.only == "2d" && !t.two_d) || (opt.only == "3d" && t.two_d)) continue;
-        // Interface textures are atlases (pictures side by side, never tiled) even when drawn with the GE's default
-        // wrap mode, repeat: padding them with their opposite edges would put one picture's pixels into another's
-        // (e.g. a transparent corner a game samples on purpose).
-        if (cols.size() >= 6 && !t.two_d) t.repeat_u = cols[5] == "repeat" || cols[5] == "repeat-u",
-                                          t.repeat_v = cols[5] == "repeat" || cols[5] == "repeat-v";
+        if (t.two_d) {  // interface: not baked; an earlier bake's files go
+            bool had = false;
+            for (const char* ext : {".png", ".bc7.ktx2", ".astc.ktx2"}) {
+                const nx::string path = path_join(out_dir, t.hash + ext);
+                if (nx::fs::exists(path)) had = nx::fs::remove(path).has_value() || had;
+            }
+            removed += had || baked.erase(t.hash);
+            continue;
+        }
+        if (cols.size() >= 6) t.repeat_u = cols[5] == "repeat" || cols[5] == "repeat-u",
+                              t.repeat_v = cols[5] == "repeat" || cols[5] == "repeat-v";
         t.scale = opt.scale;
         while (t.scale > 1 && std::max(t.w, t.h) * t.scale > opt.max_size) t.scale /= 2;
         if (t.scale < 2) {
@@ -409,7 +426,7 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
             }
         }
         if (queued >= opt.limit) continue;
-        const nx::string& model = t.two_d ? opt.model_2d : opt.model_3d;
+        const nx::string& model = opt.model;
         const int passes = t.scale > 4 ? 2 : 1;
         auto it = std::find_if(batches.begin(), batches.end(),
                                [&](const Batch& b) { return b.model == model && b.passes == passes; });
@@ -417,8 +434,10 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
         it->textures.push_back(std::move(t));
         ++queued;
     }
-    std::fprintf(stderr, "baking %zu textures at %dx (%zu up to date, %zu too large for --max-size %d)\n", queued,
-                 opt.scale, up_to_date, too_big, opt.max_size);
+    std::fprintf(stderr,
+                 "baking %zu textures at %dx (%zu up to date, %zu too large for --max-size %d, %zu interface ones "
+                 "removed)\n",
+                 queued, opt.scale, up_to_date, too_big, opt.max_size, removed);
 
     std::size_t done = 0, failed = 0;
     for (std::size_t bi = 0; bi < batches.size(); ++bi) {
@@ -514,14 +533,9 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
         std::fprintf(stderr, "  finished in %.1f s\n",
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
         if (!opt.keep_temp) (void)nx::fs::remove_all(dir);
-
-        nx::vector<nx::string> sorted;
-        for (const auto& [hash, line] : baked) sorted.push_back(line);
-        std::sort(sorted.begin(), sorted.end());
-        nx::string text;
-        for (const nx::string& line : sorted) text += line + "\n";
-        (void)nx::fs::file_write_text(manifest, text);
+        save_manifest();
     }
+    save_manifest();
     if (!opt.keep_temp) (void)nx::fs::remove_all(tmp);
     std::fprintf(stderr, "done: %zu baked, %zu single-colour skipped, %zu failed\n", done, flat, failed);
     return failed ? 1 : 0;
@@ -545,10 +559,7 @@ int main(int argc, char** argv) {
         .option("upscaler", opt.upscaler,
                 "another 4x upscaler: a command line with {in} and {out} (folders of PNG files) and {model}",
                 {.value_name = "COMMAND"})
-        .option("model-2d", opt.model_2d, "model for interface textures (default: realesrgan-x4plus-anime)",
-                {.value_name = "NAME"})
-        .option("model-3d", opt.model_3d, "model for scene textures (default: realesrgan-x4plus)",
-                {.value_name = "NAME"})
+        .option("model", opt.model, "upscaler model (default: realesrgan-x4plus)", {.value_name = "NAME"})
         .option("detail", opt.detail,
                 "percent of the detail the upscaler smoothed away to put back (default: 100; 0: the upscaler's result)",
                 {.value_name = "PERCENT"})
@@ -558,7 +569,6 @@ int main(int argc, char** argv) {
         .option("quality", opt.quality, "block compression effort (default: medium)",
                 {.value_name = "LEVEL", .choices = {"fast", "medium", "thorough"}})
         .option("pad", opt.pad, "border added around each texture while upscaling (default: 8)", {.value_name = "N"})
-        .option("only", opt.only, "bake one kind only", {.value_name = "KIND", .choices = {"2d", "3d"}})
         .option("limit", opt.limit, "bake at most N textures (testing)", {.value_name = "N"})
         .flag("force", opt.force, "bake again textures already baked")
         .flag("keep-temp", opt.keep_temp, "keep the upscaler's inputs and outputs");
