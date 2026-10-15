@@ -58,6 +58,7 @@ add_subdirectory(runtime)
 if(PSPRECORE_BUILD_TOOLS)
     add_subdirectory(tools/psprx)
     add_subdirectory(tools/psprecomp)
+    add_subdirectory(tools/psptex)
 endif()
 
 if(PSPRECORE_BUILD_TESTS)

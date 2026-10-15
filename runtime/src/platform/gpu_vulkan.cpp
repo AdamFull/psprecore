@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "psprecore/gpu/texture_collection.hpp"
 #include "psprecore/gpu/texture_replacement.hpp"
 #include "psprecore/gpu/ui_font.hpp"
 #include "psprecore/runtime/hle.hpp"
@@ -70,6 +71,7 @@ struct Image {
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     int width = 0, height = 0;
     std::uint32_t mips = 1;
+    bool replacement = false;  // a replacement picture: sampled with linear minification and its mipmaps
 };
 
 struct Target {
@@ -90,6 +92,10 @@ struct Texture {
     std::uint64_t checked = 0;  // rt::guest_write_counter() when the data was last verified
     std::uint64_t sample = 0;   // hash of a sample of the texels at the last full check
     std::uint8_t quick_checks = 0;  // checks by sample only since the last full one
+    std::uint64_t uploaded_frame = 0;  // frame_number when the current content was uploaded
+    bool collected = false;            // handed to texture collection (--tex-collect)
+    std::uint8_t replacing = 0;        // a replacement picture still loading: kReplacementLoading, kIndexMapLoading
+    std::uint64_t texels = 0;          // texture_texels_hash, while an index map loads
 };
 
 // Everything that selects a VkPipeline. All fields are bytes so the struct hashes and compares as memory.
@@ -736,21 +742,45 @@ struct VulkanGeRenderer::Impl {
 
     // ---- textures ----------------------------------------------------------------------------------------
 
-    VkSampler sampler(bool min_linear, bool mag_linear, bool clamp_u, bool clamp_v, bool mipmap, std::uint32_t levels) {
+    VkSampler sampler(bool min_linear, bool mag_linear, bool clamp_u, bool clamp_v, bool mipmap, std::uint32_t levels,
+                      bool trilinear = false) {
         const std::uint32_t key = (min_linear ? 1u : 0u) | (mag_linear ? 2u : 0u) | (clamp_u ? 4u : 0u) | (clamp_v ? 8u : 0u) |
-                                  (mipmap ? 16u : 0u) | (levels << 8);
+                                  (mipmap ? 16u : 0u) | (trilinear ? 32u : 0u) | (levels << 8);
         auto& s = samplers[key];
         if (s) return s;
         VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         ci.magFilter = mag_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
         ci.minFilter = min_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-        ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        ci.mipmapMode = trilinear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        if (trilinear && vk.sampler_anisotropy) {  // keeps surfaces seen at a slant sharp
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(vk.gpu, &props);
+            ci.anisotropyEnable = VK_TRUE;
+            ci.maxAnisotropy = std::min(8.0f, props.limits.maxSamplerAnisotropy);
+        }
         ci.addressModeU = clamp_u ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
         ci.addressModeV = clamp_v ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
         ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         ci.maxLod = mipmap ? static_cast<float>(levels - 1) : 0.0f;
         check(vkCreateSampler(vk.device, &ci, nullptr, &s), "sampler");
         return s;
+    }
+
+    // A texture still valid in the cache. Collection (--tex-collect) takes it once its content has lasted 30 frames,
+    // which leaves out streamed textures (movie frames and the like, new every frame).
+    Image* cached(Texture& t, const ge::State& s, const rt::gpu::TextureSampler& ts) {
+        if (t.replacing) replace(t, ts);
+        if (!t.collected && rt::gpu::collecting_textures() && frame_number - t.uploaded_frame >= 30) {
+            t.collected = true;
+            if (!rt::gpu::find_icon_atlas(ts.format(), ts.width(0), ts.height(0), ts.level_data(0), ts.level_size(0))) {
+                nx::vector<std::uint32_t> rgba(static_cast<std::size_t>(ts.width(0)) * static_cast<std::size_t>(ts.height(0)));
+                ts.decode(0, rgba.data());
+                const std::uint32_t wrap = s.param(ge::TEXWRAP);
+                rt::gpu::collect_texture(t.content, rgba.data(), ts.width(0), ts.height(0), ts.format(), s.format.through,
+                                         (wrap & 1) == 0, (wrap & 0x100) == 0);
+            }
+        }
+        return &t.image;
     }
 
     std::uint64_t sample_texels(const rt::gpu::TextureSampler& ts) {
@@ -769,11 +799,12 @@ struct VulkanGeRenderer::Impl {
         return h;
     }
 
-    // A mod's picture in place of a texture (psprecore/gpu/texture_replacement.hpp): one level, any size. With
-    // `sampler`, the picture is an index map coloured with the palette in use.
+    // A replacement picture in place of a texture (psprecore/gpu/texture_replacement.hpp), with its mipmaps; the
+    // image t had (the game's texture while the picture loaded) goes. With `palette`, the picture is an index map
+    // coloured with the palette in use.
     bool upload_replacement(Texture& t, const rt::gpu::ReplacementImage& r, const rt::gpu::TextureSampler* palette = nullptr) {
         VkDeviceSize offset = 0;
-        const VkDeviceSize bytes = static_cast<VkDeviceSize>(r.width) * static_cast<VkDeviceSize>(r.height) * 4;
+        const VkDeviceSize bytes = static_cast<VkDeviceSize>(r.rgba.size()) * 4;
         auto* dst = staging(bytes, offset);
         if (!dst) return false;  // staging full this frame: the game's own texture for now
         if (palette) {
@@ -786,17 +817,58 @@ struct VulkanGeRenderer::Impl {
         } else {
             std::memcpy(dst, r.rgba.data(), bytes);
         }
+        if (t.image.image) frame().garbage.push_back(t.image);  // destroyed once this frame slot is reused
         t.image = make_image(r.width, r.height, kColorFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                             VK_IMAGE_ASPECT_COLOR_BIT, 1);
+                             VK_IMAGE_ASPECT_COLOR_BIT, r.levels);
+        t.image.replacement = true;
         const VkCommandBuffer cmd = frame().upload;
         transition(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        VkBufferImageCopy copy{};
-        copy.bufferOffset = offset;
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {static_cast<std::uint32_t>(r.width), static_cast<std::uint32_t>(r.height), 1};
-        vkCmdCopyBufferToImage(cmd, frame().staging.buffer, t.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        nx::vector<VkBufferImageCopy> copies(r.levels);
+        for (std::uint32_t l = 0; l < r.levels; ++l) {
+            const std::uint32_t w = std::max(1u, static_cast<std::uint32_t>(r.width) >> l);
+            const std::uint32_t h = std::max(1u, static_cast<std::uint32_t>(r.height) >> l);
+            copies[l].bufferOffset = offset;
+            copies[l].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};
+            copies[l].imageExtent = {w, h, 1};
+            offset += static_cast<VkDeviceSize>(w) * h * 4;
+        }
+        vkCmdCopyBufferToImage(cmd, frame().staging.buffer, t.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               r.levels, copies.data());
         transition(cmd, t.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         return true;
+    }
+
+    static constexpr std::uint8_t kReplacementLoading = 1, kIndexMapLoading = 2;
+
+    // Puts the replacement picture for t's content in place, if there is one: true once uploaded. While it loads
+    // (or the staging buffer is full), t.replacing has the next draws ask again.
+    bool replace(Texture& t, const rt::gpu::TextureSampler& ts) {
+        using rt::gpu::Lookup;
+        if (t.replacing != kIndexMapLoading) {
+            const auto found = rt::gpu::texture_replacement(t.content);
+            if (found.state == Lookup::Ready && upload_replacement(t, *found.image)) {
+                t.replacing = 0;
+                return true;
+            }
+            if (found.state != Lookup::None) {
+                t.replacing = kReplacementLoading;
+                return false;
+            }
+        }
+        if ((ts.format() == 4 || ts.format() == 5) && rt::gpu::have_indexed_replacements()) {
+            if (t.replacing != kIndexMapLoading) t.texels = rt::gpu::texture_texels_hash(ts);
+            const auto found = rt::gpu::indexed_replacement(t.texels);
+            if (found.state == Lookup::Ready && upload_replacement(t, *found.image, &ts)) {
+                t.replacing = 0;
+                return true;
+            }
+            if (found.state != Lookup::None) {
+                t.replacing = kIndexMapLoading;
+                return false;
+            }
+        }
+        t.replacing = 0;
+        return false;
     }
 
     // Texture from guest memory, decoded and uploaded once per content.
@@ -827,7 +899,7 @@ struct VulkanGeRenderer::Impl {
             written = std::max(written, rt::guest_written_since(level_address, bytes));
             marked = std::max(marked, rt::guest_marked_since(level_address, bytes));
         }
-        if (t.image.image && written <= t.checked) return &t.image;
+        if (t.image.image && written <= t.checked) return cached(t, s, ts);
         // The memory may have changed: the game writes back its whole data cache every frame, so most re-checks find
         // nothing. Unless something known wrote to these texels (marked: an HLE copy, a file read, a movie frame), a
         // sample (64 bytes of every 2 KiB) decides whether the full hash runs; every 16th check runs it anyway, so
@@ -835,24 +907,23 @@ struct VulkanGeRenderer::Impl {
         const std::uint64_t sample = sample_texels(ts);
         if (t.image.image && marked <= t.checked && sample == t.sample && ++t.quick_checks < 16) {
             t.checked = rt::guest_write_counter();
-            return &t.image;
+            return cached(t, s, ts);
         }
         t.quick_checks = 0;
         t.sample = sample;
         const std::uint64_t content = rt::gpu::texture_content_hash(s, ts);
         for (int l = 0; l < ts.levels(); ++l) stats.hashed_bytes += ts.level_size(l);
         t.checked = rt::guest_write_counter();
-        if (t.image.image && t.content == content) return &t.image;
+        if (t.image.image && t.content == content) return cached(t, s, ts);
         ++stats.uploads;
         stats.uploaded_texels += static_cast<std::uint64_t>(ts.width(0)) * static_cast<std::uint64_t>(ts.height(0));
         if (t.image.image) frame().garbage.push_back(t.image);
+        t.image = {};
         t.content = content;
-        if (const auto* replacement = rt::gpu::texture_replacement(content); replacement && upload_replacement(t, *replacement))
-            return &t.image;
-        if ((ts.format() == 4 || ts.format() == 5) && rt::gpu::have_indexed_replacements())
-            if (const auto* map = rt::gpu::indexed_replacement(rt::gpu::texture_texels_hash(ts));
-                map && upload_replacement(t, *map, &ts))
-                return &t.image;
+        t.uploaded_frame = frame_number;
+        t.collected = false;
+        t.replacing = 0;
+        if (replace(t, ts)) return &t.image;
 
         const std::uint32_t levels = static_cast<std::uint32_t>(ts.levels());
         t.image = make_image(ts.width(0), ts.height(0), kColorFormat,
@@ -1350,7 +1421,8 @@ struct VulkanGeRenderer::Impl {
             const std::uint32_t filter = s.param(ge::TEXFILTER), wrap = s.param(ge::TEXWRAP);
             if (img) {
                 view = img->view;
-                smp = sampler(filter & 1, (filter >> 8) & 1, wrap & 1, (wrap >> 8) & 1, (filter & 4) != 0, img->mips);
+                smp = img->replacement ? sampler(true, (filter >> 8) & 1, wrap & 1, (wrap >> 8) & 1, true, img->mips, true)
+                                       : sampler(filter & 1, (filter >> 8) & 1, wrap & 1, (wrap >> 8) & 1, (filter & 4) != 0, img->mips);
             }
         }
         Image& d = depth(s.param(ge::ZBUFPTR), t);
@@ -1473,6 +1545,10 @@ void VulkanGeRenderer::set_scale(int scale) { impl_->pending_scale = std::max(1,
 void VulkanGeRenderer::set_button_icons(rt::gpu::IconStyle style) {
     if (impl_->icon_style == style) return;
     impl_->icon_style = style;
+    reload_textures();
+}
+
+void VulkanGeRenderer::reload_textures() {
     for (auto& [_, t] : impl_->textures) impl_->frame().garbage.push_back(t.image);  // destroyed once the slot is reused
     impl_->textures.clear();
 }

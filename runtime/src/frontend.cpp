@@ -43,6 +43,7 @@
 #include "platform/memory_watch.hpp"
 #include "psprecore/platform/mods.hpp"
 #include "platform/sampling_profiler.hpp"
+#include "psprecore/gpu/texture_collection.hpp"
 #include "psprecore/gpu/texture_replacement.hpp"
 #include "psprecore/runtime/hle.hpp"
 #include "psprecore/runtime/io.hpp"
@@ -386,7 +387,7 @@ struct Options {
     std::uint64_t vblanks = 0, ge_dump = 0, ge_dump_at = 0, ge_bench = 0, profile = 0, state_hash = 0;
     std::uint64_t tex_dump_vblank = 0, ram_dump_vblank = 0, window_shot_vblank = 0, watch_vblank = 0;
     std::uint32_t watch_address = 0, watch_size = 0;
-    nx::string tex_dump_dir, ram_dump_path, window_shot_path;
+    nx::string tex_dump_dir, ram_dump_path, window_shot_path, tex_collect;
     nx::string record, replay, saves, mods;
     std::int64_t clock = 0;
     bool clock_given = false;
@@ -464,6 +465,10 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
              {.value_name = "VBLANK"});
     c.option("tex-dump", tex_dump, "write the textures drawn at VBLANK (named by their texel hash)",
              {.value_name = "VBLANK:DIR"});
+    c.option("tex-collect", o.tex_collect,
+             "Vulkan renderer: add every texture the game uploads to DIR (for baking HD versions; see "
+             "psprecore/gpu/texture_collection.hpp)",
+             {.value_name = "DIR"});
     c.option("profile", o.profile, "Windows: sample where the host spends its time from VBLANK on",
              {.value_name = "VBLANK"});
     c.option("watch", watch, "Windows: from VBLANK on, list the functions accessing guest memory ADDR..ADDR+SIZE (hex)",
@@ -628,6 +633,10 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         if (!language.empty()) std::fprintf(stderr, "mods: language %s\n", language.c_str());
         if (game.mount) game.mount(active_mods);
         rt::gpu::scan_texture_replacements(active_mods);
+        if (!o.tex_collect.empty()) {
+            if (o.headless) std::fprintf(stderr, "--tex-collect needs the Vulkan renderer (not --headless)\n");
+            else rt::gpu::start_texture_collection(o.tex_collect);
+        }
 
         // Input recording / replay. A replay also fixes the guest clock to the recording's.
         nx::unique_ptr<InputReplay> replay;
@@ -688,6 +697,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             if (!nx::fs::exists(cooked_dir)) cooked_dir = path_join(parent_path(argv[0]), "cooked");
         }
         rt::set_cooked_root(cooked_dir);
+        rt::gpu::scan_baked_textures(path_join(cooked_dir, "textures"));
         rt::hle_install();
 
         // module_start(argc = strlen(path) + 1, argv = path), as the PSP loader does.
@@ -952,6 +962,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 if (audio) audio->set_volume(mute ? 0.0f : static_cast<float>(s.volume) / 100.0f);
                 kernel.realtime = s.frame_limit && !unthrottled && !fast_forward;
                 if (renderer_choice) switch_renderer = s.software_renderer == gpu;  // applied when the menu closes
+                if (rt::gpu::enable_baked_textures(s.hd_textures) && vulkan_renderer) vulkan_renderer->reload_textures();
             };
             apply(settings);
             platform::Overlay::Hooks hooks;
@@ -960,6 +971,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             hooks.renderer_choice = renderer_choice;
             hooks.gpu_renderer = gpu;
             hooks.languages = platform::mod_languages(mods);
+            hooks.hd_textures = rt::gpu::have_baked_textures();
             hooks.active_language = language;
             overlay = nx::make_unique<platform::Overlay>(*display, settings, std::move(hooks));
             display->set_ui(nx::unique_function<void()>([&] { overlay->draw(); }));

@@ -52,6 +52,8 @@ public:
     int msaa() const;
     // The game's own button icons drawn as another controller's (psprecore/gpu/button_icons.hpp); cached textures are rebuilt.
     void set_button_icons(rt::gpu::IconStyle style);
+    // Drops every cached texture: they are decoded (and replaced, psprecore/gpu/texture_replacement.hpp) again.
+    void reload_textures();
     // Whether transfer() also performs the block copy in guest memory (off when another renderer already did).
     void set_guest_copies(bool on);
     // Drops draws until turned off again (fast-forwarding: only the frames that are shown are rendered). Nothing the
