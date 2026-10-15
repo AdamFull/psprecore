@@ -3,6 +3,7 @@
 // The frontend's Dear ImGui overlay: the pause menu (settings), the save/load slot picker that stands in for
 // the PSP's savedata dialog, and an optional FPS counter. draw() is installed as the Display's UI callback.
 
+#include <array>
 #include <cstdint>
 
 #include "platform/settings.hpp"
@@ -30,12 +31,13 @@ public:
     void draw();
 
     bool menu_open() const { return menu_open_; }
-    // "Hold <Circle> to skip" in the corner: `alpha` 0 hides it, `progress` 0..1 fills its ring.
+    // "Hold <Circle> to skip" in the corner, in the game's text style when it has one (rt::gpu::ui_font): `alpha` 0
+    // hides it, `progress` 0..1 fills its gauge.
     void set_skip_prompt(float alpha, float progress) {
         skip_alpha_ = alpha;
         skip_progress_ = progress;
     }
-    // While a skipped movie is fast-forwarded: "Skipping" with a spinning arc in place of the prompt.
+    // While a skipped movie is fast-forwarded: "Skipping" in place of the prompt.
     void set_skipping(bool skipping) { skipping_ = skipping; }
     void open_menu();
     void close_menu();
@@ -49,6 +51,8 @@ private:
     void draw_save_dialog();
     void draw_fps();
     void draw_skip_prompt();
+    bool draw_game_skip_prompt();  // false until the game's font is available
+    bool load_game_font();
     // Gamepad glyphs in the overlay: with a gamepad connected, or when the glyphs were chosen in the settings.
     bool pad_glyphs() const;
     // A button; with pad_glyphs(), showing the face button that presses it (the focused item takes Cross).
@@ -67,6 +71,14 @@ private:
     bool dialog_appearing_ = true;
     int overwrite_slot_ = -1;
     nx::map<nx::string, std::uint64_t> icons_;  // ICON0.PNG path -> texture (0: failed to load)
+    // The game's font (rt::gpu::ui_font) as a texture, its glyphs' ink (left column, width), and its button icon
+    // redrawn as Circle for the current glyph style.
+    struct GameFont {
+        std::uint64_t texture = 0, icon = 0;
+        int width = 0, height = 0, icon_glyphs = -1;
+        nx::vector<std::uint32_t> sheet;
+        std::array<std::uint8_t, 128> left{}, ink{};
+    } game_font_;
 };
 
 }  // namespace psprecore::platform

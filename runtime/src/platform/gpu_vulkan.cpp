@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "psprecore/gpu/ui_font.hpp"
 #include "psprecore/runtime/hle.hpp"
 #include "psprecore/runtime/memory.hpp"
 #include "copy_frag.h"
@@ -799,9 +800,13 @@ struct VulkanGeRenderer::Impl {
             auto* dst = reinterpret_cast<std::uint32_t*>(staging(static_cast<VkDeviceSize>(w) * h * 4, offset));
             if (!dst) break;  // staging full: the level stays undefined this frame (rare)
             ts.decode(static_cast<int>(l), dst);
-            if (l == 0 && icon_style != rt::gpu::IconStyle::PlayStation)
-                if (const auto* atlas = rt::gpu::find_icon_atlas(ts.format(), w, h, ts.level_data(0), ts.level_size(0)))
+            const bool keep_font = rt::gpu::ui_font_wanted();
+            if (l == 0 && (icon_style != rt::gpu::IconStyle::PlayStation || keep_font))
+                if (const auto* atlas = rt::gpu::find_icon_atlas(ts.format(), w, h, ts.level_data(0), ts.level_size(0))) {
                     rt::gpu::draw_button_icons(*atlas, dst, w, icon_style);
+                    if (keep_font && atlas->hash == rt::gpu::ui_font()->atlas_hash)
+                        rt::gpu::keep_ui_font_sheet(dst, w, h);
+                }
             VkBufferImageCopy copy{};
             copy.bufferOffset = offset;
             copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};

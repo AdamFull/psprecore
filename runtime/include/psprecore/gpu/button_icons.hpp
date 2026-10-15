@@ -39,4 +39,8 @@ const IconAtlas* find_icon_atlas(int format, int width, int height, const std::u
 // Redraws the atlas's icons in its decoded level 0 (RGBA8, `width` texels per row).
 void draw_button_icons(const IconAtlas& atlas, std::uint32_t* rgba, int width, IconStyle style);
 
+// Draws the symbol of one icon (5x5 around cx, cy) as button `face` in `style`, keeping its disc: the PlayStation
+// shape, or the letter of the button at that position. Disc and ink colours come from the icon already there.
+void draw_icon(std::uint32_t* rgba, int width, int cx, int cy, IconFace face, IconStyle style);
+
 }  // namespace psprecore::rt::gpu

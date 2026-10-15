@@ -7,6 +7,7 @@
 #include <numbers>
 #include <ctime>
 
+#include "psprecore/gpu/ui_font.hpp"
 #include "psprecore/platform/display.hpp"
 #include "psprecore/runtime/hle.hpp"
 #include "platform/button_glyphs.hpp"
@@ -51,7 +52,11 @@ bool cancel_pressed() {
 Overlay::Overlay(Display& display, Settings& settings, Hooks hooks)
     : display_(display), settings_(settings), hooks_(std::move(hooks)) {}
 
-Overlay::~Overlay() { release_icons(); }
+Overlay::~Overlay() {
+    release_icons();
+    if (game_font_.texture) display_.destroy_texture(game_font_.texture);
+    if (game_font_.icon) display_.destroy_texture(game_font_.icon);
+}
 
 void Overlay::open_menu() {
     menu_open_ = true;
@@ -72,7 +77,7 @@ bool Overlay::wants_input() const { return menu_open_ || rt::pending_save_dialog
 
 void Overlay::draw() {
     if (settings_.show_fps) draw_fps();
-    if ((skip_alpha_ > 0.0f || skipping_) && !menu_open_) draw_skip_prompt();
+    if ((skip_alpha_ > 0.0f || skipping_) && !menu_open_ && !draw_game_skip_prompt()) draw_skip_prompt();
     if (rt::pending_save_dialog()) {
         draw_save_dialog();
     } else {
@@ -100,7 +105,136 @@ void Overlay::pad_hint(std::uint32_t pad_button, const char* text) {
     ImGui::TextDisabled("%s", text);
 }
 
-// Bottom right (bottom centre with touch controls, whose face buttons sit in that corner): a disc with the button
+bool Overlay::load_game_font() {
+    const rt::gpu::UiFont* font = rt::gpu::ui_font();
+    GameFont& f = game_font_;
+    if (!font || !rt::gpu::ui_font_sheet(f.sheet, f.width, f.height)) return false;
+    f.texture = display_.create_texture(f.sheet.data(), f.width, f.height);
+    // Glyph ink: the columns of each character's cell that hold any texel (the font is proportional).
+    for (int c = 0; c < 128; ++c) {
+        const int g = font->ascii[static_cast<std::size_t>(c)];
+        if (g < 0) continue;
+        const int x0 = g % font->columns * font->cell_width, y0 = g / font->columns * font->cell_height;
+        int first = font->cell_width, last = -1;
+        for (int x = 0; x < font->cell_width; ++x)
+            for (int y = 0; y < font->cell_height; ++y)
+                if (x0 + x < f.width && y0 + y < f.height && (f.sheet[static_cast<std::size_t>((y0 + y) * f.width + x0 + x)] >> 24) != 0) {
+                    first = std::min(first, x);
+                    last = std::max(last, x);
+                }
+        f.left[static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(last < 0 ? 0 : first);
+        f.ink[static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(last < 0 ? 0 : last - first + 1);
+    }
+    return f.texture != 0;
+}
+
+// The prompt as the game would write it: its font at its own pixel size (scaled with the picture), white with the
+// font's outline, in the picture's bottom-right corner; its button icon (a disc with the symbol of the button that
+// skips) between "Hold" and "to skip", and under the text a thin gauge that fills while the button is held. While
+// nothing is held the prompt breathes gently.
+bool Overlay::draw_game_skip_prompt() {
+    const rt::gpu::UiFont* font = rt::gpu::ui_font();
+    GameFont& f = game_font_;
+    if (!font || (!f.texture && !load_game_font())) return false;
+    const bool touch = display_.touch_controls();
+    const ButtonGlyphs glyphs = display_.button_glyphs();
+    if (!touch && (!f.icon || f.icon_glyphs != static_cast<int>(glyphs))) {
+        // The cell holding the font's button icon, with the Circle button drawn on its disc.
+        const int cw = font->cell_width, ch = font->cell_height;
+        const int x0 = font->button.x / cw * cw, y0 = font->button.y / ch * ch;
+        nx::vector<std::uint32_t> cell(static_cast<std::size_t>(cw * ch));
+        for (int y = 0; y < ch; ++y)
+            for (int x = 0; x < cw; ++x)
+                cell[static_cast<std::size_t>(y * cw + x)] = f.sheet[static_cast<std::size_t>((y0 + y) * f.width + x0 + x)];
+        const rt::gpu::IconStyle style = glyphs == ButtonGlyphs::Xbox       ? rt::gpu::IconStyle::Xbox
+                                         : glyphs == ButtonGlyphs::Nintendo ? rt::gpu::IconStyle::Nintendo
+                                         : glyphs == ButtonGlyphs::Keyboard ? rt::gpu::IconStyle::Keyboard
+                                                                            : rt::gpu::IconStyle::PlayStation;
+        rt::gpu::draw_icon(cell.data(), cw, font->button.x - x0, font->button.y - y0, rt::gpu::IconFace::Circle, style);
+        if (f.icon) display_.destroy_texture(f.icon);
+        f.icon = display_.create_texture(cell.data(), cw, ch);
+        f.icon_glyphs = static_cast<int>(glyphs);
+    }
+
+    // Game pixels -> screen: the 480x272 picture fitted into the window, as the display draws it.
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float s = std::min(vp->Size.x / 480.0f, vp->Size.y / 272.0f);
+    const ImVec2 origin{vp->Pos.x + (vp->Size.x - 480.0f * s) * 0.5f, vp->Pos.y + (vp->Size.y - 272.0f * s) * 0.5f};
+    const int cw = font->cell_width, ch = font->cell_height;
+    constexpr int kSpace = 4, kGap = 1;  // advance of a space; between glyphs
+
+    // The line: runs of text and (-1) the icon.
+    nx::string text_before, text_after;
+    bool icon = false;
+    if (skipping_) {
+        text_before = "Skipping";
+        text_before.append(static_cast<std::size_t>(static_cast<int>(ImGui::GetTime() * 3.0) % 4), '.');
+    } else if (touch) {
+        text_before = "Touch and hold to skip";
+    } else {
+        text_before = "Hold";
+        text_after = "to skip";
+        icon = true;
+    }
+    const auto run_width = [&](const nx::string& t) {
+        int w = 0;
+        for (const char c : t) {
+            const auto i = static_cast<std::size_t>(static_cast<unsigned char>(c) & 0x7F);
+            w += c == ' ' ? kSpace : font->ascii[i] >= 0 ? f.ink[i] + kGap : 0;
+        }
+        return w;
+    };
+    const int icon_w = icon ? cw + 2 * kSpace : 0;
+    // "Skipping" is laid out with all its dots, so the line stays put while they count up.
+    const int width = run_width(skipping_ ? nx::string("Skipping...") : text_before) + icon_w + run_width(text_after);
+    // Bottom right; centred with touch controls, whose face buttons cover the picture's right edge on phones.
+    const int top = 272 - 12 - ch - 4;
+    const int left = touch ? (480 - width) / 2 : 480 - 14 - width;
+
+    const float pulse = skipping_ || skip_progress_ > 0.0f ? 1.0f
+                                                           : 0.8f + 0.2f * std::sin(static_cast<float>(ImGui::GetTime()) * 3.0f);
+    const float a = (skipping_ ? 1.0f : std::clamp(skip_alpha_, 0.0f, 1.0f)) * pulse;
+    const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(a * 255.0f));
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const auto quad = [&](std::uint64_t tex, float x, float y, float w, float h, ImVec2 uv0, ImVec2 uv1) {
+        dl->AddImage(static_cast<ImTextureID>(tex), {origin.x + x * s, origin.y + y * s},
+                     {origin.x + (x + w) * s, origin.y + (y + h) * s}, uv0, uv1, tint);
+    };
+    int x = left;
+    const auto draw_run = [&](const nx::string& t) {
+        for (const char c : t) {
+            const auto i = static_cast<std::size_t>(static_cast<unsigned char>(c) & 0x7F);
+            const int g = font->ascii[i];
+            if (c == ' ' || g < 0) {
+                x += c == ' ' ? kSpace : 0;
+                continue;
+            }
+            const int gx = g % font->columns * cw + f.left[i], gy = g / font->columns * ch;
+            quad(f.texture, static_cast<float>(x), static_cast<float>(top), f.ink[i], static_cast<float>(ch),
+                 {static_cast<float>(gx) / f.width, static_cast<float>(gy) / f.height},
+                 {static_cast<float>(gx + f.ink[i]) / f.width, static_cast<float>(gy + ch) / f.height});
+            x += f.ink[i] + kGap;
+        }
+    };
+    draw_run(text_before);
+    if (icon) {
+        x += kSpace;
+        quad(f.icon, static_cast<float>(x), static_cast<float>(top), static_cast<float>(cw), static_cast<float>(ch), {0, 0}, {1, 1});
+        x += cw + kSpace;
+    }
+    draw_run(text_after);
+
+    if (skip_progress_ > 0.0f && !skipping_) {  // the gauge: 2 game pixels under the text
+        const float gy = static_cast<float>(top + ch + 1);
+        const ImVec2 p0{origin.x + left * s, origin.y + gy * s};
+        const ImVec2 p1{origin.x + (left + width) * s, origin.y + (gy + 2.0f) * s};
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, static_cast<int>(a * 160.0f)));
+        dl->AddRectFilled(p0, {p0.x + (p1.x - p0.x) * std::min(1.0f, skip_progress_), p1.y}, tint);
+    }
+    return true;
+}
+
+// The port's own version, until the game's font is available. Bottom right (bottom centre with touch controls, whose face buttons sit in that corner): a disc with the button
 // (a fingertip for touch) and a ring that fills while it is held, then the label. While nothing is held the ring
 // breathes slowly, so the prompt reads as "do something here".
 void Overlay::draw_skip_prompt() {

@@ -15,7 +15,13 @@ constexpr std::uint8_t kLetterK[5] = {0b10001, 0b10010, 0b11100, 0b10010, 0b1000
 constexpr std::uint8_t kLetterL[5] = {0b10000, 0b10000, 0b10000, 0b10000, 0b11111};
 constexpr std::uint8_t kLetterJ[5] = {0b00111, 0b00010, 0b00010, 0b10010, 0b01100};
 constexpr std::uint8_t kLetterI[5] = {0b01110, 0b00100, 0b00100, 0b00100, 0b01110};
+// PlayStation shapes (the game's own icons are pictures; these are for icons drawn from scratch).
+constexpr std::uint8_t kShapeCross[5] = {0b10001, 0b01010, 0b00100, 0b01010, 0b10001};
+constexpr std::uint8_t kShapeCircle[5] = {0b01110, 0b10001, 0b10001, 0b10001, 0b01110};
+constexpr std::uint8_t kShapeSquare[5] = {0b11111, 0b10001, 0b10001, 0b10001, 0b11111};
+constexpr std::uint8_t kShapeTriangle[5] = {0b00100, 0b00100, 0b01010, 0b01010, 0b11111};
 // By face (Cross, Circle, Square, Triangle): the button at the same position.
+constexpr const std::uint8_t* kPlayStationShapes[4] = {kShapeCross, kShapeCircle, kShapeSquare, kShapeTriangle};
 constexpr const std::uint8_t* kXboxLetters[4] = {kLetterA, kLetterB, kLetterX, kLetterY};
 constexpr const std::uint8_t* kNintendoLetters[4] = {kLetterB, kLetterA, kLetterY, kLetterX};
 constexpr const std::uint8_t* kKeyboardLetters[4] = {kLetterK, kLetterL, kLetterJ, kLetterI};  // display_vulkan.cpp keys
@@ -49,26 +55,28 @@ const IconAtlas* find_icon_atlas(int format, int width, int height, const std::u
 }
 
 void draw_button_icons(const IconAtlas& atlas, std::uint32_t* rgba, int width, IconStyle style) {
-    if (style == IconStyle::PlayStation) return;
-    for (const Icon& icon : atlas.icons) {
-        const auto face = static_cast<std::size_t>(icon.face);
-        const auto at = [&](int x, int y) -> std::uint32_t& { return rgba[y * width + x]; };
-        const int cx = icon.x, cy = icon.y;
-        // The disc: the darkest texel just outside the symbol. The ink: the symbol's brightest texel.
-        std::uint32_t disc = at(cx - 3, cy);
-        for (const std::uint32_t c : {at(cx + 3, cy), at(cx, cy - 3), at(cx, cy + 3)})
-            if (luminance(c) < luminance(disc)) disc = c;
-        std::uint32_t ink = disc;
-        for (int y = cy - 2; y <= cy + 2; ++y)
-            for (int x = cx - 2; x <= cx + 2; ++x)
-                if (luminance(at(x, y)) > luminance(ink)) ink = at(x, y);
-        const std::uint8_t* letter = style == IconStyle::Xbox       ? kXboxLetters[face]
-                                     : style == IconStyle::Nintendo ? kNintendoLetters[face]
-                                                                    : kKeyboardLetters[face];
-        if (style == IconStyle::Xbox) ink = (ink & 0xFF000000u) | kXboxColors[face];
-        for (int y = 0; y < 5; ++y)
-            for (int x = 0; x < 5; ++x) at(cx - 2 + x, cy - 2 + y) = (letter[y] >> (4 - x)) & 1 ? ink : disc;
-    }
+    if (style == IconStyle::PlayStation) return;  // the game's own icons
+    for (const Icon& icon : atlas.icons) draw_icon(rgba, width, icon.x, icon.y, icon.face, style);
+}
+
+void draw_icon(std::uint32_t* rgba, int width, int cx, int cy, IconFace face_, IconStyle style) {
+    const auto face = static_cast<std::size_t>(face_);
+    const auto at = [&](int x, int y) -> std::uint32_t& { return rgba[y * width + x]; };
+    // The disc: the darkest texel just outside the symbol. The ink: the symbol's brightest texel.
+    std::uint32_t disc = at(cx - 3, cy);
+    for (const std::uint32_t c : {at(cx + 3, cy), at(cx, cy - 3), at(cx, cy + 3)})
+        if (luminance(c) < luminance(disc)) disc = c;
+    std::uint32_t ink = disc;
+    for (int y = cy - 2; y <= cy + 2; ++y)
+        for (int x = cx - 2; x <= cx + 2; ++x)
+            if (luminance(at(x, y)) > luminance(ink)) ink = at(x, y);
+    const std::uint8_t* symbol = style == IconStyle::Xbox       ? kXboxLetters[face]
+                                 : style == IconStyle::Nintendo ? kNintendoLetters[face]
+                                 : style == IconStyle::Keyboard ? kKeyboardLetters[face]
+                                                                : kPlayStationShapes[face];
+    if (style == IconStyle::Xbox) ink = (ink & 0xFF000000u) | kXboxColors[face];
+    for (int y = 0; y < 5; ++y)
+        for (int x = 0; x < 5; ++x) at(cx - 2 + x, cy - 2 + y) = (symbol[y] >> (4 - x)) & 1 ? ink : disc;
 }
 
 }  // namespace psprecore::rt::gpu
