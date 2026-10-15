@@ -66,6 +66,7 @@ struct Thread {
     std::uint64_t ready_order = 0;  // FIFO position among equal priorities
 
     nx::semaphore baton{0};  // released when the scheduler hands this thread the guest CPU
+    std::uint8_t baton_misses = 0;  // recent waits for the baton that outlasted the spin (kernel.cpp take_baton)
     nx::thread host;
 };
 
@@ -192,6 +193,7 @@ private:
     std::uint64_t ready_counter_ = 0;
     std::uint64_t now_us_ = 0, next_vblank_us_ = 16683, vblanks_ = 0;
     nx::semaphore idle_baton_{0};
+    std::uint8_t idle_baton_misses_ = 0;
     Context interrupt_ctx_{};
     std::uint32_t interrupt_stack_ = 0;
     bool quit_ = false;

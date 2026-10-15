@@ -6,7 +6,7 @@
 // sound come from the cooked movie (AV1 + Vorbis, see cccook); without it frames are black and audio silent.
 //
 // Skipping (skip_movie) fast-forwards: the game plays the rest of the movie as usual, so its scripts see a normal
-// playthrough (cutting the stream short leaves the scene after the prologue movie waiting forever), while the
+// playthrough (cutting the stream short can leave the scene that follows waiting for the movie forever), while the
 // frames are no longer decoded (black) and the sound is silent. The front end runs the game unthrottled meanwhile.
 
 #include <algorithm>
@@ -287,7 +287,6 @@ void AvcDecodeMode(Context& c) {
 // sceMpegAvcDecode(mpeg, au, frame_width, buffer*, init*): the next frame of the cooked movie, in display order
 // (black without cooked media). Writes 480x272 pixels in the pixel mode chosen by sceMpegAvcDecodeMode.
 void AvcDecode(Context& c) {
-    mark_guest_written_all();  // the decoded frame lands in the game's buffer
     g_mpeg.decoding = true;
     g_mpeg.last_decode_vblank = kernel().vblank_count();
     const std::uint32_t width = arg(c, 2), buffer = arg(c, 3) ? mem().read32(arg(c, 3)) : 0;
@@ -295,6 +294,7 @@ void AvcDecode(Context& c) {
         g_mpeg.frame_width = g_mpeg.video->width();
     if (buffer && width) {
         const std::uint32_t bpp = g_mpeg.pixel_mode == 3 ? 4 : 2;
+        mark_guest_written(buffer, width * 272 * bpp);  // the decoded frame lands in the game's buffer
         const int fw = g_mpeg.frame_width;
         const bool have = !g_mpeg.frame.empty() && fw > 0;
         constexpr std::uint32_t kBlack = 0xFF000000u;

@@ -89,6 +89,8 @@ struct Texture {
     std::uint64_t content = 0;
     std::uint64_t last_frame = 0;
     std::uint64_t checked = 0;  // rt::guest_write_counter() when the data was last verified
+    std::uint64_t sample = 0;   // hash of a sample of the texels at the last full check
+    std::uint8_t quick_checks = 0;  // checks by sample only since the last full one
 };
 
 // Everything that selects a VkPipeline. All fields are bytes so the struct hashes and compares as memory.
@@ -754,6 +756,22 @@ struct VulkanGeRenderer::Impl {
         return s;
     }
 
+    std::uint64_t sample_texels(const rt::gpu::TextureSampler& ts) {
+        std::uint64_t h = 0;
+        for (int l = 0; l < ts.levels(); ++l) {
+            const std::uint8_t* data = ts.level_data(l);
+            const std::size_t size = ts.level_size(l);
+            if (size <= 4096) {
+                h = hash_bytes(data, size, h);
+                stats.hashed_bytes += size;
+                continue;
+            }
+            for (std::size_t at = 0; at < size; at += 2048) h = hash_bytes(data + at, std::min<std::size_t>(64, size - at), h);
+            stats.hashed_bytes += size / 32;
+        }
+        return h;
+    }
+
     // A mod's picture in place of a texture (psprecore/gpu/texture_replacement.hpp): one level, any size. With
     // `sampler`, the picture is an index map coloured with the palette in use.
     bool upload_replacement(Texture& t, const rt::gpu::ReplacementImage& r, const rt::gpu::TextureSampler* palette = nullptr) {
@@ -805,13 +823,26 @@ struct VulkanGeRenderer::Impl {
         Texture& t = textures[key];
         t.last_frame = frame_number;
         // Re-hash the texels only when guest memory under them may have changed since the last check.
-        std::uint64_t written = 0;
+        std::uint64_t written = 0, marked = 0;
         for (int l = 0; l < ts.levels(); ++l) {
             const std::uint32_t level_address = ((s.param(static_cast<std::uint8_t>(ge::TEXBUFWIDTH0 + l)) & 0x0F0000) << 8) |
                                                 (s.param(static_cast<std::uint8_t>(ge::TEXADDR0 + l)) & 0xFFFFF0);
-            written = std::max(written, rt::guest_written_since(level_address, static_cast<std::uint32_t>(ts.level_size(l))));
+            const auto bytes = static_cast<std::uint32_t>(ts.level_size(l));
+            written = std::max(written, rt::guest_written_since(level_address, bytes));
+            marked = std::max(marked, rt::guest_marked_since(level_address, bytes));
         }
         if (t.image.image && written <= t.checked) return &t.image;
+        // The memory may have changed: the game writes back its whole data cache every frame, so most re-checks find
+        // nothing. Unless something known wrote to these texels (marked: an HLE copy, a file read, a movie frame), a
+        // sample (64 bytes of every 2 KiB) decides whether the full hash runs; every 16th check runs it anyway, so
+        // a change the sample misses still shows within a fraction of a second.
+        const std::uint64_t sample = sample_texels(ts);
+        if (t.image.image && marked <= t.checked && sample == t.sample && ++t.quick_checks < 16) {
+            t.checked = rt::guest_write_counter();
+            return &t.image;
+        }
+        t.quick_checks = 0;
+        t.sample = sample;
         const std::uint64_t content = rt::gpu::texture_content_hash(s, ts);
         for (int l = 0; l < ts.levels(); ++l) stats.hashed_bytes += ts.level_size(l);
         t.checked = rt::guest_write_counter();
@@ -1148,7 +1179,8 @@ struct VulkanGeRenderer::Impl {
         cull = s.on(ge::CULLFACEENABLE) && !through;
         cull_mode = static_cast<int>(s.param(ge::CULL) & 1);
 
-        const auto transform_start = nx::timestamp::now();
+        const bool timing = rt::timing_stats();
+        const auto transform_start = timing ? nx::timestamp::now() : nx::timestamp{};
         clip.resize(vertices.size());
         for (std::size_t i = 0; i < vertices.size(); ++i) clip[i] = vp.transform(s, vertices[i]);
 
@@ -1187,7 +1219,7 @@ struct VulkanGeRenderer::Impl {
                 for (std::size_t i = 0; i + 1 < n; i += 2) sprite(clip[i], clip[i + 1]);
                 break;
         }
-        stats.transform_ns += static_cast<std::uint64_t>((nx::timestamp::now() - transform_start).nanos());
+        if (timing) stats.transform_ns += static_cast<std::uint64_t>((nx::timestamp::now() - transform_start).nanos());
         if (out.empty()) return;
 
         // Fixed-function state.
@@ -1318,12 +1350,12 @@ struct VulkanGeRenderer::Impl {
         if (texturing) {
             const std::uint32_t tex_addr = rt::ge::vram_canonical(((s.param(ge::TEXBUFWIDTH0) & 0x0F0000) << 8) |
                                                                   (s.param(ge::TEXADDR0) & 0xFFFFF0));
-            const auto texture_start = nx::timestamp::now();
+            const auto texture_start = timing ? nx::timestamp::now() : nx::timestamp{};
             Image* img = nullptr;
             Target* rt_tex = ts.format() < 4 ? target_containing(tex_addr) : nullptr;
             if (rt_tex) img = target_texture(*rt_tex, tex_addr, ts.width(), ts.height());
             if (!img) img = texture(s, ts, tex_addr, s.format.through);
-            stats.texture_ns += static_cast<std::uint64_t>((nx::timestamp::now() - texture_start).nanos());
+            if (timing) stats.texture_ns += static_cast<std::uint64_t>((nx::timestamp::now() - texture_start).nanos());
             const std::uint32_t filter = s.param(ge::TEXFILTER), wrap = s.param(ge::TEXWRAP);
             if (img) {
                 view = img->view;

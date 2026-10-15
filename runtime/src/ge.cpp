@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "psprecore/runtime/hle.hpp"
 #include "psprecore/runtime/memory.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/time.h"
@@ -223,8 +224,9 @@ void decode_fixed(const VertexFormat& f, const std::uint8_t* t, const float*, Ve
 
 using DecodeFn = void (*)(const VertexFormat&, const std::uint8_t*, const float*, Vertex&);
 
-// The formats Crisis Core draws most (battle: ~75% float UV + 8888 color + s16 position; skinned models with
-// float UV, s8 normals, s16 positions and float weights; through-mode sprites); others use decode_vertex.
+// Common vertex formats get specialised decoders (measured on a 3D action game: ~75% float UV + 8888 color + s16
+// position in battle; skinned models with float UV, s8 normals, s16 positions and float weights; through-mode
+// sprites); every other format uses decode_vertex. Add a game's frequent formats here.
 DecodeFn select_decoder(const VertexFormat& f) {
     if (f.morphs != 1) return decode_vertex;
     const auto is = [&](int tc, int color, int normal, int pos, int weight, bool through) {
@@ -254,7 +256,7 @@ void decode_vertices(const VertexFormat& f, const float* morph_weights, const st
 namespace {
 
 std::uint64_t now_ns() {
-    return nx::timestamp::now().nanos();
+    return timing_stats() ? static_cast<std::uint64_t>(nx::timestamp::now().nanos()) : 0;
 }
 
 }  // namespace

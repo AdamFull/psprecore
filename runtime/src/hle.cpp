@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -38,8 +39,19 @@ void mark_guest_written_all() { g_all_marked = ++g_write_counter; }
 
 std::uint64_t guest_write_counter() { return g_write_counter; }
 
+namespace {
+std::atomic<bool> g_timing_stats{false};
+}  // namespace
+
+void set_timing_stats(bool on) { g_timing_stats.store(on, std::memory_order_relaxed); }
+bool timing_stats() { return g_timing_stats.load(std::memory_order_relaxed); }
+
 std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size) {
-    std::uint64_t newest = g_all_marked;
+    return std::max(g_all_marked, guest_marked_since(address, size));
+}
+
+std::uint64_t guest_marked_since(std::uint32_t address, std::uint32_t size) {
+    std::uint64_t newest = 0;
     if (!size) return newest;
     const std::uint32_t first = physical(address), last = std::min<std::uint32_t>(first + size - 1, 0x1FFFFFFF);
     for (std::uint32_t p = first >> kPageBits; p <= (last >> kPageBits); ++p) newest = std::max(newest, g_page_marks[p]);

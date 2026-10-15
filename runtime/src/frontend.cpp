@@ -162,7 +162,7 @@ nx::vector<std::uint32_t> compare_frames(const nx::vector<std::uint32_t>& ref, c
 }
 
 // Input recordings (--record / --replay), a text file with one line per change:
-//     psprecore-input 1 <wall clock base>    (older recordings: ff7cc-input)
+//     psprecore-input 1 <wall clock base>    (older recordings: <game>-input)
 //     <vblank> pad <buttons, hex> <lx> <ly>
 //     <vblank> dialog <slot>            (save picker answer; -1 = cancel)
 //     <vblank> skip                     (the playing movie was skipped)
@@ -208,12 +208,14 @@ public:
         std::FILE* f = psprecore::io::open_c_file(path, "r");
         if (!f) throw psprecore::Error(nx::string("cannot read ") + path.native());
         long long base = 0;
-        if (std::fscanf(f, "psprecore-input 1 %lld", &base) != 1) {
-            std::rewind(f);  // recordings made before the runtime was psprecore
-            if (std::fscanf(f, "ff7cc-input 1 %lld", &base) != 1) {
-                std::fclose(f);
-                throw psprecore::Error(nx::string(path.native()) + " is not an input recording");
-            }
+        char magic[64];
+        const auto ends_with = [](nx::string_view s, nx::string_view tail) {
+            return s.size() >= tail.size() && s.substr(s.size() - tail.size()) == tail;
+        };
+        // "psprecore-input"; any "<name>-input" header from the runtime's earlier, per-game names is read the same.
+        if (std::fscanf(f, "%63s 1 %lld", magic, &base) != 2 || !ends_with(magic, "-input")) {
+            std::fclose(f);
+            throw psprecore::Error(nx::string(path.native()) + " is not an input recording");
         }
         clock_base_ = base;
         char kind[16];
@@ -565,6 +567,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
     try {
         const bool trace = o.trace, headless = o.headless, no_audio = o.no_audio, unthrottled = o.unthrottled;
         const bool perf = o.perf, mute = o.mute, touch = o.touch;
+        rt::set_timing_stats(perf || o.ge_bench);
         const std::uint64_t screenshot_vblank = o.screenshot_vblank, screenshot_every = o.screenshot_every;
         const nx::string& screenshot_path = o.screenshot_path;
         const nx::string& audio_dump = o.audio_dump;

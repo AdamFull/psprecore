@@ -57,7 +57,13 @@ std::uint64_t display_frame_count();  // framebuffer flips so far (the frame num
 void mark_guest_written(std::uint32_t address, std::uint32_t size);
 void mark_guest_written_all();
 std::uint64_t guest_write_counter();
+// Host-time measurements per draw for --perf / --ge-bench (off otherwise: reading the clock around every draw costs
+// several percent of a phone's CPU).
+void set_timing_stats(bool on);
+bool timing_stats();
 std::uint64_t guest_written_since(std::uint32_t address, std::uint32_t size);  // newest mark covering the range
+// The same without mark_guest_written_all(): only writes known to touch the range (HLE copies, reads, decoders).
+std::uint64_t guest_marked_since(std::uint32_t address, std::uint32_t size);
 
 // Movies (sceMpeg): whether one is on screen, whether the player may skip it, and skipping it. A skipped movie is
 // fast-forwarded (the game still plays it to the end, with black frames and no sound; movie_skipping() tells the
