@@ -1,6 +1,18 @@
-// psptex — HD textures baked offline. `bake` upscales a texture collection (--tex-collect,
-// psprecore/gpu/texture_collection.hpp) with an external upscaler into <cooked>/textures/<content hash>.png, which the
-// runtime draws in place of the game's textures (psprecore/gpu/texture_replacement.hpp).
+// psptex — replacement textures made offline, which the runtime draws in place of the game's
+// (<cooked>/textures/<content hash>.*, psprecore/gpu/texture_replacement.hpp).
+//
+// `pack` turns edited pictures into replacements. A game's tool unpacks its textures for editing into a folder with
+// an index.tsv (lines starting with # are comments; columns after the fifth are the tool's own):
+//
+//     <picture path, relative to the folder> <content hash> <width> <height> <original>
+//
+// <original> is the FNV-1a 64 hash (16 hex digits) of the picture's RGBA pixels as unpacked. Pictures that still
+// match it are left alone; edited ones, of any size up to 2048 pixels, are written with their mipmaps in the formats
+// asked for, and one changed back to the original loses its replacement. <cooked>/textures/packed.tsv lists what was
+// packed, so only pictures edited since are packed again.
+//
+// `bake` upscales a texture collection (--tex-collect, psprecore/gpu/texture_collection.hpp) with an external
+// upscaler into <cooked>/textures/<content hash>.png.
 //
 // Only scene textures (drawn in 3D) are baked. Interface textures (drawn in 2D: menus, HUD, text) look wrong
 // upscaled; they are left to hand-drawn replacements in mods (mods/<mod>/textures), and ones baked before are
@@ -42,6 +54,7 @@
 #include <bc7enc.h>
 
 #include "psprecore/cli.hpp"
+#include "psprecore/formats/cooked.hpp"
 #include "psprecore/formats/ktx2.hpp"
 #include "psprecore/io/file.hpp"
 #include "psprecore/io/path.hpp"
@@ -541,12 +554,140 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
     return failed ? 1 : 0;
 }
 
+// The FNV-1a 64 hash of a picture's pixels (RGBA8), as index.tsv's <original> column.
+std::uint64_t picture_hash(const Image& img) {
+    return cooked::fnv1a64(std::as_bytes(std::span(img.px)));
+}
+
+int pack(const nx::string& assets, const nx::string& cooked_dir, const Options& opt) {
+    const nx::string out_dir = path_join(cooked_dir, "textures");
+    if (!nx::fs::create_directories(out_dir).has_value()) {
+        std::fprintf(stderr, "psptex: cannot create %s\n", out_dir.c_str());
+        return 1;
+    }
+    const bool want_png = opt.formats.find("png") != nx::string::npos,
+               want_bc7 = opt.formats.find("bc7") != nx::string::npos,
+               want_astc = opt.formats.find("astc") != nx::string::npos;
+    // Packed before: content hash -> "<content hash>\t<picture hash>\t<formats>\t<quality>".
+    const nx::string manifest = path_join(out_dir, "packed.tsv");
+    nx::hash_map<nx::string, nx::string> packed;
+    for (const nx::string& line : lines(manifest)) {
+        const auto cols = split(line, '\t');
+        if (cols.size() >= 2) packed[nx::string(cols[0])] = line;
+    }
+    const auto remove_outputs = [&](const nx::string& hash) {
+        for (const char* ext : {".png", ".bc7.ktx2", ".astc.ktx2"}) {
+            const nx::string path = path_join(out_dir, hash + ext);
+            if (nx::fs::exists(path)) (void)nx::fs::remove(path);
+        }
+    };
+
+    struct Job {
+        nx::string hash, path;
+        nx::string settings;  // the packed.tsv line it gets
+    };
+    nx::vector<Job> jobs;
+    std::size_t edited = 0, unchanged = 0, up_to_date = 0, reverted = 0, missing = 0, failed = 0;
+    for (const nx::string& line : lines(path_join(assets, "index.tsv"))) {
+        if (line.starts_with("#")) continue;
+        const auto cols = split(line, '\t');
+        if (cols.size() < 5 || cols[1].size() != 16) continue;
+        const nx::string hash(cols[1]), path = path_join(assets, cols[0]);
+        Image img;
+        if (!read_png(path, img)) {
+            ++missing;
+            continue;
+        }
+        const std::uint64_t now = picture_hash(img);
+        const bool same = img.w == to_int(cols[2]) && img.h == to_int(cols[3]) &&
+                          nx::format("{:016X}", now) == nx::string(cols[4]);
+        if (same) {
+            ++unchanged;
+            if (packed.erase(hash)) {  // edited before, back to the original now
+                remove_outputs(hash);
+                ++reverted;
+            }
+            continue;
+        }
+        ++edited;
+        if (img.w > 2048 || img.h > 2048) {
+            std::fprintf(stderr, "%s: %dx%d is larger than the runtime takes (2048x2048)\n", path.c_str(), img.w, img.h);
+            ++failed;
+            continue;
+        }
+        const nx::string settings = nx::format("{}\t{:016X}\t{}\t{}", hash, now, opt.formats, opt.quality);
+        const auto it = packed.find(hash);
+        const bool outputs = (!want_png || nx::fs::exists(path_join(out_dir, hash + ".png"))) &&
+                             (!want_bc7 || nx::fs::exists(path_join(out_dir, hash + ".bc7.ktx2"))) &&
+                             (!want_astc || nx::fs::exists(path_join(out_dir, hash + ".astc.ktx2")));
+        if (!opt.force && it != packed.end() && it->second == settings && outputs) {
+            ++up_to_date;
+            continue;
+        }
+        jobs.push_back({hash, path, settings});
+    }
+    std::fprintf(stderr, "%zu pictures edited (%zu up to date, %zu to pack), %zu unchanged, %zu changed back, %zu missing\n",
+                 edited, up_to_date, jobs.size(), unchanged, reverted, missing);
+
+    bc7enc_compress_block_init();
+    std::atomic<std::size_t> next{0};
+    nx::mutex lock;
+    nx::vector<nx::thread> pool;
+    const unsigned threads = std::clamp<unsigned>(nx::cpu::logical_core_count(), 1u, 16u);
+    for (unsigned j = 0; j < std::min<std::size_t>(threads, std::max<std::size_t>(jobs.size(), 1)); ++j)
+        pool.emplace_back([&] {
+            Encoders enc(opt);
+            for (std::size_t i; (i = next++) < jobs.size();) {
+                const Job& job = jobs[i];
+                nx::string error;
+                Image img;
+                if (!read_png(job.path, img)) error = "cannot read the picture";
+                const nx::string base = path_join(out_dir, job.hash);
+                if (error.empty() && want_png && !write_png(base + ".png", img)) error = "cannot write the PNG file";
+                if (error.empty() && (want_bc7 || want_astc)) {
+                    const nx::vector<Image> chain = mip_chain(std::move(img));
+                    if (want_bc7 && !write_file(base + ".bc7.ktx2", ktx2::write(enc.bc7(chain))))
+                        error = "cannot write the BC7 file";
+                    ktx2::Texture astc;
+                    if (error.empty() && want_astc && (!enc.astc(chain, astc) || !write_file(base + ".astc.ktx2", ktx2::write(astc))))
+                        error = "cannot write the ASTC file";
+                }
+                nx::scoped_lock hold(lock);
+                if (!error.empty()) {
+                    std::fprintf(stderr, "%s: %s\n", job.path.c_str(), error.c_str());
+                    ++failed;
+                } else {
+                    packed[job.hash] = job.settings;
+                }
+            }
+        });
+    for (auto& th : pool) th.join();
+
+    nx::vector<nx::string> sorted;
+    for (const auto& [hash, line] : packed) sorted.push_back(line);
+    std::sort(sorted.begin(), sorted.end());
+    nx::string text;
+    for (const nx::string& line : sorted) text += line + "\n";
+    (void)nx::fs::file_write_text(manifest, text);
+    std::fprintf(stderr, "done: %zu packed, %zu failed\n", jobs.size() - std::min(jobs.size(), failed), failed);
+    return failed ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     Options opt;
-    nx::string collection, cooked;
-    nx::cli::Parser cli("psptex", "HD textures baked offline for the runtime (cooked/textures).");
+    nx::string collection, cooked, assets;
+    nx::cli::Parser cli("psptex", "Replacement textures made offline for the runtime (cooked/textures).");
+    cli.command("pack", "edited pictures of an unpacked texture folder (index.tsv) -> <cooked>/textures")
+        .positional("assets", assets, "unpacked textures (with index.tsv)")
+        .positional("cooked", cooked, "cooked media folder")
+        .option("formats", opt.formats,
+                "what to write, comma-separated: png, bc7 (desktop GPUs), astc (mobile GPUs) (default: png,bc7,astc)",
+                {.value_name = "LIST"})
+        .option("quality", opt.quality, "block compression effort (default: medium)",
+                {.value_name = "LEVEL", .choices = {"fast", "medium", "thorough"}})
+        .flag("force", opt.force, "pack again pictures already packed");
     cli.command("bake", "upscale a texture collection (--tex-collect) into <cooked>/textures")
         .positional("collection", collection, "texture collection folder (with index.tsv)")
         .positional("cooked", cooked, "cooked media folder")
@@ -575,6 +716,7 @@ int main(int argc, char** argv) {
     nx::string command;
     if (const int code = parse_command_line(cli, argc, argv, &command); code >= 0) return code;
     try {
+        if (command == "pack") return pack(assets, cooked, opt);
         if (command == "bake") return bake(collection, cooked, opt);
         std::fputs(cli.help().c_str(), stderr);
         return 2;

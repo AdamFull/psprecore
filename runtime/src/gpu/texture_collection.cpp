@@ -46,10 +46,15 @@ void start_texture_collection(nx::string_view dir) {
 bool collecting_textures() { return g_index != nullptr; }
 
 void collect_texture(std::uint64_t content_hash, const std::uint32_t* rgba, int width, int height, int format,
-                     bool two_d, bool repeat_u, bool repeat_v) {
+                     bool two_d, bool repeat_u, bool repeat_v, std::span<const std::uint8_t> texels) {
     if (!g_index || !g_seen.insert(content_hash).second) return;
     const nx::string name = nx::format("{:016X}", content_hash);
     if (!write_png(path_join(g_dir, name + ".png"), rgba, width, height)) return;
+    try {
+        io::write_all(path_join(g_dir, name + ".texels"), std::as_bytes(texels));
+    } catch (const std::exception&) {
+        std::fprintf(stderr, "tex-collect: cannot write %s.texels\n", name.c_str());
+    }
     const char* wrap = repeat_u ? (repeat_v ? "repeat" : "repeat-u") : (repeat_v ? "repeat-v" : "clamp");
     std::fprintf(g_index, "%s\t%d\t%d\t%d\t%s\t%s\n", name.c_str(), width, height, format, two_d ? "2d" : "3d", wrap);
     std::fflush(g_index);

@@ -1,8 +1,11 @@
 #pragma once
 
-// Collecting the game's textures for baking HD versions offline (--tex-collect DIR; psptex bake upscales them into
-// cooked/textures, psprecore/gpu/texture_replacement.hpp). Each texture is written once, as the game has it
-// (level 0), to DIR/<content hash>.png (the hash texture replacement matches) and listed in DIR/index.tsv:
+// Collecting the game's textures (--tex-collect DIR), for editing them by hand or baking HD versions offline: a
+// game's own tool finds where they come from in its files and lays them out for editing, psptex pack turns the
+// edited pictures into replacements (psprecore/gpu/texture_replacement.hpp); psptex bake upscales a collection.
+// Each texture is written once, as the game has it (level 0), to DIR/<content hash>.png (the hash texture
+// replacement matches), its raw texels as the GE reads them to DIR/<content hash>.texels (to find them in the
+// game's files), and listed in DIR/index.tsv:
 //
 //     <content hash> <width> <height> <GE format> <2d|3d> <repeat|repeat-u|repeat-v|clamp>
 //
@@ -14,6 +17,7 @@
 // at the game's resolution.
 
 #include <cstdint>
+#include <span>
 
 #include "core/foundation/strings/utf8_string.h"
 
@@ -22,6 +26,6 @@ namespace psprecore::rt::gpu {
 void start_texture_collection(nx::string_view dir);
 bool collecting_textures();
 void collect_texture(std::uint64_t content_hash, const std::uint32_t* rgba, int width, int height, int format,
-                     bool two_d, bool repeat_u, bool repeat_v);
+                     bool two_d, bool repeat_u, bool repeat_v, std::span<const std::uint8_t> texels);
 
 }  // namespace psprecore::rt::gpu

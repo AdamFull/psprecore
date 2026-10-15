@@ -815,7 +815,8 @@ struct VulkanGeRenderer::Impl {
                 ts.decode(0, rgba.data());
                 const std::uint32_t wrap = s.param(ge::TEXWRAP);
                 rt::gpu::collect_texture(t.content, rgba.data(), ts.width(0), ts.height(0), ts.format(), s.format.through,
-                                         (wrap & 1) == 0, (wrap & 0x100) == 0);
+                                         (wrap & 1) == 0, (wrap & 0x100) == 0,
+                                         {ts.level_data(0), static_cast<std::size_t>(ts.level_size(0))});
             }
         }
         return &t.image;
