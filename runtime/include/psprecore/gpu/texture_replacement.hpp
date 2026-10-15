@@ -8,7 +8,9 @@
 //
 // and from baked HD textures (psptex bake, from a --tex-collect collection; the "HD textures" setting):
 //
-//     cooked/textures/<16 hex digits>.png
+//     cooked/textures/<16 hex digits>.png          any GPU; mipmaps made when loading
+//     cooked/textures/<16 hex digits>.bc7.ktx2     BC7 with mipmaps, used when the GPU samples BC7 (desktop)
+//     cooked/textures/<16 hex digits>.astc.ktx2    ASTC 4x4 with mipmaps, used when the GPU samples ASTC (mobile)
 //
 // Any size (texture coordinates are normalised, so a 2x or 4x picture just looks sharper), RGBA PNG up to 2048x2048.
 // Mods apply in order (psprecore/platform/mods.hpp), a later one winning, and every mod wins over baked textures.
@@ -32,11 +34,18 @@
 
 namespace psprecore::rt::gpu {
 
+enum class Compression : std::uint8_t { None, BC7, ASTC4x4 };
+
 struct ReplacementImage {
-    nx::vector<std::uint32_t> rgba;  // level 0, then each mipmap (half the size of the one before, down to 1x1)
+    Compression compression = Compression::None;
+    nx::vector<std::uint32_t> rgba;   // None: level 0, then each mipmap (half the size of the one before, down to 1x1)
+    nx::vector<std::uint8_t> blocks;  // BC7, ASTC4x4: the same levels as 4x4 blocks of 16 bytes (psprecore/formats/ktx2.hpp)
     int width = 0, height = 0;
     std::uint32_t levels = 1;
 };
+
+// The block-compressed formats the renderer can sample (baked textures in them are preferred).
+void set_compressed_textures(bool bc7, bool astc);
 
 // Finds the pictures in <mod>/textures of the active mods (call once at start).
 void scan_texture_replacements(std::span<const nx::string> mods);

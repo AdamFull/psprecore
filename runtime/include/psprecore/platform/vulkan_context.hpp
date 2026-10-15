@@ -20,6 +20,8 @@ struct VulkanContext {
     std::uint32_t api_version = 0;
     bool logic_op = false;           // VkPhysicalDeviceFeatures::logicOp enabled
     bool sampler_anisotropy = false;
+    bool texture_bc = false;    // textureCompressionBC enabled (BC7 baked textures)
+    bool texture_astc = false;  // textureCompressionASTC_LDR enabled (ASTC baked textures)
     bool depth_clamp = false;
     VkFormat depth_format = VK_FORMAT_UNDEFINED;  // depth + stencil attachment format
     // Dynamic rendering (core in 1.3, else VK_KHR_dynamic_rendering).

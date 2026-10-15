@@ -1,10 +1,12 @@
-# File formats of PSP software (ELF/PRX, ATRAC3, PSMF), the cooked media container, and file and text helpers.
+# File formats of PSP software (ELF/PRX, ATRAC3, PSMF), the cooked media container, KTX2 textures, and file and
+# text helpers.
 add_library(psprecore_formats STATIC
     src/io/file.cpp
     src/formats/elf.cpp
     src/formats/prx.cpp
     src/formats/atrac.cpp
     src/formats/psmf.cpp
+    src/formats/ktx2.cpp
 )
 add_library(psprecore::formats ALIAS psprecore_formats)
 

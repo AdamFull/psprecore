@@ -10,10 +10,15 @@
 // RGB texture function, fixed blend factors). Afterwards, what the upscaler smoothed away is put back (--detail):
 // Real-ESRGAN models remove noise, and take faint grime, cracks and dithering for it. The result is shrunk to the
 // original size, and the difference from the original, upscaled smoothly, added to it (back-projection), so the
-// result shrinks back to the original while keeping the upscaler's edges. Baked textures are listed in <cooked>/textures/baked.tsv, so a later
-// run only bakes new ones (or ones baked with other settings).
+// result shrinks back to the original while keeping the upscaler's edges.
+//
+// Each texture is written with its mipmaps in the formats asked for (--formats): PNG (any GPU; the runtime makes the
+// mipmaps), BC7 for desktop GPUs (bc7enc) and ASTC 4x4 for mobile ones (Arm's astcenc), both in KTX2 files
+// (psprecore/formats/ktx2.hpp) and a quarter of the memory. Baked textures are listed in <cooked>/textures/baked.tsv,
+// so a later run only bakes new ones (or ones baked with other settings).
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -29,13 +34,20 @@
 #define STBI_ONLY_PNG
 #include <stb_image.h>
 
+#include <astcenc.h>
+#include <bc7enc.h>
+
 #include "psprecore/cli.hpp"
+#include "psprecore/formats/ktx2.hpp"
+#include "psprecore/io/file.hpp"
 #include "psprecore/io/path.hpp"
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/strings/format.h"
 #include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
 
 using namespace psprecore;
 
@@ -46,6 +58,8 @@ struct Options {
     nx::string model_2d = "realesrgan-x4plus-anime", model_3d = "realesrgan-x4plus";
     int scale = 4, max_size = 2048, pad = 8;  // max_size: the runtime's limit
     int detail = 100;                         // percent of the lost detail put back
+    nx::string formats = "png,bc7,astc";
+    nx::string quality = "medium";  // block compression effort: fast, medium, thorough
     nx::string only;
     std::size_t limit = static_cast<std::size_t>(-1);
     bool force = false, keep_temp = false;
@@ -165,6 +179,101 @@ void restore_detail(Image& img, const Image& orig, int scale, int percent, bool 
     }
 }
 
+// The image and its mipmaps (halved with alpha-weighted boxes, down to 1x1).
+nx::vector<Image> mip_chain(Image level0) {
+    nx::vector<Image> chain;
+    chain.push_back(std::move(level0));
+    while (chain.back().w > 1 || chain.back().h > 1) chain.push_back(halved(chain.back()));
+    return chain;
+}
+
+// Block encoders for one worker thread.
+class Encoders {
+public:
+    explicit Encoders(const Options& opt) {
+        bc7enc_compress_block_params_init(&bc7_);
+        bc7enc_compress_block_params_init_linear_weights(&bc7_);  // UNORM data, as the game draws it
+        if (opt.quality == "fast") {
+            bc7_.m_max_partitions_mode = 0;
+            bc7_.m_try_least_squares = BC7ENC_FALSE;
+        } else if (opt.quality == "thorough") {
+            bc7_.m_max_partitions_mode = BC7ENC_MAX_PARTITIONS1;
+            bc7_.m_uber_level = 1;
+        } else {
+            bc7_.m_max_partitions_mode = 16;
+        }
+        const float preset = opt.quality == "fast" ? ASTCENC_PRE_FAST
+                             : opt.quality == "thorough" ? ASTCENC_PRE_THOROUGH
+                                                         : ASTCENC_PRE_MEDIUM;
+        astcenc_config config{};
+        if (astcenc_config_init(ASTCENC_PRF_LDR, 4, 4, 1, preset, 0, &config) != ASTCENC_SUCCESS ||
+            astcenc_context_alloc(&config, 1, &astc_, nullptr) != ASTCENC_SUCCESS)
+            astc_ = nullptr;
+    }
+    ~Encoders() {
+        if (astc_) astcenc_context_free(astc_);
+    }
+    Encoders(const Encoders&) = delete;
+    Encoders& operator=(const Encoders&) = delete;
+
+    ktx2::Texture bc7(const nx::vector<Image>& chain) const {
+        ktx2::Texture out = start(ktx2::Format::BC7, chain);
+        std::size_t at = 0;
+        for (const Image& level : chain) {
+            for (int by = 0; by < (level.h + 3) / 4; ++by)
+                for (int bx = 0; bx < (level.w + 3) / 4; ++bx) {
+                    std::uint32_t block[16];
+                    for (int y = 0; y < 4; ++y)
+                        for (int x = 0; x < 4; ++x)
+                            block[y * 4 + x] = level.at(std::min(level.w - 1, bx * 4 + x), std::min(level.h - 1, by * 4 + y));
+                    bc7enc_compress_block(out.data.data() + at, block, &bc7_);
+                    at += 16;
+                }
+        }
+        return out;
+    }
+
+    // False when astcenc failed.
+    bool astc(const nx::vector<Image>& chain, ktx2::Texture& out) {
+        if (!astc_) return false;
+        out = start(ktx2::Format::ASTC4x4, chain);
+        std::size_t at = 0;
+        const astcenc_swizzle swizzle{ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A};
+        for (const Image& level : chain) {
+            void* slice = const_cast<std::uint32_t*>(level.px.data());
+            astcenc_image image{static_cast<unsigned>(level.w), static_cast<unsigned>(level.h), 1, ASTCENC_TYPE_U8, &slice};
+            const std::size_t size = ktx2::level_size(level.w, level.h);
+            const bool ok = astcenc_compress_image(astc_, &image, &swizzle, out.data.data() + at, size, 0) == ASTCENC_SUCCESS;
+            astcenc_compress_reset(astc_);
+            if (!ok) return false;
+            at += size;
+        }
+        return true;
+    }
+
+private:
+    static ktx2::Texture start(ktx2::Format format, const nx::vector<Image>& chain) {
+        ktx2::Texture out{format, chain[0].w, chain[0].h, static_cast<std::uint32_t>(chain.size())};
+        std::size_t size = 0;
+        for (const Image& level : chain) size += ktx2::level_size(level.w, level.h);
+        out.data.resize(size);
+        return out;
+    }
+
+    bc7enc_compress_block_params bc7_{};
+    astcenc_context* astc_ = nullptr;
+};
+
+bool write_file(const nx::string& path, std::span<const std::byte> data) {
+    try {
+        io::File f(path, io::File::Mode::Write);
+        f.write(data);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 nx::string quote(nx::string_view s) { return nx::string("\"") + nx::string(s) + "\""; }
 
 // Runs a command line through the shell; returns the exit status.
@@ -240,9 +349,18 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
         if (cols.size() >= 2) baked[nx::string(cols[0])] = nx::string(line);
     }
     const auto settings = [&](const Texture& t) {
-        return nx::format("{}\t{}\t{}\t{}\t{}\t{}", t.hash, t.w, t.h, t.scale, t.two_d ? opt.model_2d : opt.model_3d,
-                          opt.detail);
+        return nx::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", t.hash, t.w, t.h, t.scale,
+                          t.two_d ? opt.model_2d : opt.model_3d, opt.detail, opt.formats, opt.quality);
     };
+    const bool want_png = opt.formats.find("png") != nx::string::npos,
+               want_bc7 = opt.formats.find("bc7") != nx::string::npos,
+               want_astc = opt.formats.find("astc") != nx::string::npos;
+    const auto outputs_exist = [&](const nx::string& hash) {
+        const nx::string base = path_join(out_dir, hash);
+        return (!want_png || nx::fs::exists(base + ".png")) && (!want_bc7 || nx::fs::exists(base + ".bc7.ktx2")) &&
+               (!want_astc || nx::fs::exists(base + ".astc.ktx2"));
+    };
+    bc7enc_compress_block_init();
 
     nx::vector<Batch> batches;
     std::size_t queued = 0, up_to_date = 0, too_big = 0, flat = 0;
@@ -259,7 +377,7 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
             ++too_big;
             continue;
         }
-        if (!opt.force && nx::fs::exists(path_join(out_dir, t.hash + ".png"))) {
+        if (!opt.force && outputs_exist(t.hash)) {
             const auto it = baked.find(t.hash);
             if (it != baked.end() && it->second == settings(t)) {
                 ++up_to_date;
@@ -322,32 +440,54 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
             pass_in = pass_out;
         }
 
-        for (const Texture& t : work) {
+        // Finishing (crop, detail, mipmaps, block compression) on every core.
+        const int factor = batch.passes == 2 ? 16 : 4;
+        const auto finish = [&](const Texture& t, Encoders& enc) -> nx::string {  // an error, or empty
             Image img;
-            if (!read_png(path_join(pass_in, t.hash + ".png"), img)) {
-                std::fprintf(stderr, "%s: no upscaled picture\n", t.hash.c_str());
-                ++failed;
-                continue;
-            }
-            const int factor = batch.passes == 2 ? 16 : 4;
-            if (img.w != (t.w + 2 * opt.pad) * factor || img.h != (t.h + 2 * opt.pad) * factor) {
-                std::fprintf(stderr, "%s: the upscaler made %dx%d, not %dx\n", t.hash.c_str(), img.w, img.h, factor);
-                ++failed;
-                continue;
-            }
+            if (!read_png(path_join(pass_in, t.hash + ".png"), img)) return "no upscaled picture";
+            if (img.w != (t.w + 2 * opt.pad) * factor || img.h != (t.h + 2 * opt.pad) * factor)
+                return nx::format("the upscaler made {}x{}, not {}x", img.w, img.h, factor);
             img = cropped(img, opt.pad * factor, opt.pad * factor, t.w * factor, t.h * factor);
             for (int f = factor; f > t.scale; f /= 2) img = halved(img);
-            const Image& orig = originals[t.hash];
+            const Image& orig = originals.find(t.hash)->second;
             if (opt.detail) restore_detail(img, orig, t.scale, opt.detail, t.repeat_u, t.repeat_v);
             if (std::all_of(orig.px.begin(), orig.px.end(), [](std::uint32_t c) { return alpha(c) == 255; }))
                 for (auto& c : img.px) c |= 0xFF000000u;
-            if (!write_png(path_join(out_dir, t.hash + ".png"), img)) {
-                ++failed;
-                continue;
+            const nx::string base = path_join(out_dir, t.hash);
+            if (want_png && !write_png(base + ".png", img)) return "cannot write the PNG file";
+            if (!want_bc7 && !want_astc) return {};
+            const nx::vector<Image> chain = mip_chain(std::move(img));
+            if (want_bc7 && !write_file(base + ".bc7.ktx2", ktx2::write(enc.bc7(chain)))) return "cannot write the BC7 file";
+            if (want_astc) {
+                ktx2::Texture astc;
+                if (!enc.astc(chain, astc)) return "ASTC compression failed";
+                if (!write_file(base + ".astc.ktx2", ktx2::write(astc))) return "cannot write the ASTC file";
             }
-            baked[t.hash] = settings(t);
-            ++done;
-        }
+            return {};
+        };
+        const auto start = std::chrono::steady_clock::now();
+        std::atomic<std::size_t> next{0};
+        nx::mutex lock;
+        nx::vector<nx::thread> pool;
+        const unsigned threads = std::clamp(nx::cpu::logical_core_count(), 1u, 16u);
+        for (unsigned j = 0; j < threads; ++j)
+            pool.emplace_back([&] {
+                Encoders enc(opt);
+                for (std::size_t i; (i = next++) < work.size();) {
+                    const nx::string error = finish(work[i], enc);
+                    nx::scoped_lock hold(lock);
+                    if (!error.empty()) {
+                        std::fprintf(stderr, "%s: %s\n", work[i].hash.c_str(), error.c_str());
+                        ++failed;
+                    } else {
+                        baked[work[i].hash] = settings(work[i]);
+                        ++done;
+                    }
+                }
+            });
+        for (auto& th : pool) th.join();
+        std::fprintf(stderr, "  finished in %.1f s\n",
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
         if (!opt.keep_temp) (void)nx::fs::remove_all(dir);
 
         nx::vector<nx::string> sorted;
@@ -387,6 +527,11 @@ int main(int argc, char** argv) {
         .option("detail", opt.detail,
                 "percent of the detail the upscaler smoothed away to put back (default: 100; 0: the upscaler's result)",
                 {.value_name = "PERCENT"})
+        .option("formats", opt.formats,
+                "what to write, comma-separated: png, bc7 (desktop GPUs), astc (mobile GPUs) (default: png,bc7,astc)",
+                {.value_name = "LIST"})
+        .option("quality", opt.quality, "block compression effort (default: medium)",
+                {.value_name = "LEVEL", .choices = {"fast", "medium", "thorough"}})
         .option("pad", opt.pad, "border added around each texture while upscaling (default: 8)", {.value_name = "N"})
         .option("only", opt.only, "bake one kind only", {.value_name = "KIND", .choices = {"2d", "3d"}})
         .option("limit", opt.limit, "bake at most N textures (testing)", {.value_name = "N"})

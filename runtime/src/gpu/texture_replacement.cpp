@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cstdio>
 
+#include "psprecore/formats/ktx2.hpp"
+#include "psprecore/io/file.hpp"
 #include "psprecore/runtime/hle.hpp"
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/platform/filesystem.h"
@@ -21,7 +23,8 @@ constexpr std::size_t kMemoryBudget = 96u << 20;  // loaded pictures kept for up
 enum class State : std::uint8_t { Unloaded, Queued, Ready, Failed };
 
 struct Entry {
-    nx::string path;
+    nx::string path;                 // PNG
+    nx::string bc7_path, astc_path;  // KTX2 (baked textures)
     State state = State::Unloaded;
     std::uint64_t last_used = 0;
     ReplacementImage image;
@@ -31,9 +34,11 @@ struct Entry {
 struct Source {
     nx::hash_map<std::uint64_t, Entry> entries;
     bool mipmaps = true;
+    bool compressed = false;  // has KTX2 files
 };
-Source g_mods, g_indexed{{}, false}, g_baked;
+Source g_mods, g_indexed{{}, false}, g_baked{{}, true, true};
 std::atomic<bool> g_baked_enabled{true};
+std::atomic<bool> g_bc7{false}, g_astc{false};
 
 // Loading: entries go Unloaded -> Queued (renderer thread) -> Ready or Failed (worker), and Ready -> Unloaded when
 // evicted (renderer thread). The lock guards states, queue and images.
@@ -75,10 +80,33 @@ void scan_folder(nx::string_view dir, Source& into) {
     for (const auto& f : files.value()) {
         const nx::string_view name = file_name(f.path);
         std::uint64_t hash = 0;
-        if (f.type != nx::fs::file_type::regular || !name.ends_with(".png") || !parse_hash(name, hash)) continue;
-        into.entries[hash] = Entry{f.path};
+        if (f.type != nx::fs::file_type::regular || !parse_hash(name, hash)) continue;
+        if (name.ends_with(".png")) {
+            if (into.compressed) into.entries[hash].path = f.path;
+            else into.entries[hash] = Entry{f.path};  // a later mod's picture replaces an earlier one's
+        } else if (into.compressed && name.ends_with(".bc7.ktx2")) {
+            into.entries[hash].bc7_path = f.path;
+        } else if (into.compressed && name.ends_with(".astc.ktx2")) {
+            into.entries[hash].astc_path = f.path;
+        }
     }
 }
+
+// A KTX2 file of baked blocks; false when it cannot be used.
+bool read_blocks(const nx::string& path, ReplacementImage& img) {
+    ktx2::Texture t;
+    try {
+        if (!ktx2::read(io::read_all(path), t)) return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+    img.compression = t.format == ktx2::Format::BC7 ? Compression::BC7 : Compression::ASTC4x4;
+    img.width = t.width, img.height = t.height, img.levels = t.levels;
+    img.blocks = std::move(t.data);
+    return true;
+}
+
+std::size_t memory_size(const ReplacementImage& img) { return img.rgba.size() * 4 + img.blocks.size(); }
 
 // Appends the mipmaps of the level-0 picture in `img` (colours weighted by alpha, 2x2 boxes).
 void add_mipmaps(ReplacementImage& img) {
@@ -125,14 +153,16 @@ void worker() {
             g_queue.pop_back();
         }
         ReplacementImage img;
-        bool ok = read_png(job.path, img.rgba, img.width, img.height) && img.width <= kMaxSize && img.height <= kMaxSize;
+        const bool ktx2 = job.path.ends_with(".ktx2");
+        bool ok = (ktx2 ? read_blocks(job.path, img) : read_png(job.path, img.rgba, img.width, img.height)) &&
+                  img.width <= kMaxSize && img.height <= kMaxSize;
         if (!ok) std::fprintf(stderr, "textures: cannot use %s (unreadable or larger than 2048x2048)\n", job.path.c_str());
-        else if (job.source->mipmaps) add_mipmaps(img);
+        else if (!ktx2 && job.source->mipmaps) add_mipmaps(img);
         nx::scoped_lock lock(g_lock);
         Entry& e = job.source->entries.find(job.hash)->second;
         e.state = ok ? State::Ready : State::Failed;
         if (ok) {
-            g_loaded_bytes += img.rgba.size() * 4;
+            g_loaded_bytes += memory_size(img);
             e.image = std::move(img);
         }
     }
@@ -158,7 +188,7 @@ void evict(const Entry* keep) {
             for (auto& [_, e] : s->entries)
                 if (e.state == State::Ready && &e != keep && (!oldest || e.last_used < oldest->last_used)) oldest = &e;
         if (!oldest) return;
-        g_loaded_bytes -= oldest->image.rgba.size() * 4;
+        g_loaded_bytes -= memory_size(oldest->image);
         oldest->image = {};
         oldest->state = State::Unloaded;
     }
@@ -176,9 +206,17 @@ FoundImage find(Source& source, std::uint64_t hash) {
             evict(&e);
             return {Lookup::Ready, &e.image};
         case State::Unloaded: {
+            // Compressed blocks when the GPU takes them, else the picture.
+            const nx::string& path = g_bc7 && !e.bc7_path.empty()    ? e.bc7_path
+                                     : g_astc && !e.astc_path.empty() ? e.astc_path
+                                                                      : e.path;
+            if (path.empty()) {
+                e.state = State::Failed;
+                return {};
+            }
             static Loader loader;
             e.state = State::Queued;
-            g_queue.push_back(Job{&source, hash, e.path});
+            g_queue.push_back(Job{&source, hash, path});
             g_wake.notify_one();
             return {Lookup::Loading};
         }
@@ -205,12 +243,20 @@ void scan_texture_replacements(std::span<const nx::string> mods) {
 void scan_baked_textures(nx::string_view dir) {
     g_baked.entries.clear();
     scan_folder(dir, g_baked);
-    if (!g_baked.entries.empty())
-        std::fprintf(stderr, "textures: %zu baked HD textures (%.*s)\n", g_baked.entries.size(),
-                     static_cast<int>(dir.size()), dir.data());
+    if (g_baked.entries.empty()) return;
+    std::size_t bc7 = 0, astc = 0;
+    for (const auto& [_, e] : g_baked.entries) bc7 += !e.bc7_path.empty(), astc += !e.astc_path.empty();
+    std::fprintf(stderr, "textures: %zu baked HD textures, %zu as BC7, %zu as ASTC (%.*s)\n", g_baked.entries.size(), bc7,
+                 astc, static_cast<int>(dir.size()), dir.data());
 }
 
 bool have_baked_textures() { return !g_baked.entries.empty(); }
+
+void set_compressed_textures(bool bc7, bool astc) {
+    g_bc7 = bc7;
+    g_astc = astc;
+    std::fprintf(stderr, "textures: the GPU samples%s%s\n", bc7 ? " BC7" : "", astc ? " ASTC" : bc7 ? "" : " no compressed formats");
+}
 
 bool enable_baked_textures(bool enabled) { return g_baked_enabled.exchange(enabled) != enabled && have_baked_textures(); }
 

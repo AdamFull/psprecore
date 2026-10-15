@@ -223,6 +223,8 @@ void Display::Impl::create_device() {
     enabled.logicOp = supported.logicOp;
     enabled.samplerAnisotropy = supported.samplerAnisotropy;
     enabled.depthClamp = supported.depthClamp;
+    enabled.textureCompressionBC = supported.textureCompressionBC;
+    enabled.textureCompressionASTC_LDR = supported.textureCompressionASTC_LDR;
     VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     features13.dynamicRendering = VK_TRUE;
     VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_khr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
@@ -265,6 +267,8 @@ void Display::Impl::create_device() {
     ctx.logic_op = enabled.logicOp;
     ctx.sampler_anisotropy = enabled.samplerAnisotropy;
     ctx.depth_clamp = enabled.depthClamp;
+    ctx.texture_bc = enabled.textureCompressionBC;
+    ctx.texture_astc = enabled.textureCompressionASTC_LDR;
     ctx.begin_rendering = core13 ? vkCmdBeginRendering : vkCmdBeginRenderingKHR;
     ctx.end_rendering = core13 ? vkCmdEndRendering : vkCmdEndRenderingKHR;
     for (const VkFormat f : {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}) {

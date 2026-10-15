@@ -13,6 +13,7 @@
 
 #include "psprecore/gpu/texture_collection.hpp"
 #include "psprecore/gpu/texture_replacement.hpp"
+#include "psprecore/formats/ktx2.hpp"
 #include "psprecore/gpu/ui_font.hpp"
 #include "psprecore/runtime/hle.hpp"
 #include "psprecore/runtime/memory.hpp"
@@ -803,11 +804,15 @@ struct VulkanGeRenderer::Impl {
     // image t had (the game's texture while the picture loaded) goes. With `palette`, the picture is an index map
     // coloured with the palette in use.
     bool upload_replacement(Texture& t, const rt::gpu::ReplacementImage& r, const rt::gpu::TextureSampler* palette = nullptr) {
+        using rt::gpu::Compression;
         VkDeviceSize offset = 0;
-        const VkDeviceSize bytes = static_cast<VkDeviceSize>(r.rgba.size()) * 4;
+        const VkDeviceSize bytes = r.compression == Compression::None ? static_cast<VkDeviceSize>(r.rgba.size()) * 4
+                                                                       : static_cast<VkDeviceSize>(r.blocks.size());
         auto* dst = staging(bytes, offset);
         if (!dst) return false;  // staging full this frame: the game's own texture for now
-        if (palette) {
+        if (r.compression != Compression::None) {
+            std::memcpy(dst, r.blocks.data(), bytes);
+        } else if (palette) {
             auto* out = reinterpret_cast<std::uint32_t*>(dst);
             const bool four_bit = palette->format() == 4;
             for (std::size_t i = 0; i < r.rgba.size(); ++i) {
@@ -818,7 +823,10 @@ struct VulkanGeRenderer::Impl {
             std::memcpy(dst, r.rgba.data(), bytes);
         }
         if (t.image.image) frame().garbage.push_back(t.image);  // destroyed once this frame slot is reused
-        t.image = make_image(r.width, r.height, kColorFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        const VkFormat format = r.compression == Compression::BC7       ? VK_FORMAT_BC7_UNORM_BLOCK
+                                : r.compression == Compression::ASTC4x4 ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                                                                        : kColorFormat;
+        t.image = make_image(r.width, r.height, format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                              VK_IMAGE_ASPECT_COLOR_BIT, r.levels);
         t.image.replacement = true;
         const VkCommandBuffer cmd = frame().upload;
@@ -830,7 +838,8 @@ struct VulkanGeRenderer::Impl {
             copies[l].bufferOffset = offset;
             copies[l].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};
             copies[l].imageExtent = {w, h, 1};
-            offset += static_cast<VkDeviceSize>(w) * h * 4;
+            offset += r.compression == Compression::None ? static_cast<VkDeviceSize>(w) * h * 4
+                                                          : ktx2::level_size(static_cast<int>(w), static_cast<int>(h));
         }
         vkCmdCopyBufferToImage(cmd, frame().staging.buffer, t.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                r.levels, copies.data());
@@ -1528,6 +1537,16 @@ VulkanGeRenderer::VulkanGeRenderer(const VulkanContext& vk, rt::GuestMemory& mem
                                    nx::string pipeline_cache)
     : impl_(nx::make_unique<Impl>(vk, memory, scale, std::move(pipeline_cache))) {
     impl_->init();
+    // Baked textures in block-compressed formats, where the GPU samples them (and copies into them).
+    const auto usable = [&](VkFormat format) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(vk.gpu, format, &props);
+        constexpr VkFormatFeatureFlags kNeeded = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                                                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+        return (props.optimalTilingFeatures & kNeeded) == kNeeded;
+    };
+    rt::gpu::set_compressed_textures(vk.texture_bc && usable(VK_FORMAT_BC7_UNORM_BLOCK),
+                                     vk.texture_astc && usable(VK_FORMAT_ASTC_4x4_UNORM_BLOCK));
 }
 
 VulkanGeRenderer::~VulkanGeRenderer() { impl_->shutdown(); }
