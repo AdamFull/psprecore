@@ -389,6 +389,7 @@ struct Options {
     int window_shots = 1;
     std::uint32_t watch_address = 0, watch_size = 0;
     nx::string tex_dump_dir, ram_dump_path, window_shot_path, tex_collect;
+    nx::vector<nx::string> pokes;  // VBLANK:ADDR:VALUE
     nx::string record, replay, saves, mods;
     std::int64_t clock = 0;
     bool clock_given = false;
@@ -476,6 +477,8 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
              {.value_name = "DIR"});
     c.option("profile", o.profile, "Windows: sample where the host spends its time from VBLANK on",
              {.value_name = "VBLANK"});
+    c.option_many("poke", o.pokes, "write the 32-bit VALUE to guest memory ADDR at VBLANK (hex address and value)",
+                  {.value_name = "VBLANK:ADDR:VALUE"});
     c.option("watch", watch, "Windows: from VBLANK on, list the functions accessing guest memory ADDR..ADDR+SIZE (hex)",
              {.value_name = "VBLANK:ADDR:SIZE"});
 
@@ -804,6 +807,16 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         const auto bench_tick = [&] {
             tex_dump_tick();
             if (profile_vblank && kernel.vblank_count() == profile_vblank) profiler = nx::make_unique<platform::SamplingProfiler>();
+            for (const nx::string& poke : o.pokes) {
+                const auto a = poke.find(':'), b = poke.find(':', a == nx::string::npos ? a : a + 1);
+                if (b == nx::string::npos ||
+                    std::strtoull(poke.substr(0, a).c_str(), nullptr, 10) != kernel.vblank_count())
+                    continue;
+                const auto addr = static_cast<std::uint32_t>(std::strtoul(poke.substr(a + 1, b - a - 1).c_str(), nullptr, 16));
+                const auto value = static_cast<std::uint32_t>(std::strtoul(poke.substr(b + 1).c_str(), nullptr, 16));
+                memory.write32(addr, value);
+                std::fprintf(stderr, "poke: 0x%08X = 0x%08X at vblank %s\n", addr, value, poke.substr(0, a).c_str());
+            }
             if (o.watch_vblank && kernel.vblank_count() == o.watch_vblank)
                 memory_watch = nx::make_unique<platform::MemoryWatch>(o.watch_address, o.watch_size);
             if (!ge_bench_vblank) return;

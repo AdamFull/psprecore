@@ -26,6 +26,41 @@ struct Hits {
     std::uint32_t first = 0xFFFFFFFFu, last = 0;  // offsets into the range
 };
 
+constexpr int kCallers = 4;  // host frames above the access, recompiled functions calling each other
+
+struct Site {
+    std::uint64_t ip[1 + kCallers] = {};  // the access, then its callers (0: none)
+    friend bool operator==(const Site&, const Site&) = default;
+};
+
+struct SiteHash {
+    std::size_t operator()(const Site& s) const {
+        std::uint64_t h = 0;
+        for (const std::uint64_t ip : s.ip) h = (h ^ ip) * 0x100000001B3ull;
+        return static_cast<std::size_t>(h);
+    }
+};
+
+// The access and the return addresses above it (x64 unwind data of the generated code).
+Site site_of(const CONTEXT& at) {
+    Site site;
+    site.ip[0] = at.Rip;
+#ifdef _M_X64
+    CONTEXT c = at;
+    for (int i = 1; i <= kCallers; ++i) {
+        DWORD64 image = 0;
+        RUNTIME_FUNCTION* fn = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
+        if (!fn) break;
+        void* handler_data = nullptr;
+        DWORD64 frame = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, fn, &c, &handler_data, &frame, nullptr);
+        if (!c.Rip) break;
+        site.ip[i] = c.Rip;
+    }
+#endif
+    return site;
+}
+
 // The watch as the exception handler sees it.
 struct WatchState {
     std::uintptr_t lo = 0, hi = 0;            // the watched host range
@@ -34,7 +69,7 @@ struct WatchState {
     void* handler = nullptr;
     std::atomic<bool> active{false};
     nx::mutex mutex;
-    nx::hash_map<std::uint64_t, Hits> hits;  // by instruction pointer
+    nx::hash_map<Site, Hits, SiteHash> hits;  // by access site and call chain
 
     void protect(bool guard) const {
         DWORD old = 0;
@@ -55,7 +90,7 @@ LONG CALLBACK on_exception(EXCEPTION_POINTERS* e) {
         if (at < w->page_lo || at >= w->page_hi) return EXCEPTION_CONTINUE_SEARCH;
         if (at >= w->lo && at < w->hi) {
             nx::scoped_lock lock(w->mutex);
-            Hits& h = w->hits[e->ContextRecord->Rip];
+            Hits& h = w->hits[site_of(*e->ContextRecord)];
             const auto offset = static_cast<std::uint32_t>(at - w->lo);
             ++h.count;
             h.first = std::min(h.first, offset);
@@ -110,14 +145,20 @@ void MemoryWatch::report(std::FILE* out) {
     const HANDLE process = GetCurrentProcess();
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
     SymInitialize(process, nullptr, TRUE);
+    // Per function chain: the accessing function <- its callers.
     nx::map<nx::string, Hits> by_function;
     alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512];
-    for (const auto& [ip, h] : impl_->hits) {
+    const auto name_of = [&](std::uint64_t ip) {
         auto* sym = reinterpret_cast<SYMBOL_INFO*>(buffer);
         sym->SizeOfStruct = sizeof(SYMBOL_INFO);
         sym->MaxNameLen = 511;
         DWORD64 displacement = 0;
-        Hits& f = by_function[SymFromAddr(process, ip, &displacement, sym) ? nx::string(sym->Name) : nx::string("?")];
+        return SymFromAddr(process, ip, &displacement, sym) ? nx::string(sym->Name) : nx::string("?");
+    };
+    for (const auto& [site, h] : impl_->hits) {
+        nx::string chain = name_of(site.ip[0]);
+        for (int i = 1; i <= kCallers && site.ip[i]; ++i) chain += " <- " + name_of(site.ip[i]);
+        Hits& f = by_function[chain];
         f.count += h.count;
         f.first = std::min(f.first, h.first);
         f.last = std::max(f.last, h.last);
@@ -126,7 +167,8 @@ void MemoryWatch::report(std::FILE* out) {
     nx::vector<std::pair<std::uint64_t, nx::string>> sorted;
     for (const auto& [name, h] : by_function) sorted.emplace_back(h.count, name);
     std::sort(sorted.rbegin(), sorted.rend());
-    std::fprintf(out, "watch: %zu functions (accesses, guest addresses touched)\n", sorted.size());
+    std::fprintf(out, "watch: %zu call chains (accesses, guest addresses touched, function <- callers)\n",
+                 sorted.size());
     for (const auto& [n, name] : sorted) {
         const Hits& h = by_function[name];
         std::fprintf(out, "  %8llu  0x%08X..0x%08X  %s\n", static_cast<unsigned long long>(n), impl_->guest + h.first,
