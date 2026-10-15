@@ -14,6 +14,7 @@ namespace psprecore::platform {
 struct PadState {
     std::uint32_t buttons = 0;
     std::uint8_t lx = 128, ly = 128;  // analog stick, 128 = centre
+    float look_yaw = 0, look_pitch = 0;  // camera turn this poll, radians (rt::add_camera_look)
 };
 
 enum PspButton : std::uint32_t {

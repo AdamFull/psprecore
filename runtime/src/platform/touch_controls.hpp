@@ -29,6 +29,8 @@ public:
     bool stick(float& x, float& y) const;     // -1..1 while the stick is held
     bool take_menu_request();
     bool free_touch() const;  // a finger is down outside every control (on the picture)
+    // How far fingers on the picture moved since the previous call, in screen heights (camera look).
+    void take_drag(float& dx, float& dy);
 
     void draw(ImDrawList* list, ButtonGlyphs glyphs) const;
 
@@ -60,6 +62,7 @@ private:
     std::uint32_t held_bits_ = 0;
     int hold_polls_[32] = {};
     int free_hold_polls_ = 0;  // a finger touched the picture lately
+    float drag_x_ = 0, drag_y_ = 0;  // points
     bool menu_request_ = false;
 };
 

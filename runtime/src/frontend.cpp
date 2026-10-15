@@ -167,6 +167,7 @@ nx::vector<std::uint32_t> compare_frames(const nx::vector<std::uint32_t>& ref, c
 //     <vblank> pad <buttons, hex> <lx> <ly>
 //     <vblank> dialog <slot>            (save picker answer; -1 = cancel)
 //     <vblank> skip                     (the playing movie was skipped)
+//     <vblank> look <yaw> <pitch>       (camera turn this vblank, radians)
 // With the same game data, saves and clock base the run is reproduced exactly (virtual time is deterministic).
 class InputRecorder {
 public:
@@ -194,6 +195,10 @@ public:
     void skip(std::uint64_t vblank) {
         std::fprintf(f_, "%llu skip\n", static_cast<unsigned long long>(vblank));
         std::fflush(f_);
+    }
+    void look(std::uint64_t vblank, float yaw, float pitch) {
+        if (yaw != 0 || pitch != 0)
+            std::fprintf(f_, "%llu look %.9g %.9g\n", static_cast<unsigned long long>(vblank), yaw, pitch);
     }
     void flush() { std::fflush(f_); }
 
@@ -234,6 +239,9 @@ public:
                 e.is_dialog = true;
             } else if (nx::string_view(kind) == "skip") {
                 e.is_skip = true;
+            } else if (nx::string_view(kind) == "look") {
+                if (std::fscanf(f, "%f %f", &e.yaw, &e.pitch) != 2) break;
+                e.is_look = true;
             } else {
                 break;
             }
@@ -251,9 +259,13 @@ public:
     int advance(std::uint64_t vblank, bool& skip) {
         int dialog = -2;
         skip = false;
+        yaw_ = pitch_ = 0;
         for (; next_ < events_.size() && events_[next_].vblank <= vblank; ++next_) {
             const Event& e = events_[next_];
-            if (e.is_dialog) {
+            if (e.is_look) {
+                yaw_ += e.yaw;
+                pitch_ += e.pitch;
+            } else if (e.is_dialog) {
                 dialog = e.dialog;
             } else if (e.is_skip) {
                 skip = true;
@@ -268,13 +280,16 @@ public:
     std::uint32_t buttons() const { return buttons_; }
     std::uint8_t lx() const { return lx_; }
     std::uint8_t ly() const { return ly_; }
+    float look_yaw() const { return yaw_; }  // this vblank's camera turn
+    float look_pitch() const { return pitch_; }
 
 private:
     struct Event {
         std::uint64_t vblank;
         std::uint32_t buttons = 0;
         std::uint8_t lx = 128, ly = 128;
-        bool is_dialog = false, is_skip = false;
+        float yaw = 0, pitch = 0;
+        bool is_dialog = false, is_skip = false, is_look = false;
         int dialog = -1;
     };
     nx::vector<Event> events_;
@@ -282,11 +297,17 @@ private:
     std::int64_t clock_base_ = 0;
     std::uint32_t buttons_ = 0;
     std::uint8_t lx_ = 128, ly_ = 128;
+    float yaw_ = 0, pitch_ = 0;
 };
 
 struct ScriptedPress {
     std::uint64_t vblank;
     std::uint32_t buttons;
+};
+
+struct ScriptedLook {  // a camera turn per vblank over [from, to)
+    std::uint64_t from, to;
+    float yaw, pitch;  // radians
 };
 
 struct ScriptedUi {
@@ -312,6 +333,14 @@ std::uint32_t scripted_buttons(const nx::vector<ScriptedPress>& presses, std::ui
     for (const auto& p : presses)
         if (vblank >= p.vblank && vblank < p.vblank + kHold) buttons |= p.buttons;
     return buttons;
+}
+
+void scripted_look(const nx::vector<ScriptedLook>& looks, std::uint64_t vblank, float& yaw, float& pitch) {
+    for (const auto& l : looks)
+        if (vblank >= l.from && vblank < l.to) {
+            yaw += l.yaw;
+            pitch += l.pitch;
+        }
 }
 
 }  // namespace
@@ -394,6 +423,7 @@ struct Options {
     std::int64_t clock = 0;
     bool clock_given = false;
     nx::vector<ScriptedPress> presses;
+    nx::vector<ScriptedLook> looks;
     nx::vector<ScriptedUi> ui_script;
 };
 
@@ -408,7 +438,7 @@ std::pair<std::uint64_t, nx::string> at_vblank(nx::string_view option, nx::strin
 Options parse_options(const platform::GameInfo& game, int argc, char** argv, const nx::string& data_dir) {
     Options o;
     nx::string screenshot, screenshot_every, window_shot, tex_dump, ram_dump, clock, watch;
-    nx::vector<nx::string> presses, ui;
+    nx::vector<nx::string> presses, looks, ui;
     nx::cli::Parser cli(game.name, nx::format("{} on the psprecore runtime.", game.title));
     nx::cli::Command& c = cli.root();
 #ifdef __ANDROID__
@@ -456,6 +486,8 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
                                          "after it)", {.value_name = "VBLANK:FILE"});
     c.option_many("press", presses, "hold BUTTON for 6 vblanks: start, select, cross, circle, square, triangle, up, "
                                     "down, left, right, l, r", {.value_name = "VBLANK:BUTTON"});
+    c.option_many("look", looks, "turn the camera by YAW and PITCH degrees per vblank from FROM to TO (as a second "
+                                 "stick or a drag on the touch screen does)", {.value_name = "FROM-TO:YAW:PITCH"});
     c.option_many("ui", ui, "overlay input: menu, enter, escape, up, down, space, minimize, restore, skip-movie, tap:X,Y "
                             "(window-normalised), renderer:vulkan, renderer:software", {.value_name = "VBLANK:ACTION"});
     c.option("state-hash", o.state_hash, "print a hash of user RAM every N vblanks (determinism checks)",
@@ -518,6 +550,14 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
         for (const auto& p : presses) {
             const auto [at, button] = at_vblank("press", p);
             o.presses.push_back({at, button_from_name(button)});
+        }
+        for (const auto& l : looks) {  // FROM-TO:YAW:PITCH
+            unsigned long long from = 0, to = 0;
+            float yaw = 0, pitch = 0;
+            if (std::sscanf(l.c_str(), "%llu-%llu:%f:%f", &from, &to, &yaw, &pitch) != 4)
+                throw Error(nx::format("--look takes FROM-TO:YAW:PITCH, not '{}'", l));
+            constexpr float kRadians = 3.14159265f / 180.0f;
+            o.looks.push_back({from, to, yaw * kRadians, pitch * kRadians});
         }
         for (const auto& u : ui) {
             auto [at, action] = at_vblank("ui", u);
@@ -666,7 +706,8 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         }
         // Per vblank: applies due save picker answers and replayed input; records what the game sees.
         // `skip`: the player skipped the movie this vblank (ignored, like live input, while a replay runs).
-        const auto input_step = [&](std::uint32_t& buttons, std::uint8_t& lx, std::uint8_t& ly, bool skip) {
+        const auto input_step = [&](std::uint32_t& buttons, std::uint8_t& lx, std::uint8_t& ly, float& yaw,
+                                    float& pitch, bool skip) {
             const std::uint64_t vblank = kernel.vblank_count();
             if (!ram_dump_path.empty() && vblank == ram_dump_vblank) {  // debugging: user RAM to a file
                 std::FILE* f = io::open_c_file(ram_dump_path, "wb");
@@ -688,6 +729,8 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 buttons = replay->buttons();
                 lx = replay->lx();
                 ly = replay->ly();
+                yaw = replay->look_yaw();
+                pitch = replay->look_pitch();
                 if (replay->finished()) std::fprintf(stderr, "replay finished at vblank %llu\n", static_cast<unsigned long long>(vblank));
             }
             // Headless runs have no picker: answer with the slot the PSP dialog would focus (recorded like a pick).
@@ -699,7 +742,10 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             }
             int slot = 0;
             if (rt::apply_save_dialog_answer(slot) && recorder_in) recorder_in->dialog(vblank, slot);
-            if (recorder_in) recorder_in->pad(vblank, buttons, lx, ly);
+            if (recorder_in) {
+                recorder_in->pad(vblank, buttons, lx, ly);
+                recorder_in->look(vblank, yaw, pitch);
+            }
         };
         if (cooked_dir.empty()) {
             cooked_dir = path_join(data_dir, "cooked");
@@ -937,8 +983,11 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     rt::set_ge_dump(rt::display_frame_count() + 1, "ge_dump.txt");
                 std::uint32_t buttons = scripted_buttons(presses, kernel.vblank_count());
                 std::uint8_t lx = 128, ly = 128;
-                input_step(buttons, lx, ly, false);
+                float yaw = 0, pitch = 0;
+                scripted_look(o.looks, kernel.vblank_count(), yaw, pitch);
+                input_step(buttons, lx, ly, yaw, pitch, false);
                 rt::set_pad(buttons, lx, ly);
+                rt::add_camera_look(yaw, pitch);
                 int w = 0, h = 0;
                 if (!screenshot_path.empty() && rt::read_framebuffer(frame, w, h)) screenshot(frame, w, h);
             });
@@ -1203,9 +1252,12 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 const auto pad = overlay->wants_input() ? platform::PadState{} : display->pad();
                 std::uint32_t buttons = pad.buttons | scripted_buttons(presses, kernel.vblank_count());
                 std::uint8_t lx = pad.lx, ly = pad.ly;
+                float yaw = pad.look_yaw, pitch = pad.look_pitch;
+                scripted_look(o.looks, kernel.vblank_count(), yaw, pitch);
                 const bool skip = skip_prompt_step(buttons);
-                input_step(buttons, lx, ly, skip);
+                input_step(buttons, lx, ly, yaw, pitch, skip);
                 rt::set_pad(buttons, lx, ly);
+                rt::add_camera_look(yaw, pitch);
                 if (rt::movie_skipping() != fast_forward) {
                     fast_forward = !fast_forward;
                     std::fprintf(stderr, "fast-forward %s at vblank %llu\n", fast_forward ? "on" : "off",

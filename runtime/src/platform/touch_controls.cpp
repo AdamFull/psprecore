@@ -109,8 +109,18 @@ void TouchControls::tick() {
 void TouchControls::finger_motion(std::uint64_t id, float x, float y) {
     const auto it = fingers_.find(id);
     if (it == fingers_.end()) return;
+    if (it->second.control == Control::None) {
+        drag_x_ += x * width_ - it->second.x;
+        drag_y_ += y * height_ - it->second.y;
+    }
     it->second.x = x * width_;
     it->second.y = y * height_;
+}
+
+void TouchControls::take_drag(float& dx, float& dy) {
+    dx = drag_x_ / height_;
+    dy = drag_y_ / height_;
+    drag_x_ = drag_y_ = 0;
 }
 
 void TouchControls::finger_up(std::uint64_t id) { fingers_.erase(id); }
@@ -120,6 +130,7 @@ void TouchControls::release_all() {
     held_bits_ = 0;
     for (int& h : hold_polls_) h = 0;
     free_hold_polls_ = 0;
+    drag_x_ = drag_y_ = 0;
 }
 
 bool TouchControls::free_touch() const {

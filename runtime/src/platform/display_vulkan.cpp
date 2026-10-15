@@ -522,6 +522,24 @@ void Display::Impl::update_pad() {
             y = ty;
         }
     }
+    // Camera look: the right stick turns at up to kStickTurn per poll (one poll per vblank), a drag across the
+    // picture by the screen height turns half way round.
+    constexpr float kPi = 3.14159265f, kStickTurn = 150.0f / 60.0f * kPi / 180.0f, kDragTurn = kPi;
+    pad.look_yaw = pad.look_pitch = 0;
+    if (gamepad) {
+        const auto curve = [](float v) {  // dead zone, then quadratic for fine control near the centre
+            const float a = std::max(0.0f, (std::abs(v) - 0.15f) / 0.85f);
+            return std::copysign(a * a, v);
+        };
+        pad.look_yaw = curve(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0f) * kStickTurn;
+        pad.look_pitch = -curve(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0f) * kStickTurn;
+    }
+    float drag_x = 0, drag_y = 0;
+    touch.take_drag(drag_x, drag_y);
+    if (touch_mode && !ui_modal) {
+        pad.look_yaw += drag_x * kDragTurn;
+        pad.look_pitch -= drag_y * kDragTurn;  // like a mouse: dragging up looks up
+    }
     pad.buttons = buttons;
     pad.lx = static_cast<std::uint8_t>(std::clamp(128.0f + x * 127.0f, 0.0f, 255.0f));
     pad.ly = static_cast<std::uint8_t>(std::clamp(128.0f + y * 127.0f, 0.0f, 255.0f));

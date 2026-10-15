@@ -36,6 +36,10 @@ FlipHandler g_flip_handler;
 
 std::uint32_t g_pad_buttons = 0;
 std::uint8_t g_pad_lx = 128, g_pad_ly = 128;
+struct {
+    float yaw = 0, pitch = 0;
+    int age = 0;  // vblanks since game code last took the turn
+} g_look;
 
 using Callback = decltype(g_display.callbacks)::mapped_type;
 
@@ -208,6 +212,20 @@ void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly) {
     g_pad_buttons = buttons;
     g_pad_lx = lx;
     g_pad_ly = ly;
+}
+
+void add_camera_look(float yaw, float pitch) {
+    constexpr int kStale = 6;
+    if (++g_look.age > kStale) g_look.yaw = g_look.pitch = 0;
+    g_look.yaw += yaw;
+    g_look.pitch += pitch;
+}
+
+bool take_camera_look(float& yaw, float& pitch) {
+    yaw = g_look.yaw;
+    pitch = g_look.pitch;
+    g_look = {};
+    return yaw != 0 || pitch != 0;
 }
 
 bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height) {

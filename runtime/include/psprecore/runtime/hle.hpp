@@ -92,6 +92,12 @@ void set_flip_handler(FlipHandler handler);
 // Display output and controller input for the host frontend.
 bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height);  // current frame as RGBA8
 void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly);
+// Camera look, which the PSP has no control for (a second stick, a drag on the touch screen): the turn wanted
+// this vblank in radians, yaw positive to the right, pitch positive upwards. Game code that drives its camera
+// takes the turns gathered since its previous frame; turns nobody takes are dropped after a few vblanks, so a
+// camera that comes back to life does not jump.
+void add_camera_look(float yaw, float pitch);
+bool take_camera_look(float& yaw, float& pitch);  // false: no turn
 bool write_png(const nx::string& path, const std::uint32_t* rgba, int width, int height);
 bool read_png(const nx::string& path, nx::vector<std::uint32_t>& rgba, int& width, int& height);  // RGBA8
 
