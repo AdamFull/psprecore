@@ -17,6 +17,7 @@ struct Settings {
     int volume = 100;         // master volume, percent
     bool frame_limit = true;  // run at the PSP's speed (off: as fast as possible)
     bool vsync = true;        // wait for the display's refresh when presenting
+    bool frame_skip = true;   // skip drawing frames when behind real time (the game keeps its speed)
     bool refresh_60hz = true; // Android: run the panel at 60 Hz (the game's rate) instead of the device's maximum
     bool show_fps = false;
     ButtonGlyphs button_glyphs = ButtonGlyphs::Auto;  // Auto: the last device used

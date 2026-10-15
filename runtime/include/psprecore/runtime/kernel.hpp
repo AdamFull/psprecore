@@ -7,6 +7,7 @@
 // semantics deterministically. The host's main thread is the idle loop: when no guest thread is ready it
 // advances virtual time to the next event (timeouts, vblank), fires it, and hands the baton on again.
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
@@ -162,6 +163,8 @@ public:
     std::uint64_t max_vblanks = 0;  // stop after this many vblanks (0 = run forever)
     // Realtime mode: how often the guest fell more than 100 ms behind the host clock (time was dropped).
     std::uint64_t fell_behind_count() const { return fell_behind_; }
+    // In real time: how far virtual time lags behind the host clock (microseconds; 0 when on time or ahead).
+    std::int64_t behind_us() const { return behind_us_.load(std::memory_order_relaxed); }
 
 private:
     void schedule_from(Thread* from);  // hand the baton to the best ready thread (or the idle loop)
@@ -171,6 +174,7 @@ private:
     void fire_vblank();
 
     std::uint64_t fell_behind_ = 0;
+    std::atomic<std::int64_t> behind_us_{0};
     GuestMemory& memory_;
     GuestHeap user_heap_;
     GuestHeap kernel_heap_;  // kernel-owned allocations (interrupt stack), outside the user partition

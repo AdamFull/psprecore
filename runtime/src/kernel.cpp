@@ -380,6 +380,7 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
         if (realtime && next > now_us_) {
             const nx::timestamp due = anchor + nx::duration::from_micros(static_cast<std::int64_t>(next));
             const nx::timestamp host = nx::timestamp::now();
+            behind_us_.store(due < host ? (host - due).micros() : 0, std::memory_order_relaxed);
             if (due > host) nx::this_thread::sleep_for(std::chrono::nanoseconds((due - host).nanos()));
             else if (host - due > nx::duration::from_millis(100)) {  // fell behind
                 anchor = host - nx::duration::from_micros(static_cast<std::int64_t>(next));
@@ -387,6 +388,7 @@ int Kernel::run(std::uint32_t entry, std::uint32_t arg_size, std::uint32_t arg_p
             }
         }
         g_baton_spin_us.store(realtime ? 50 : 300, std::memory_order_relaxed);
+        if (!realtime) behind_us_.store(0, std::memory_order_relaxed);
         if (!realtime) {  // unthrottled: when real time resumes, it continues from here
             anchor = nx::timestamp::now() - nx::duration::from_micros(static_cast<std::int64_t>(now_us_));
         }

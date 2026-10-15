@@ -326,6 +326,7 @@ void Overlay::draw_menu() {
         ImGui::SliderInt("Volume", &s.volume, 0, 100, "%d%%");
         ImGui::SeparatorText("Speed");
         ImGui::Checkbox("Frame limiter", &s.frame_limit);
+        ImGui::Checkbox("Frame skipping (keeps the game's speed)", &s.frame_skip);
         ImGui::Checkbox("VSync", &s.vsync);
 #ifdef __ANDROID__
         ImGui::Checkbox("60 Hz display (saves battery)", &s.refresh_60hz);

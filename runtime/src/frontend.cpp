@@ -922,6 +922,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         rt::set_audio_sink(audio_sink);
         // Skipping a movie fast-forwards through it (rt::movie_skipping): unthrottled, silent, a few presents a second.
         bool fast_forward = false, frame_drawn = true;
+        int skipped_frames = 0;  // frames not drawn in a row (frame skipping)
         nx::timestamp fast_forward_present = nx::timestamp::now();
         if (!headless) {
             display = nx::make_unique<platform::Display>(game.title, 960, 544);
@@ -1031,12 +1032,20 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     const bool capture = screenshot_pending;
                     const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
                     // Fast-forwarding: only every frame due for a present (10 a second) is drawn and shown.
-                    if (out.image && (!fast_forward || frame_drawn)) {
+                    if (out.image && frame_drawn) {
                         display->present_image(out.image, out.width, out.height);
                         fast_forward_present = nx::timestamp::now();
                     }
-                    frame_drawn = !fast_forward ||
-                                  nx::timestamp::now() - fast_forward_present >= nx::duration::from_millis(100);
+                    // Frame skipping: when the game runs behind real time, the next frame is not drawn (a few in a
+                    // row at most, so the picture keeps moving), so the game keeps its speed instead of slowing down.
+                    constexpr std::int64_t kSkipBehindUs = 20'000;
+                    constexpr int kMaxSkipped = 3;
+                    if (fast_forward)
+                        frame_drawn = nx::timestamp::now() - fast_forward_present >= nx::duration::from_millis(100);
+                    else
+                        frame_drawn = !(settings.frame_skip && kernel.realtime && kernel.behind_us() > kSkipBehindUs &&
+                                        skipped_frames < kMaxSkipped);
+                    skipped_frames = frame_drawn ? 0 : skipped_frames + 1;
                     vulkan_renderer->set_skip_draws(!frame_drawn);
                     if (capture && renderer == "compare") {
                         nx::vector<std::uint32_t> ref;
