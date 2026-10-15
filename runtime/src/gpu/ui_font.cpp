@@ -42,7 +42,11 @@ bool decode_from_memory(const UiFont& font, nx::vector<std::uint32_t>& out) {
     }
     TextureSampler ts;
     ts.setup(s, kernel().memory());
-    if (!ts.level_data(0) || icon_texture_hash(ts.level_data(0), ts.level_size(0)) != font.atlas_hash) return false;
+    if (!ts.level_data(0)) return false;
+    const bool partial = font.check_bytes && font.check_bytes <= ts.level_size(0);
+    if (partial ? icon_texture_hash(ts.level_data(0), font.check_bytes) != font.check_hash
+                : icon_texture_hash(ts.level_data(0), ts.level_size(0)) != font.atlas_hash)
+        return false;
     out.resize(static_cast<std::size_t>(font.width) * static_cast<std::size_t>(font.height));
     ts.decode(0, out.data());
     return true;

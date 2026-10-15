@@ -27,6 +27,10 @@ struct UiFont {
     int buffer_width = 0;                   // texels per row
     bool swizzled = false;
     int palette_format = 3;  // GE CLUT format: 0 5650, 1 5551, 2 4444, 3 8888
+    // Instead of the whole sheet, only its first `check_bytes` texel bytes must hash (icon_texture_hash) to
+    // `check_hash` (0: the whole sheet against atlas_hash), so mods that draw into free cells further down keep it.
+    std::uint64_t check_hash = 0;
+    std::size_t check_bytes = 0;
 };
 
 void set_ui_font(const UiFont& font);
