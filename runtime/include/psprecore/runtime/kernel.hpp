@@ -109,6 +109,8 @@ public:
 
     GuestMemory& memory() { return memory_; }
     GuestHeap& user_heap() { return user_heap_; }
+    // Guest memory outside the game's partition, for data a port adds without moving the game's own allocations.
+    GuestHeap& kernel_heap() { return kernel_heap_; }
 
     // ---- threads ----
     int create_thread(const nx::string& name, std::uint32_t entry, std::uint32_t priority, std::uint32_t stack_size,

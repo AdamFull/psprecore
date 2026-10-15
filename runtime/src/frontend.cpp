@@ -1128,6 +1128,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
 
         std::fprintf(stderr, "%s loaded at 0x%08X (%zu bytes), entry 0x%08X\n", module.name.c_str(), kLoadBase,
                      image.size(), kLoadBase + module.entry);
+        if (game.loaded) game.loaded();
         const int code = kernel.run(kLoadBase + module.entry, static_cast<std::uint32_t>(boot_path.size() + 1), args);
         std::fprintf(stderr, "stopped after %.3f s of guest time (%llu vblanks)\n",
                      static_cast<double>(kernel.now()) / 1e6, static_cast<unsigned long long>(kernel.vblank_count()));

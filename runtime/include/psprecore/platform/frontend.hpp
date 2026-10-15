@@ -19,6 +19,8 @@ struct GameInfo {
     // After the disc is mounted (rt::set_storage), before the game starts: the game's own setup, e.g. its archive
     // for raw disc reads and mods (`mods_dir`: --mods, or <data>/mods).
     void (*mount)(nx::string_view mods_dir) = nullptr;
+    // After the module is loaded into guest memory, before it runs: patches to the game's own data.
+    void (*loaded)() = nullptr;
 };
 
 int run_game(const GameInfo& game, int argc, char** argv);
