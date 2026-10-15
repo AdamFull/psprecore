@@ -1,6 +1,5 @@
 #include "psprecore/gpu/texture_replacement.hpp"
 
-#include <algorithm>
 #include <cstdio>
 
 #include "psprecore/runtime/hle.hpp"
@@ -18,7 +17,8 @@ struct Entry {
     ReplacementImage image;  // empty if it could not be read
 };
 
-nx::hash_map<std::uint64_t, Entry> g_replacements;
+nx::hash_map<std::uint64_t, Entry> g_replacements;  // by content hash
+nx::hash_map<std::uint64_t, Entry> g_indexed;       // index maps, by texels hash
 
 nx::string_view file_name(nx::string_view path) {
     const auto slash = path.find_last_of("/\\");
@@ -40,29 +40,21 @@ bool parse_hash(nx::string_view name, std::uint64_t& hash) {
     return true;
 }
 
-}  // namespace
-
-void scan_texture_replacements(std::span<const nx::string> mods) {
-    g_replacements.clear();
-    for (const auto& folder : mods) {
-        auto files = nx::fs::directory_entries(nx::format("{}/textures", folder));
-        if (!files.has_value()) continue;
-        for (const auto& f : files.value()) {
-            const nx::string_view name = file_name(f.path);
-            std::uint64_t hash = 0;
-            if (f.type != nx::fs::file_type::regular || !name.ends_with(".png") || !parse_hash(name, hash)) continue;
-            g_replacements[hash] = Entry{f.path};
-        }
+void scan_folder(const nx::string& dir, nx::hash_map<std::uint64_t, Entry>& into) {
+    auto files = nx::fs::directory_entries(dir);
+    if (!files.has_value()) return;
+    for (const auto& f : files.value()) {
+        const nx::string_view name = file_name(f.path);
+        std::uint64_t hash = 0;
+        if (f.type != nx::fs::file_type::regular || !name.ends_with(".png") || !parse_hash(name, hash)) continue;
+        into[hash] = Entry{f.path};
     }
-    if (!g_replacements.empty()) std::fprintf(stderr, "textures: %zu replacements\n", g_replacements.size());
 }
 
-bool have_texture_replacements() { return !g_replacements.empty(); }
-
-const ReplacementImage* texture_replacement(std::uint64_t content_hash) {
-    if (g_replacements.empty()) return nullptr;
-    const auto it = g_replacements.find(content_hash);
-    if (it == g_replacements.end()) return nullptr;
+const ReplacementImage* load(nx::hash_map<std::uint64_t, Entry>& map, std::uint64_t hash) {
+    if (map.empty()) return nullptr;
+    const auto it = map.find(hash);
+    if (it == map.end()) return nullptr;
     Entry& e = it->second;
     if (!e.loaded) {
         e.loaded = true;
@@ -74,5 +66,24 @@ const ReplacementImage* texture_replacement(std::uint64_t content_hash) {
     }
     return e.image.rgba.empty() ? nullptr : &e.image;
 }
+
+}  // namespace
+
+void scan_texture_replacements(std::span<const nx::string> mods) {
+    g_replacements.clear();
+    g_indexed.clear();
+    for (const auto& folder : mods) {
+        scan_folder(nx::format("{}/textures", folder), g_replacements);
+        scan_folder(nx::format("{}/textures/indexed", folder), g_indexed);
+    }
+    if (!g_replacements.empty() || !g_indexed.empty())
+        std::fprintf(stderr, "textures: %zu replacements, %zu index maps\n", g_replacements.size(), g_indexed.size());
+}
+
+bool have_texture_replacements() { return !g_replacements.empty(); }
+bool have_indexed_replacements() { return !g_indexed.empty(); }
+
+const ReplacementImage* texture_replacement(std::uint64_t content_hash) { return load(g_replacements, content_hash); }
+const ReplacementImage* indexed_replacement(std::uint64_t texels_hash) { return load(g_indexed, texels_hash); }
 
 }  // namespace psprecore::rt::gpu

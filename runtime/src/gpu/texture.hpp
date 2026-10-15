@@ -34,6 +34,10 @@ public:
 
     // Decodes a whole level to RGBA8, width(level) * height(level) texels.
     void decode(int level, std::uint32_t* out) const;
+    // Palette textures with 4- or 8-bit indices: each texel's index (false for other formats).
+    bool decode_indices(int level, std::uint8_t* out) const;
+    // The colour palette entry `index` stands for (the CLUT format's shift, mask and start applied).
+    std::uint32_t palette_color(std::uint32_t index) const { return clut(index); }
     // Guest memory a level occupies (for change detection), and whether the CLUT affects the texels.
     const std::uint8_t* level_data(int level) const { return level_[level].data; }
     std::size_t level_size(int level) const;
@@ -79,5 +83,7 @@ private:
 // The texture's content: the texels of every level and, for palette formats, the palette and its format. The
 // Vulkan renderer's cache, texture replacement (psprecore/gpu/texture_replacement.hpp) and --tex-dump names use it.
 std::uint64_t texture_content_hash(const ge::State& state, const TextureSampler& sampler);
+// The texels alone (every level), whatever the palette: palette-aware texture replacements match by it.
+std::uint64_t texture_texels_hash(const TextureSampler& sampler);
 
 }  // namespace psprecore::rt::gpu

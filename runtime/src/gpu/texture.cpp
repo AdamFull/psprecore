@@ -200,6 +200,27 @@ void TextureSampler::decode(int level, std::uint32_t* out) const {
         for (int x = 0; x < l.width; ++x) *out++ = texel(l, x, y);
 }
 
+bool TextureSampler::decode_indices(int level, std::uint8_t* out) const {
+    if (format_ != 4 && format_ != 5) return false;
+    const Level& l = level_[std::clamp(level, 0, levels_ - 1)];
+    const int bits = format_ == 4 ? 4 : 8;
+    const int row_bytes = l.buffer_width * bits / 8;
+    for (int y = 0; y < l.height; ++y)
+        for (int x = 0; x < l.width; ++x) {
+            const int xb = x * bits / 8;
+            std::ptrdiff_t offset;
+            if (swizzled_) {
+                const int blocks_per_row = std::max(row_bytes / 16, 1);
+                offset = (static_cast<std::ptrdiff_t>(y / 8) * blocks_per_row + xb / 16) * 128 + (y % 8) * 16 + xb % 16;
+            } else {
+                offset = static_cast<std::ptrdiff_t>(y) * row_bytes + xb;
+            }
+            const std::uint8_t b = l.data[offset];
+            *out++ = format_ == 5 ? b : static_cast<std::uint8_t>((x & 1) ? b >> 4 : b & 15);
+        }
+    return true;
+}
+
 std::size_t TextureSampler::level_size(int level) const {
     const Level& l = level_[std::clamp(level, 0, levels_ - 1)];
     if (format_ >= 8) {  // DXT blocks
@@ -254,6 +275,12 @@ std::uint32_t TextureSampler::sample_fixed(const TextureSampler& t, float u, flo
 std::uint32_t TextureSampler::sample_generic(const TextureSampler& t, float u, float v, int level, bool linear) {
     const Level& l = t.level_[std::clamp(level, 0, t.levels_ - 1)];
     return filter(u, v, l.width, l.height, t.clamp_u_, t.clamp_v_, linear, [&](int x, int y) { return t.texel(l, x, y); });
+}
+
+std::uint64_t texture_texels_hash(const TextureSampler& ts) {
+    std::uint64_t h = 0;
+    for (int l = 0; l < ts.levels(); ++l) h = hash_bytes(ts.level_data(l), ts.level_size(l), h);
+    return h;
 }
 
 std::uint64_t texture_content_hash(const ge::State& s, const TextureSampler& ts) {

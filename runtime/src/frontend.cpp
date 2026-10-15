@@ -742,8 +742,25 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 const std::uint64_t texels = rt::gpu::icon_texture_hash(t.level_data(0), t.level_size(0));
                 const nx::string name = nx::format("{:016X}_{:08X}_f{}_{}x{}_{:016X}", rt::gpu::texture_content_hash(s, t),
                                                    address, t.format(), t.width(), t.height(), texels);
-                if (dumped_textures.emplace(h, 0).second)
+                if (dumped_textures.emplace(h, 0).second) {
                     rt::write_png(path_join(tex_dump_dir, name + ".png"), rgba.data(), t.width(), t.height());
+                    // Palette textures also as index maps (indexed/, named by the texels alone), for replacements
+                    // that keep every palette (psprecore/gpu/texture_replacement.hpp).
+                    nx::vector<std::uint8_t> indices(rgba.size());
+                    if (t.decode_indices(0, indices.data())) {
+                        const std::uint32_t scale = t.format() == 4 ? 17 : 1;
+                        nx::vector<std::uint32_t> grey(indices.size());
+                        for (std::size_t i = 0; i < indices.size(); ++i) {
+                            const std::uint32_t g = indices[i] * scale;
+                            grey[i] = g | (g << 8) | (g << 16) | 0xFF000000u;
+                        }
+                        const nx::string dir = path_join(tex_dump_dir, "indexed");
+                        (void)nx::fs::create_directories(dir);
+                        rt::write_png(path_join(dir, nx::format("{:016X}_{:08X}_f{}_{}x{}.png", rt::gpu::texture_texels_hash(t),
+                                                               address, t.format(), t.width(), t.height())),
+                                      grey.data(), t.width(), t.height());
+                    }
+                }
                 if (d.indices) {
                     std::fprintf(stderr, "tex-dump: prim %u x%u indexed %s\n", d.prim, d.count, name.c_str());
                     return;

@@ -754,13 +754,23 @@ struct VulkanGeRenderer::Impl {
         return s;
     }
 
-    // A mod's picture in place of a texture (psprecore/gpu/texture_replacement.hpp): one level, any size.
-    bool upload_replacement(Texture& t, const rt::gpu::ReplacementImage& r) {
+    // A mod's picture in place of a texture (psprecore/gpu/texture_replacement.hpp): one level, any size. With
+    // `sampler`, the picture is an index map coloured with the palette in use.
+    bool upload_replacement(Texture& t, const rt::gpu::ReplacementImage& r, const rt::gpu::TextureSampler* palette = nullptr) {
         VkDeviceSize offset = 0;
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(r.width) * static_cast<VkDeviceSize>(r.height) * 4;
         auto* dst = staging(bytes, offset);
         if (!dst) return false;  // staging full this frame: the game's own texture for now
-        std::memcpy(dst, r.rgba.data(), bytes);
+        if (palette) {
+            auto* out = reinterpret_cast<std::uint32_t*>(dst);
+            const bool four_bit = palette->format() == 4;
+            for (std::size_t i = 0; i < r.rgba.size(); ++i) {
+                const std::uint32_t grey = r.rgba[i] & 0xFF;
+                out[i] = palette->palette_color(four_bit ? (grey + 8) / 17 : grey);
+            }
+        } else {
+            std::memcpy(dst, r.rgba.data(), bytes);
+        }
         t.image = make_image(r.width, r.height, kColorFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                              VK_IMAGE_ASPECT_COLOR_BIT, 1);
         const VkCommandBuffer cmd = frame().upload;
@@ -812,6 +822,10 @@ struct VulkanGeRenderer::Impl {
         t.content = content;
         if (const auto* replacement = rt::gpu::texture_replacement(content); replacement && upload_replacement(t, *replacement))
             return &t.image;
+        if ((ts.format() == 4 || ts.format() == 5) && rt::gpu::have_indexed_replacements())
+            if (const auto* map = rt::gpu::indexed_replacement(rt::gpu::texture_texels_hash(ts));
+                map && upload_replacement(t, *map, &ts))
+                return &t.image;
 
         const bool upscale = upscale_textures && !through;
         const int factor = upscale ? 2 : 1;
