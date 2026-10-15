@@ -178,6 +178,20 @@ struct VulkanGeRenderer::Impl {
     bool skip_draws = false;
     int fill_x = 0, fill_y = 0;                   // set_fill_aspect: margins for display framebuffers
     float fill_aspect = 0;                        // and the aspect ratio shown (the margins may be a little larger)
+
+    // Frame interpolation (set_interpolation): the draws into displayed framebuffers, kept for the last two frames
+    // shown, are drawn again into `replay` with their matrices blended (render_between).
+    struct Record {
+        std::uint32_t target = 0;  // framebuffer address
+        std::uint64_t key = 0;     // what identifies the draw from frame to frame (draw_key)
+        ge::Prim prim{};
+        ge::State state;
+        nx::vector<ge::Vertex> vertices;
+    };
+    bool interpolation = false, replaying = false;
+    nx::vector<Record> recorded, current_draws, previous_draws;
+    Target replay;       // frames drawn between two of the game's, with their own depth buffer
+    Image replay_depth;
     nx::hash_set<std::uint32_t> display_targets;  // framebuffers that have been displayed
 
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
@@ -447,6 +461,9 @@ struct VulkanGeRenderer::Impl {
                 destroy(t->msaa);
             }
         for (auto& [_, d] : depths) destroy(*d);
+        destroy(replay.color);
+        destroy(replay.msaa);
+        destroy(replay_depth);
         for (auto& [_, t] : textures) destroy(t.image);
         destroy(white);
         if (readback.buffer) vmaDestroyBuffer(vk.allocator, readback.buffer, readback.memory);
@@ -476,6 +493,10 @@ struct VulkanGeRenderer::Impl {
             for (auto& [_, d] : depths) destroy(*d);
             targets.clear();
             depths.clear();
+            destroy(replay.color);
+            destroy(replay.msaa);
+            destroy(replay_depth);
+            replay = Target{};
             scale = pending_scale;
             samples = pending_samples;
         }
@@ -1287,7 +1308,11 @@ struct VulkanGeRenderer::Impl {
         clip.resize(vertices.size());
         for (std::size_t i = 0; i < vertices.size(); ++i) clip[i] = vp.transform(s, vertices[i]);
 
-        Target& t = target(s.param(ge::FRAMEBUFPTR), s.param(ge::FRAMEBUFWIDTH) & 0x7FC, static_cast<int>(s.param(ge::FRAMEBUFPIXFORMAT) & 3));
+        Target& t = replaying ? replay
+                              : target(s.param(ge::FRAMEBUFPTR), s.param(ge::FRAMEBUFWIDTH) & 0x7FC,
+                                       static_cast<int>(s.param(ge::FRAMEBUFPIXFORMAT) & 3));
+        if (interpolation && !replaying && display_targets.contains(t.address))
+            recorded.push_back({t.address, draw_key(s, prim, vertices.size()), prim, s, vertices});
         const bool margins = t.margin_x || t.margin_y;
         target_w = static_cast<float>(static_cast<int>(t.stride) + 2 * t.margin_x);
         target_h = static_cast<float>(kTargetHeight + 2 * t.margin_y);
@@ -1471,7 +1496,7 @@ struct VulkanGeRenderer::Impl {
                                        : sampler(filter & 1, (filter >> 8) & 1, wrap & 1, (wrap >> 8) & 1, (filter & 4) != 0, img->mips);
             }
         }
-        Image& d = depth(s.param(ge::ZBUFPTR), t);
+        Image& d = replaying ? replay_depth : depth(s.param(ge::ZBUFPTR), t);
         begin_rendering(t, d);
 
         Frame& f = frame();
@@ -1543,8 +1568,21 @@ struct VulkanGeRenderer::Impl {
         // a render target transition and a fence wait, which on mobile GPUs adds up when fast-forwarding).
         if (skip_draws && !recording && !capture) return {};
         begin_frame();
-        if (fill_x || fill_y) display_targets.insert(0x04000000 | (address & 0x1FFFF0));  // gets margins from now on
+        const std::uint32_t shown = 0x04000000 | (address & 0x1FFFF0);
+        display_targets.insert(shown);  // gets margins when filling the screen, its draws are recorded
         Target& t = target(address, stride ? stride : 512, format);
+        if (interpolation) {  // this frame's draws become the current ones
+            previous_draws.swap(current_draws);
+            current_draws.clear();
+            for (Record& r : recorded)
+                if (r.target == shown) current_draws.push_back(std::move(r));
+            recorded.clear();
+        }
+        return show(t, capture);
+    }
+
+    // Ends the frame with `t` ready to be displayed (and read back into `capture`) and submits it.
+    VulkanGeRenderer::Output show(Target& t, nx::vector<std::uint32_t>* capture) {
         end_rendering();
         transition(frame().draw, t.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         // With margins: all of them when 3D was drawn (the scene extends into them), else the centre only (movies,
@@ -1588,6 +1626,159 @@ struct VulkanGeRenderer::Impl {
         bound_target = nullptr;
         bound_depth = nullptr;
         return o;
+    }
+
+    // ---- frame interpolation -----------------------------------------------------------------------------
+
+    // Identifies a draw across frames: its vertex data, format, count, primitive and texture.
+    static std::uint64_t draw_key(const ge::State& s, ge::Prim prim, std::size_t count) {
+        const std::uint32_t parts[] = {s.param(ge::VADDR),     s.param(ge::BASE),         s.param(ge::VERTEXTYPE),
+                                       static_cast<std::uint32_t>(count), static_cast<std::uint32_t>(prim),
+                                       s.param(ge::TEXADDR0), s.param(ge::TEXBUFWIDTH0)};
+        return hash_bytes(parts, sizeof parts);
+    }
+
+    // The camera's position in the world (view = rotation R, translation t: eye = -R^T t).
+    static std::array<float, 3> eye(const ge::State& s) {
+        const float* v = s.view;
+        return {-(v[0] * v[9] + v[1] * v[10] + v[2] * v[11]), -(v[3] * v[9] + v[4] * v[10] + v[5] * v[11]),
+                -(v[6] * v[9] + v[7] * v[10] + v[8] * v[11])};
+    }
+
+    // Where a draw's object is in the world: its world matrix applied to its first bone's origin (skinned) or to
+    // the model's origin.
+    static std::array<float, 3> subject(const ge::State& s) {
+        const float* w = s.world;
+        const float* b = s.format.weight ? s.bones[0] : nullptr;
+        const float x = b ? b[9] : 0.0f, y = b ? b[10] : 0.0f, z = b ? b[11] : 0.0f;
+        return {w[0] * x + w[3] * y + w[6] * z + w[9], w[1] * x + w[4] * y + w[7] * z + w[10],
+                w[2] * x + w[5] * y + w[8] * z + w[11]};
+    }
+
+    static float distance(const std::array<float, 3>& a, const std::array<float, 3>& b) {
+        return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+    }
+
+    // A camera cut between two frames, judged on their matched 3D draws: the view turns by more than ~15 degrees,
+    // the field of view changes by more than 10%, or the camera moves more than a tenth of its (median) distance
+    // to the objects drawn - far more than a camera moves in one frame.
+    static bool camera_cut(const nx::vector<std::pair<const Record*, const Record*>>& matched) {
+        if (matched.empty()) return false;
+        const ge::State& a = matched.front().first->state;
+        const ge::State& b = matched.front().second->state;
+        float turn = 0;
+        for (int i = 0; i < 9; ++i) turn = std::max(turn, std::abs(a.view[i] - b.view[i]));
+        if (turn > 0.25f) return true;
+        if (std::abs(a.proj[0] - b.proj[0]) > 0.1f * std::abs(b.proj[0]) ||
+            std::abs(a.proj[5] - b.proj[5]) > 0.1f * std::abs(b.proj[5]))
+            return true;
+        const auto eye_b = eye(b);
+        const float moved = distance(eye(a), eye_b);
+        nx::vector<float> distances;
+        for (std::size_t i = 0; i < matched.size() && distances.size() < 64; i += std::max<std::size_t>(1, matched.size() / 64))
+            distances.push_back(distance(subject(matched[i].second->state), eye_b));
+        std::nth_element(distances.begin(), distances.begin() + static_cast<std::ptrdiff_t>(distances.size() / 2), distances.end());
+        return moved > 0.1f * distances[distances.size() / 2];
+    }
+
+    // `out` (a copy of `b`) with its matrices `t` of the way from `a` to `b`.
+    static void blend(ge::State& out, const ge::State& a, const ge::State& b, float t) {
+        const auto mix = [t](float* o, const float* x, const float* y, int n) {
+            for (int i = 0; i < n; ++i) o[i] = x[i] + (y[i] - x[i]) * t;
+        };
+        // 4x3 matrices: blended elementwise, then each axis given its blended length again (a plain blend of two
+        // rotations shrinks what it turns).
+        const auto mix43 = [&](float* o, const float* x, const float* y) {
+            mix(o, x, y, 12);
+            for (int axis = 0; axis < 9; axis += 3) {
+                const auto length = [axis](const float* m) {
+                    return std::sqrt(m[axis] * m[axis] + m[axis + 1] * m[axis + 1] + m[axis + 2] * m[axis + 2]);
+                };
+                const float now = length(o), want = length(x) + (length(y) - length(x)) * t;
+                if (now > 1e-6f)
+                    for (int i = 0; i < 3; ++i) o[axis + i] *= want / now;
+            }
+        };
+        mix43(out.world, a.world, b.world);
+        mix43(out.view, a.view, b.view);
+        mix(out.proj, a.proj, b.proj, 16);
+        mix43(out.tgen, a.tgen, b.tgen);
+        for (int bone = 0; bone < 8; ++bone) mix43(out.bones[bone], a.bones[bone], b.bones[bone]);
+    }
+
+    // The replay target, sized like `like` (the framebuffer of the frames being blended).
+    Target& replay_target(const Target& like) {
+        if (replay.color.image && replay.color.width == like.color.width && replay.color.height == like.color.height &&
+            replay.stride == like.stride && replay.margin_x == like.margin_x && replay.margin_y == like.margin_y)
+            return replay;
+        if (replay.color.image) {
+            frame().garbage.push_back(replay.color);
+            if (replay.msaa.image) frame().garbage.push_back(replay.msaa);
+            frame().garbage.push_back(replay_depth);
+        }
+        replay = Target{};
+        replay.address = like.address;
+        replay.stride = like.stride;
+        replay.format = like.format;
+        replay.margin_x = like.margin_x;
+        replay.margin_y = like.margin_y;
+        replay.color = make_image(like.color.width, like.color.height, kColorFormat,
+                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT);
+        if (samples != VK_SAMPLE_COUNT_1_BIT)
+            replay.msaa = make_image(like.color.width, like.color.height, kColorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                     VK_IMAGE_ASPECT_COLOR_BIT, 1, samples);
+        const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        replay_depth = make_image(like.color.width, like.color.height, vk.depth_format,
+                                  VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, aspect, 1,
+                                  samples);
+        const VkCommandBuffer cmd = frame().draw;
+        transition(cmd, replay_depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkClearDepthStencilValue zero{0.0f, 0};
+        const VkImageSubresourceRange range{aspect, 0, 1, 0, 1};
+        vkCmdClearDepthStencilImage(cmd, replay_depth.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+        return replay;
+    }
+
+    VulkanGeRenderer::Output render_between(float t) {
+        if (current_draws.empty() || previous_draws.empty()) return {};
+        const auto real = targets.find(current_draws.front().target);
+        if (real == targets.end()) return {};
+        // Draws of the frame before, per key in order: the n-th draw with a key matches the n-th one before.
+        nx::hash_map<std::uint64_t, nx::vector<const Record*>> before;
+        for (const Record& r : previous_draws) before[r.key].push_back(&r);
+        nx::hash_map<std::uint64_t, std::size_t> taken;
+        begin_frame();
+        end_rendering();
+        replay_target(*real->second);
+        // Each draw with its match (null: none, or not a 3D draw).
+        nx::vector<const Record*> earlier(current_draws.size());
+        nx::vector<std::pair<const Record*, const Record*>> matched;
+        for (std::size_t i = 0; i < current_draws.size(); ++i) {
+            const Record& r = current_draws[i];
+            if (r.state.format.through || (r.state.param(ge::CLEARMODE) & 1)) continue;
+            if (const auto it = before.find(r.key); it != before.end()) {
+                std::size_t& n = taken[r.key];
+                if (n < it->second.size()) earlier[i] = it->second[n++];
+            }
+            if (earlier[i]) matched.emplace_back(earlier[i], &r);
+        }
+        const bool cut = camera_cut(matched);
+        replaying = true;
+        ge::State s;
+        for (std::size_t i = 0; i < current_draws.size(); ++i) {
+            const Record& r = current_draws[i];
+            if (!earlier[i] || cut) {
+                draw(r.state, r.prim, r.vertices);
+                continue;
+            }
+            s = r.state;
+            blend(s, earlier[i]->state, r.state, t);
+            draw(s, r.prim, r.vertices);
+        }
+        replaying = false;
+        return show(replay, nullptr);
     }
 };
 
@@ -1647,6 +1838,16 @@ int VulkanGeRenderer::scale() const { return impl_->scale; }
 void VulkanGeRenderer::set_guest_copies(bool on) { impl_->guest_copies = on; }
 
 void VulkanGeRenderer::set_skip_draws(bool skip) { impl_->skip_draws = skip; }
+
+void VulkanGeRenderer::set_interpolation(bool on) {
+    if (impl_->interpolation == on) return;
+    impl_->interpolation = on;
+    impl_->recorded.clear();
+    impl_->current_draws.clear();
+    impl_->previous_draws.clear();
+}
+
+VulkanGeRenderer::Output VulkanGeRenderer::render_between(float t) { return impl_->render_between(t); }
 
 void VulkanGeRenderer::set_fill_aspect(float aspect) {
     // Margins rounded up to 8 pixels (window resizing does not rebuild the framebuffers at every step; the shown

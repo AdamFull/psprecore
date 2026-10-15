@@ -66,6 +66,9 @@ public:
     // Frames without 3D (movies, menus) are shown without the margins. What the game itself culls outside its own
     // view does not appear in them.
     void set_fill_aspect(float aspect);
+    // Frame interpolation: the draws into displayed framebuffers are recorded, so render_between() can draw frames
+    // between the last two the game finished (more frames than the game makes, its own speed unchanged).
+    void set_interpolation(bool on);
 
     struct Output {
         VkImage image = VK_NULL_HANDLE;  // TRANSFER_SRC_OPTIMAL until the next frame starts
@@ -76,6 +79,11 @@ public:
     // also reads the displayed region back (RGBA8, Output::width x height); this waits for the GPU.
     Output finish_frame(std::uint32_t address, std::uint32_t stride, int format,
                         nx::vector<std::uint32_t>* capture = nullptr);
+    // Draws the last finished frame as it would look `t` (0..1) of the way from the one before: 3D draws found in
+    // both frames (same vertex data, format, primitive and texture, in order) get their world, view, projection,
+    // texture and bone matrices blended; other draws, and every draw after a camera cut, are drawn as they were.
+    // Empty when there is no earlier frame. The returned image is valid like finish_frame's.
+    Output render_between(float t);
 
 private:
     struct Impl;

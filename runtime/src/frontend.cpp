@@ -386,6 +386,7 @@ struct Options {
     int scale = 0, soft_threads = 0;
     std::uint64_t vblanks = 0, ge_dump = 0, ge_dump_at = 0, ge_bench = 0, profile = 0, state_hash = 0;
     std::uint64_t tex_dump_vblank = 0, ram_dump_vblank = 0, window_shot_vblank = 0, watch_vblank = 0;
+    int window_shots = 1;
     std::uint32_t watch_address = 0, watch_size = 0;
     nx::string tex_dump_dir, ram_dump_path, window_shot_path, tex_collect;
     nx::string record, replay, saves, mods;
@@ -447,6 +448,9 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
     c.option("screenshot", screenshot, "write a PNG of the game at VBLANK", {.value_name = "VBLANK:FILE"});
     c.option("screenshot-every", screenshot_every, "write PREFIX_<vblank>.png every N vblanks",
              {.value_name = "N:PREFIX"});
+    c.option("window-shots", o.window_shots,
+             "with --window-shot: the next N presented frames, one file each (FILE gets _<vblank> before .png)",
+             {.value_name = "N"});
     c.option("window-shot", window_shot, "capture the window, overlay included (a pause menu opened by --ui closes "
                                          "after it)", {.value_name = "VBLANK:FILE"});
     c.option_many("press", presses, "hold BUTTON for 6 vblanks: start, select, cross, circle, square, triangle, up, "
@@ -593,6 +597,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         const nx::vector<ScriptedPress>& presses = o.presses;
         const nx::vector<ScriptedUi>& ui_script = o.ui_script;
         const std::uint64_t window_shot_vblank = o.window_shot_vblank;
+        const int window_shots = std::max(1, o.window_shots);
         const nx::string& window_shot_path = o.window_shot_path;
         if (o.ge_dump) rt::set_ge_dump(o.ge_dump, "ge_dump.txt");
         if (o.soft_threads) rt::gpu::set_soft_renderer_threads(o.soft_threads);
@@ -937,6 +942,12 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         // Skipping a movie fast-forwards through it (rt::movie_skipping): unthrottled, silent, a few presents a second.
         bool fast_forward = false, frame_drawn = true;
         int skipped_frames = 0;  // frames not drawn in a row (frame skipping)
+        // Smooth motion (frame interpolation): frames are shown at every vblank instead of when the game finishes
+        // them; between two of the game's frames, ones drawn part of the way from the earlier to the later.
+        bool smooth = false, new_frame = false;
+        int frame_period = 1, between_step = 0;  // vblanks between the game's last two frames; steps shown since
+        std::uint64_t last_flip_vblank = 0;
+        platform::VulkanGeRenderer::Output finished{};  // the game's last finished frame
         nx::timestamp fast_forward_present = nx::timestamp::now();
         if (!headless) {
             int window_w = 960, window_h = 544;
@@ -987,8 +998,11 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             const auto arm_window_shot = [&] {
                 window_shot_armed = false;
                 using Capture = platform::Display::CaptureHandler;
-                display->capture_next_present(Capture([&](const std::uint32_t* rgba, int w, int h) {
-                    rt::write_png(window_shot_path, rgba, w, h);
+                nx::string path = window_shot_path;
+                if (window_shots > 1 && path.ends_with(".png"))  // a series: name_<vblank>.png
+                    path = nx::format("{}_{}.png", nx::string_view(path).substr(0, path.size() - 4), kernel.vblank_count());
+                display->capture_next_present(Capture([&, path](const std::uint32_t* rgba, int w, int h) {
+                    rt::write_png(path, rgba, w, h);
                     window_shot_taken = true;
                 }));
             };
@@ -1050,8 +1064,15 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     if (!vulkan_renderer) return;
                     const bool capture = screenshot_pending;
                     const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
-                    // Fast-forwarding: only every frame due for a present (10 a second) is drawn and shown.
-                    if (out.image && frame_drawn) {
+                    const std::uint64_t now_vblank = kernel.vblank_count();
+                    frame_period = static_cast<int>(std::clamp<std::uint64_t>(now_vblank - last_flip_vblank, 1, 8));
+                    last_flip_vblank = now_vblank;
+                    // Smooth motion: shown from the next vblank on (on_vblank). Fast-forwarding: only every frame
+                    // due for a present (10 a second) is drawn and shown.
+                    if (smooth && out.image && frame_drawn && !fast_forward) {
+                        finished = out;
+                        new_frame = true;
+                    } else if (out.image && frame_drawn) {
                         display->present_image(out.image, out.width, out.height, out.x, out.y);
                         fast_forward_present = nx::timestamp::now();
                     }
@@ -1116,9 +1137,29 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                             display->inject_finger(static_cast<float>(parse_double(u.action.substr(4, comma - 4))), static_cast<float>(parse_double(u.action.substr(comma + 1))), 8);
                     }
                 }
-                if (!window_shot_path.empty() && vblank == window_shot_vblank) window_shot_armed = true;
+                if (!window_shot_path.empty() && vblank >= window_shot_vblank &&
+                    vblank < window_shot_vblank + static_cast<std::uint64_t>(window_shots))
+                    window_shot_armed = true;
                 if (!display->poll_events()) kernel.request_quit();
                 if (vulkan_renderer) vulkan_renderer->set_fill_aspect(settings.fill_screen ? display->aspect() : 0.0f);
+                // Smooth motion: one frame per vblank. After the game finishes a frame, the frames between it and the
+                // one before (1/period, 2/period... of the way), then the frame itself; at 60 frames a second or
+                // more, just the frame.
+                smooth = vulkan_renderer && settings.smooth_motion && !fast_forward;
+                if (vulkan_renderer) vulkan_renderer->set_interpolation(smooth);
+                if (smooth && finished.image) {
+                    between_step = new_frame ? 1 : between_step + 1;
+                    new_frame = false;
+                    if (between_step < frame_period && frame_period <= 4) {
+                        if (const auto mid = vulkan_renderer->render_between(static_cast<float>(between_step) / frame_period);
+                            mid.image)
+                            display->present_image(mid.image, mid.width, mid.height, mid.x, mid.y);
+                    } else if (between_step == frame_period || (between_step == 1 && frame_period > 4)) {
+                        display->present_image(finished.image, finished.width, finished.height, finished.x, finished.y);
+                    }
+                } else if (!smooth) {
+                    finished = {};
+                }
                 if (vulkan_renderer) {  // follows the setting and, for Auto, the gamepad plugged in
                     const platform::ButtonGlyphs g = display->button_glyphs();
                     vulkan_renderer->set_button_icons(g == platform::ButtonGlyphs::Xbox       ? rt::gpu::IconStyle::Xbox

@@ -19,6 +19,7 @@ struct Settings {
     bool frame_skip = true;   // skip drawing frames when behind real time (the game keeps its speed)
     bool refresh_60hz = true; // Android: run the panel at 60 Hz (the game's rate) instead of the device's maximum
     bool show_fps = false;
+    bool smooth_motion = false;  // frames drawn between the game's (Vulkan renderer), the game's speed unchanged
     bool fill_screen = false;  // any aspect ratio: more of the 3D scene instead of black bars (Vulkan renderer)
     bool hd_textures = true;  // baked HD textures (cooked/textures, psprecore/gpu/texture_replacement.hpp)
     ButtonGlyphs button_glyphs = ButtonGlyphs::Auto;  // Auto: the last device used
