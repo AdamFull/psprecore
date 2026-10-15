@@ -1,5 +1,6 @@
 // sceDisplay, sceGe_user, sceCtrl. Display lists are drawn by the software reference renderer.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -29,10 +30,53 @@ struct DisplayState {
         std::uint32_t signal_func, signal_arg, finish_func, finish_arg;
     };
     nx::map<int, Callback> callbacks;  // sceGeSetCallback
+    GeDrawListener listener;           // set_ge_draw_listener
 } g_display;
+
+// In the dump: where a 2D (through-mode) draw lands on the screen and what it samples.
+void dump_draw(const ge::Draw& d) {
+    const ge::VertexFormat& f = d.state->format;
+    if (!f.through || !d.count || !d.vertices) return;
+    std::uint32_t count = d.count;  // indexed: as many vertices as the largest index reaches
+    if (const int size = f.index_size()) {
+        std::uint32_t top = 0;
+        for (std::uint32_t i = 0; i < d.count; ++i) {
+            const std::uint8_t* p = mem().ptr(d.indices + i * static_cast<std::uint32_t>(size));
+            const std::uint32_t v = size == 1 ? p[0] : size == 2 ? p[0] | p[1] << 8 : p[0] | p[1] << 8 | p[2] << 16;
+            top = std::max(top, v);
+        }
+        count = top + 1;
+    }
+    static const float kOnes[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+    nx::vector<ge::Vertex> v;
+    ge::decode_vertices(f, kOnes, mem().ptr(d.vertices), count, v);
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (const ge::Vertex& p : v) {
+        x0 = std::min(x0, p.pos[0]), x1 = std::max(x1, p.pos[0]);
+        y0 = std::min(y0, p.pos[1]), y1 = std::max(y1, p.pos[1]);
+    }
+    const auto& r = d.state->regs;
+    int horizontal = 0, vertical = 0;
+    char anchor[32] = "";
+    if (anchor_2d_of(d.vertices, horizontal, vertical))
+        std::snprintf(anchor, sizeof anchor, "  anchored %d %d", horizontal, vertical);
+    std::fprintf(g_display.dump, "    2D x %.0f..%.0f y %.0f..%.0f  texture %06X%s  vertices %08X%s\n", x0, x1, y0, y1,
+                 r[ge::TEXADDR0] & 0xFFFFFF, (r[ge::TEXTUREMAPENABLE] & 1) ? "" : " (off)", d.vertices, anchor);
+}
 
 GeRendererFactory g_renderer_factory;
 FlipHandler g_flip_handler;
+
+struct Anchor {
+    std::uint32_t begin, end;
+    int horizontal, vertical;
+};
+nx::vector<Anchor> g_anchors;  // anchor_2d
+struct AnchorRegion {
+    float x0, y0, x1, y1;
+    int horizontal, vertical;
+};
+nx::vector<AnchorRegion> g_anchor_regions;  // anchor_2d_region
 
 std::uint32_t g_pad_buttons = 0;
 std::uint8_t g_pad_lx = 128, g_pad_ly = 128;
@@ -56,6 +100,10 @@ ge::Processor& gpu() {
         g_display.ge->on_command = ge::Processor::CommandListener([](std::uint32_t pc, std::uint32_t word) {
             if (g_display.dump && g_display.frames == g_display.dump_frame)
                 std::fprintf(g_display.dump, "%08X: %08X  %s\n", pc, word, ge::describe(word).c_str());
+        });
+        g_display.ge->on_draw = ge::Processor::DrawListener([](const ge::Draw& d) {
+            if (g_display.dump && g_display.frames == g_display.dump_frame) dump_draw(d);
+            if (g_display.listener) g_display.listener(d);
         });
         // GE interrupts: the handlers run as guest calls inside the sceGe call that is executing the list. They are
         // copied first, since a handler may (un)register callbacks, which invalidates iterators into the map.
@@ -193,7 +241,7 @@ void set_ge_renderer_factory(GeRendererFactory factory) {
 }
 
 void set_ge_draw_listener(GeDrawListener listener) {
-    if (g_display.ge) g_display.ge->on_draw = std::move(listener);  // (no display list yet: nothing to listen to)
+    g_display.listener = std::move(listener);
 }
 
 ge::Stats ge_stats() { return g_display.ge ? g_display.ge->stats() : ge::Stats{}; }
@@ -226,6 +274,40 @@ bool take_camera_look(float& yaw, float& pitch) {
     pitch = g_look.pitch;
     g_look = {};
     return yaw != 0 || pitch != 0;
+}
+
+void clear_2d_anchors() {
+    g_anchors.clear();
+    g_anchor_regions.clear();
+}
+
+void anchor_2d(std::uint32_t begin, std::uint32_t end, int horizontal, int vertical) {
+    if (begin < end) g_anchors.push_back({begin & 0x1FFFFFFF, end & 0x1FFFFFFF, horizontal, vertical});
+}
+
+void anchor_2d_region(float x0, float y0, float x1, float y1, int horizontal, int vertical) {
+    if (x0 < x1 && y0 < y1 && (horizontal || vertical)) g_anchor_regions.push_back({x0, y0, x1, y1, horizontal, vertical});
+}
+
+bool anchor_2d_of(float x0, float y0, float x1, float y1, int& horizontal, int& vertical) {
+    for (const AnchorRegion& r : g_anchor_regions)
+        if (x0 >= r.x0 && x1 <= r.x1 && y0 >= r.y0 && y1 <= r.y1) {
+            horizontal = r.horizontal;
+            vertical = r.vertical;
+            return true;
+        }
+    return false;
+}
+
+bool anchor_2d_of(std::uint32_t address, int& horizontal, int& vertical) {
+    address &= 0x1FFFFFFF;
+    for (const Anchor& a : g_anchors)
+        if (address >= a.begin && address < a.end) {
+            horizontal = a.horizontal;
+            vertical = a.vertical;
+            return true;
+        }
+    return false;
 }
 
 bool read_framebuffer(nx::vector<std::uint32_t>& rgba, int& width, int& height) {

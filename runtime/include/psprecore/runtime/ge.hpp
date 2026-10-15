@@ -92,6 +92,7 @@ struct State {
     float bones[8][12]{};
     std::array<std::uint8_t, 1024> clut{};
     VertexFormat format;
+    std::uint32_t vertex_address = 0;  // where the draw's vertices start (guest address)
 
     std::uint32_t param(std::uint8_t cmd) const { return regs[cmd] & 0xFFFFFF; }
     float flt(std::uint8_t cmd) const { return f24(param(cmd)); }

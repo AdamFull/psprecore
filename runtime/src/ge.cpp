@@ -265,6 +265,7 @@ void Processor::draw(std::uint32_t p) {
     const auto prim = static_cast<Prim>((p >> 16) & 7);
     const std::uint32_t count = p & 0xFFFF;
     state_.format = VertexFormat::decode(state_.param(VERTEXTYPE));
+    state_.vertex_address = vaddr_;
     const VertexFormat& f = state_.format;
     ++stats_.draws;
     stats_.vertices += count;

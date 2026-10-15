@@ -98,6 +98,18 @@ void set_pad(std::uint32_t buttons, std::uint8_t lx, std::uint8_t ly);
 // camera that comes back to life does not jump.
 void add_camera_look(float yaw, float pitch);
 bool take_camera_look(float& yaw, float& pitch);  // false: no turn
+
+// Interface on screens of another shape ("Fill the screen"): 2D drawn from vertices in [begin, end) (guest
+// addresses) moves with its scissor to the screen's edges, horizontal -1 left / 1 right and vertical -1 top /
+// 1 bottom (0: stays centred), by the margins around the PSP's picture. Game code that knows its interface
+// elements registers them each frame before they are drawn, after clear_2d_anchors(). A range anchored 0, 0 stays
+// put whatever region it crosses. Other 2D lying wholly within a region (screen pixels; a panel's text, gauges
+// drawn by other code) moves as the region says.
+void clear_2d_anchors();
+void anchor_2d(std::uint32_t begin, std::uint32_t end, int horizontal, int vertical);
+void anchor_2d_region(float x0, float y0, float x1, float y1, int horizontal, int vertical);
+bool anchor_2d_of(std::uint32_t address, int& horizontal, int& vertical);  // by vertices: registered ranges
+bool anchor_2d_of(float x0, float y0, float x1, float y1, int& horizontal, int& vertical);  // by box: regions
 bool write_png(const nx::string& path, const std::uint32_t* rgba, int width, int height);
 bool read_png(const nx::string& path, nx::vector<std::uint32_t>& rgba, int& width, int& height);  // RGBA8
 

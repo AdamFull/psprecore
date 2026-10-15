@@ -1158,6 +1158,7 @@ struct VulkanGeRenderer::Impl {
 
     float target_w = 512, target_h = kTargetHeight;
     float margin_x = 0, margin_y = 0;  // margins of the target drawn to (guest pixels)
+    float shift_x = 0, shift_y = 0;    // 2D moved to the screen's edges (rt::anchor_2d), guest pixels
     // Filling the screen: sprites reaching an edge of the PSP's screen are stretched over the margins beyond it.
     // 1: each such edge (clears, drawn in strips); 2: only sprites covering the whole screen (solid fills: fades).
     int stretch_edges = 0;
@@ -1165,8 +1166,8 @@ struct VulkanGeRenderer::Impl {
     // Drawing-space pixels (already projected) -> Vulkan clip space with w = 1.
     GpuVertex screen_vertex(float x, float y, float z, float s, float t, float q, const float* color, const float* spec, float fog) const {
         GpuVertex v{};
-        v.pos[0] = 2.0f * (x + margin_x) / target_w - 1.0f;
-        v.pos[1] = 2.0f * (y + margin_y) / target_h - 1.0f;
+        v.pos[0] = 2.0f * (x + margin_x + shift_x) / target_w - 1.0f;
+        v.pos[1] = 2.0f * (y + margin_y + shift_y) / target_h - 1.0f;
         v.pos[2] = std::clamp(z, 0.0f, 65535.0f) / 65535.0f;
         v.pos[3] = 1.0f;
         v.uvq[0] = s;
@@ -1320,6 +1321,24 @@ struct VulkanGeRenderer::Impl {
         margin_x = static_cast<float>(t.margin_x);
         margin_y = static_cast<float>(t.margin_y);
         stretch_edges = !margins ? 0 : clear ? 1 : through && !texturing ? 2 : 0;
+        shift_x = shift_y = 0;
+        if (margins && through && t.filled && !vertices.empty()) {  // (frames without 3D are shown without margins)
+            int horizontal = 0, vertical = 0;
+            bool anchored = rt::anchor_2d_of(s.vertex_address, horizontal, vertical);
+            if (!anchored) {
+                float x0 = vertices[0].pos[0], x1 = x0, y0 = vertices[0].pos[1], y1 = y0;
+                for (const ge::Vertex& v : vertices) {
+                    x0 = std::min(x0, v.pos[0]), x1 = std::max(x1, v.pos[0]);
+                    y0 = std::min(y0, v.pos[1]), y1 = std::max(y1, v.pos[1]);
+                }
+                anchored = rt::anchor_2d_of(x0, y0, x1, y1, horizontal, vertical);
+            }
+            if (anchored) {
+                shift_x = static_cast<float>(horizontal * t.margin_x);
+                shift_y = static_cast<float>(vertical * t.margin_y);
+                stretch_edges = 0;
+            }
+        }
         if (margins && !through && !clear) t.filled = true;
 
         out.clear();
@@ -1520,7 +1539,9 @@ struct VulkanGeRenderer::Impl {
         const int x2 = std::min(static_cast<int>(sc2 & 0x3FF), static_cast<int>(t.stride) - 1);
         const int y2 = std::min(static_cast<int>((sc2 >> 10) & 0x3FF), kTargetHeight - 1);
         t.used_height = std::max(t.used_height, y2 + 1);
-        VkRect2D scissor{{(x1 + t.margin_x) * scale, (y1 + t.margin_y) * scale}, {0, 0}};
+        // Anchored 2D keeps its scissor around it: whatever it hides off the PSP's screen stays hidden.
+        const int sx = static_cast<int>(shift_x), sy = static_cast<int>(shift_y);
+        VkRect2D scissor{{(x1 + t.margin_x + sx) * scale, (y1 + t.margin_y + sy) * scale}, {0, 0}};
         if (x2 >= x1 && y2 >= y1)
             scissor.extent = {static_cast<std::uint32_t>((x2 - x1 + 1) * scale), static_cast<std::uint32_t>((y2 - y1 + 1) * scale)};
         // Filling the screen: a full-screen scissor opens the margins to 3D, clears and stretched fills (other 2D
