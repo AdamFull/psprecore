@@ -20,7 +20,6 @@ add_library(psprecore_runtime STATIC
     src/gpu/button_icons.cpp
     src/gpu/ui_font.cpp
     src/gpu/texture_replacement.cpp
-    src/gpu/upscale.cpp
     src/gpu/texture.cpp
     src/gpu/soft_renderer.cpp
     src/gpu/vertex_pipeline.cpp

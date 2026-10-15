@@ -21,7 +21,6 @@
 #include "ge_vert.h"
 #include "gpu/hash.hpp"
 #include "gpu/texture.hpp"
-#include "gpu/upscale.hpp"
 #include "gpu/vertex_pipeline.hpp"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/map.h"
@@ -164,8 +163,6 @@ struct VulkanGeRenderer::Impl {
     std::array<VkPipeline, 4> copy_pipelines{};  // by log2(samples) - 1
     bool guest_copies = true;
     bool skip_draws = false;
-    bool upscale_textures = false;               // the game's textures used in 3D drawn at 2x (gpu/upscale.hpp)
-    nx::vector<std::uint32_t> upscale_scratch;  // a level decoded before upscaling
 
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -802,9 +799,8 @@ struct VulkanGeRenderer::Impl {
         return true;
     }
 
-    // Texture from guest memory, decoded and uploaded once per content. `through`: first used by a 2D (through
-    // mode) draw, i.e. UI, which upscaling leaves as it is (pixel art and text keep their crisp edges).
-    Image* texture(const ge::State& s, const rt::gpu::TextureSampler& ts, std::uint32_t address, bool through) {
+    // Texture from guest memory, decoded and uploaded once per content.
+    Image* texture(const ge::State& s, const rt::gpu::TextureSampler& ts, std::uint32_t address) {
         std::uint64_t key = hash_bytes(&address, 4);
         const std::uint32_t params[] = {s.param(ge::TEXFORMAT), s.param(ge::TEXMODE), s.param(ge::TEXSIZE0),
                                         s.param(ge::TEXBUFWIDTH0), static_cast<std::uint32_t>(ts.levels())};
@@ -858,21 +854,17 @@ struct VulkanGeRenderer::Impl {
                 map && upload_replacement(t, *map, &ts))
                 return &t.image;
 
-        const bool upscale = upscale_textures && !through;
-        const int factor = upscale ? 2 : 1;
         const std::uint32_t levels = static_cast<std::uint32_t>(ts.levels());
-        t.image = make_image(ts.width(0) * factor, ts.height(0) * factor, kColorFormat,
+        t.image = make_image(ts.width(0), ts.height(0), kColorFormat,
                              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, levels);
         const VkCommandBuffer cmd = frame().upload;
         transition(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         for (std::uint32_t l = 0; l < levels; ++l) {
             const int w = ts.width(static_cast<int>(l)), h = ts.height(static_cast<int>(l));
             VkDeviceSize offset = 0;
-            auto* dst = reinterpret_cast<std::uint32_t*>(
-                staging(static_cast<VkDeviceSize>(w) * factor * static_cast<VkDeviceSize>(h) * factor * 4, offset));
+            auto* dst = reinterpret_cast<std::uint32_t*>(staging(static_cast<VkDeviceSize>(w) * h * 4, offset));
             if (!dst) break;  // staging full: the level stays undefined this frame (rare)
-            if (upscale) upscale_scratch.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
-            std::uint32_t* decoded = upscale ? upscale_scratch.data() : dst;
+            std::uint32_t* decoded = dst;
             ts.decode(static_cast<int>(l), decoded);
             const bool keep_font = rt::gpu::ui_font_wanted();
             if (l == 0 && (icon_style != rt::gpu::IconStyle::PlayStation || keep_font))
@@ -881,11 +873,10 @@ struct VulkanGeRenderer::Impl {
                     if (keep_font && atlas->hash == rt::gpu::ui_font()->atlas_hash)
                         rt::gpu::keep_ui_font_sheet(decoded, w, h);
                 }
-            if (upscale) rt::gpu::upscale_2x(decoded, w, h, dst);
             VkBufferImageCopy copy{};
             copy.bufferOffset = offset;
             copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};
-            copy.imageExtent = {static_cast<std::uint32_t>(w * factor), static_cast<std::uint32_t>(h * factor), 1};
+            copy.imageExtent = {static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h), 1};
             vkCmdCopyBufferToImage(cmd, frame().staging.buffer, t.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         }
         transition(cmd, t.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1354,7 +1345,7 @@ struct VulkanGeRenderer::Impl {
             Image* img = nullptr;
             Target* rt_tex = ts.format() < 4 ? target_containing(tex_addr) : nullptr;
             if (rt_tex) img = target_texture(*rt_tex, tex_addr, ts.width(), ts.height());
-            if (!img) img = texture(s, ts, tex_addr, s.format.through);
+            if (!img) img = texture(s, ts, tex_addr);
             if (timing) stats.texture_ns += static_cast<std::uint64_t>((nx::timestamp::now() - texture_start).nanos());
             const std::uint32_t filter = s.param(ge::TEXFILTER), wrap = s.param(ge::TEXWRAP);
             if (img) {
@@ -1503,13 +1494,6 @@ int VulkanGeRenderer::scale() const { return impl_->scale; }
 void VulkanGeRenderer::set_guest_copies(bool on) { impl_->guest_copies = on; }
 
 void VulkanGeRenderer::set_skip_draws(bool skip) { impl_->skip_draws = skip; }
-
-void VulkanGeRenderer::set_texture_upscale(bool on) {
-    if (impl_->upscale_textures == on) return;
-    impl_->upscale_textures = on;
-    for (auto& [_, t] : impl_->textures) impl_->frame().garbage.push_back(t.image);  // destroyed once the slot is reused
-    impl_->textures.clear();
-}
 
 VulkanGeRenderer::Output VulkanGeRenderer::finish_frame(std::uint32_t address, std::uint32_t stride, int format,
                                                        nx::vector<std::uint32_t>* capture) {

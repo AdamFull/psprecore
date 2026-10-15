@@ -44,7 +44,6 @@ Settings Settings::load(nx::fs::path_view path) {
         if (key == "renderer") s.software_renderer = value == "software";
         else if (key == "scale") s.scale = std::clamp(to_int(value, s.scale), 1, 8);
         else if (key == "msaa") s.msaa = std::clamp(to_int(value, s.msaa), 1, 8);
-        else if (key == "texture_upscale") s.texture_upscale = to_int(value, 0) != 0;
         else if (key == "fullscreen") s.fullscreen = to_int(value, 0) != 0;
         else if (key == "volume") s.volume = std::clamp(to_int(value, s.volume), 0, 100);
         else if (key == "frame_limit") s.frame_limit = to_int(value, 1) != 0;
@@ -59,9 +58,9 @@ Settings Settings::load(nx::fs::path_view path) {
 }
 
 bool Settings::save(nx::fs::path_view path) const {
-    const nx::string text = nx::format("# Settings\nrenderer={}\nscale={}\nmsaa={}\ntexture_upscale={}\nfullscreen={}\n"
+    const nx::string text = nx::format("# Settings\nrenderer={}\nscale={}\nmsaa={}\nfullscreen={}\n"
                                        "volume={}\nframe_limit={}\nvsync={}\nrefresh_60hz={}\nshow_fps={}\nbutton_glyphs={}\n",
-                                       software_renderer ? "software" : "vulkan", scale, msaa, int{texture_upscale},
+                                       software_renderer ? "software" : "vulkan", scale, msaa,
                                        int{fullscreen}, volume,
                                        int{frame_limit}, int{vsync}, int{refresh_60hz}, int{show_fps},
                                        kGlyphNames[static_cast<int>(button_glyphs)]) +

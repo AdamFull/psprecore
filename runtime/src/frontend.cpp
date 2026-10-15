@@ -944,7 +944,6 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 if (vulkan_renderer) {
                     vulkan_renderer->set_scale(s.scale);
                     vulkan_renderer->set_msaa(s.msaa);
-                    vulkan_renderer->set_texture_upscale(s.texture_upscale);
                 }
                 if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
                 display->set_vsync(s.vsync);
@@ -1022,7 +1021,6 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale,
                                                                           path_join(data_dir, "vulkan_pipelines.bin"));
                     r->set_msaa(settings.msaa);
-                    r->set_texture_upscale(settings.texture_upscale);
                     vulkan_renderer = r.get();
                     if (renderer != "compare") return std::unique_ptr<rt::ge::Renderer>(std::move(r));
                     r->set_guest_copies(false);  // the software renderer already copies in guest memory
