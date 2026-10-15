@@ -13,8 +13,6 @@ namespace {
 
 std::uint32_t le32(const std::uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (std::uint32_t{p[3]} << 24); }
 
-int clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
-
 // BT.601 YUV -> RGB in 16.16 fixed point, limited or full range.
 void convert(const Dav1dPicture& pic, nx::vector<std::uint32_t>& rgba) {
     const int w = pic.p.w, h = pic.p.h;
@@ -28,17 +26,29 @@ void convert(const Dav1dPicture& pic, nx::vector<std::uint32_t>& rgba) {
     // Coefficients (x65536): full range 1.402, 0.344, 0.714, 1.772; limited range scaled by 255/219 and 255/224.
     const int ky = full ? 65536 : 76309, ky0 = full ? 0 : 16;
     const int krv = full ? 91881 : 104597, kgu = full ? 22554 : 25675, kgv = full ? 46802 : 53279, kbu = full ? 116130 : 132201;
+    // Per row: the chroma terms expanded to every pixel, then an element-wise loop the compiler vectorises.
+    nx::vector<int> rv(static_cast<std::size_t>(w)), guv(static_cast<std::size_t>(w)), bu(static_cast<std::size_t>(w));
     for (int y = 0; y < h; ++y) {
         const std::uint8_t* row = yp + y * ys;
         const std::uint8_t* urow = up + (sub_y ? y / 2 : y) * cs;
         const std::uint8_t* vrow = vp + (sub_y ? y / 2 : y) * cs;
+        if (y == 0 || !sub_y || (y & 1) == 0)  // 4:2:0 rows share their chroma in pairs
+            for (int x = 0; x < w; ++x) {
+                const int cx = sub_x ? x >> 1 : x;
+                const int u = urow[cx] - 128, v = vrow[cx] - 128;
+                rv[static_cast<std::size_t>(x)] = krv * v + 32768;
+                guv[static_cast<std::size_t>(x)] = 32768 - kgu * u - kgv * v;
+                bu[static_cast<std::size_t>(x)] = kbu * u + 32768;
+            }
         std::uint32_t* out = rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(w);
+        const int* rvp = rv.data();
+        const int* gp = guv.data();
+        const int* bp = bu.data();
         for (int x = 0; x < w; ++x) {
             const int c = (row[x] - ky0) * ky;
-            const int u = urow[sub_x ? x / 2 : x] - 128, v = vrow[sub_x ? x / 2 : x] - 128;
-            const int r = clamp255((c + krv * v + 32768) >> 16);
-            const int g = clamp255((c - kgu * u - kgv * v + 32768) >> 16);
-            const int b = clamp255((c + kbu * u + 32768) >> 16);
+            const int r = std::clamp((c + rvp[x]) >> 16, 0, 255);
+            const int g = std::clamp((c + gp[x]) >> 16, 0, 255);
+            const int b = std::clamp((c + bp[x]) >> 16, 0, 255);
             out[x] = static_cast<std::uint32_t>(r) | (static_cast<std::uint32_t>(g) << 8) |
                      (static_cast<std::uint32_t>(b) << 16) | 0xFF000000u;
         }

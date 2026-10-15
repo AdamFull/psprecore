@@ -63,6 +63,8 @@ private:
     NX_FORCE_INLINE static std::uint32_t fetch(const TextureSampler& t, const Level& l, int x, int y);
     template <int Format, bool Swizzled>
     static std::uint32_t sample_fixed(const TextureSampler& t, float u, float v, int level, bool linear);
+    template <int Format, bool Swizzled>
+    static void decode_fixed(const TextureSampler& t, const Level& l, std::uint32_t* out);
     static std::uint32_t sample_generic(const TextureSampler& t, float u, float v, int level, bool linear);
     SampleFn sample_fn_ = &sample_generic;
 

@@ -194,9 +194,32 @@ std::uint32_t TextureSampler::texel(const Level& l, int x, int y) const {
     }
 }
 
+template <int Format, bool Swizzled>
+void TextureSampler::decode_fixed(const TextureSampler& t, const Level& l, std::uint32_t* out) {
+    for (int y = 0; y < l.height; ++y)
+        for (int x = 0; x < l.width; ++x) *out++ = fetch<Format, Swizzled>(t, l, x, y);
+}
+
 void TextureSampler::decode(int level, std::uint32_t* out) const {
     const Level& l = level_[std::clamp(level, 0, levels_ - 1)];
-    for (int y = 0; y < l.height; ++y)
+    if (format_ == 3 && !swizzled_) {  // 8888 rows as they are (e.g. movie frames, every frame)
+        for (int y = 0; y < l.height; ++y)
+            std::memcpy(out + static_cast<std::size_t>(y) * static_cast<std::size_t>(l.width),
+                        l.data + static_cast<std::size_t>(y) * l.row_bytes, static_cast<std::size_t>(l.width) * 4);
+        return;
+    }
+    using DecodeFn = void (*)(const TextureSampler&, const Level&, std::uint32_t*);
+    static constexpr DecodeFn kFixed[8][2] = {
+        {&decode_fixed<0, false>, &decode_fixed<0, true>}, {&decode_fixed<1, false>, &decode_fixed<1, true>},
+        {&decode_fixed<2, false>, &decode_fixed<2, true>}, {&decode_fixed<3, false>, &decode_fixed<3, true>},
+        {&decode_fixed<4, false>, &decode_fixed<4, true>}, {&decode_fixed<5, false>, &decode_fixed<5, true>},
+        {&decode_fixed<6, false>, &decode_fixed<6, true>}, {&decode_fixed<7, false>, &decode_fixed<7, true>},
+    };
+    if (format_ < 8) {
+        kFixed[format_][swizzled_ ? 1 : 0](*this, l, out);
+        return;
+    }
+    for (int y = 0; y < l.height; ++y)  // DXT
         for (int x = 0; x < l.width; ++x) *out++ = texel(l, x, y);
 }
 

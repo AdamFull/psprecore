@@ -309,6 +309,10 @@ void AvcDecode(Context& c) {
                 }
                 continue;
             }
+            if (bpp == 4 && fw >= 480 && (y + 1) * static_cast<std::uint32_t>(fw) <= g_mpeg.frame.size()) {
+                std::memcpy(row, g_mpeg.frame.data() + y * static_cast<std::uint32_t>(fw), 480 * 4);  // 8888 as decoded
+                continue;
+            }
             for (std::uint32_t x = 0; x < 480; ++x) {
                 const bool inside = have && static_cast<int>(x) < fw &&
                                     (y + 1) * static_cast<std::uint32_t>(fw) <= g_mpeg.frame.size();
