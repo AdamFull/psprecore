@@ -47,6 +47,7 @@ if(PSPRECORE_BUILD_GAME)
         src/platform/gpu_vulkan.cpp
         src/platform/sampling_profiler.cpp
         src/platform/memory_watch.cpp
+        src/platform/mods.cpp
         src/platform/overlay.cpp
         src/platform/settings.cpp
         src/platform/touch_controls.cpp

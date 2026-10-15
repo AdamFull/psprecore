@@ -6,6 +6,7 @@
 //     int main(int argc, char** argv) { return psprecore::platform::run_game(kGame, argc, argv); }
 
 #include <cstdint>
+#include <span>
 
 #include "core/foundation/platform/filesystem.h"
 
@@ -17,8 +18,8 @@ struct GameInfo {
     const char* folder = "";  // the extracted disc folder's default name in the data directory (Android)
     std::uint32_t load_base = 0x08804000;  // where the recompiled module was translated for (psprecomp)
     // After the disc is mounted (rt::set_storage), before the game starts: the game's own setup, e.g. its archive
-    // for raw disc reads and mods (`mods_dir`: --mods, or <data>/mods).
-    void (*mount)(nx::string_view mods_dir) = nullptr;
+    // for raw disc reads and mods (`mods`: the active mod folders in order, psprecore/platform/mods.hpp).
+    void (*mount)(std::span<const nx::string> mods) = nullptr;
     // After the module is loaded into guest memory, before it runs: patches to the game's own data.
     void (*loaded)() = nullptr;
 };

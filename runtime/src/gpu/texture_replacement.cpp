@@ -42,15 +42,9 @@ bool parse_hash(nx::string_view name, std::uint64_t& hash) {
 
 }  // namespace
 
-void scan_texture_replacements(nx::string_view mods_dir) {
+void scan_texture_replacements(std::span<const nx::string> mods) {
     g_replacements.clear();
-    auto mods = nx::fs::directory_entries(nx::string(mods_dir));
-    if (!mods.has_value()) return;
-    nx::vector<nx::string> folders;
-    for (const auto& e : mods.value())
-        if (e.type == nx::fs::file_type::directory) folders.push_back(e.path);
-    std::sort(folders.begin(), folders.end());
-    for (const auto& folder : folders) {
+    for (const auto& folder : mods) {
         auto files = nx::fs::directory_entries(nx::format("{}/textures", folder));
         if (!files.has_value()) continue;
         for (const auto& f : files.value()) {
@@ -60,8 +54,7 @@ void scan_texture_replacements(nx::string_view mods_dir) {
             g_replacements[hash] = Entry{f.path};
         }
     }
-    if (!g_replacements.empty())
-        std::fprintf(stderr, "textures: %zu replacements in %s\n", g_replacements.size(), nx::string(mods_dir).c_str());
+    if (!g_replacements.empty()) std::fprintf(stderr, "textures: %zu replacements\n", g_replacements.size());
 }
 
 bool have_texture_replacements() { return !g_replacements.empty(); }

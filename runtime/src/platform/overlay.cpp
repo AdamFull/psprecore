@@ -330,6 +330,21 @@ void Overlay::draw_menu() {
 #ifdef __ANDROID__
         ImGui::Checkbox("60 Hz display (saves battery)", &s.refresh_60hz);
 #endif
+        if (!hooks_.languages.empty()) {
+            ImGui::SeparatorText("Language");
+            int current = 0;
+            for (std::size_t i = 0; i < hooks_.languages.size(); ++i)
+                if (hooks_.languages[i] == s.language) current = static_cast<int>(i) + 1;
+            const char* preview = current ? hooks_.languages[static_cast<std::size_t>(current - 1)].c_str() : "Original";
+            if (ImGui::BeginCombo("Text", preview)) {
+                if (ImGui::Selectable("Original", current == 0)) s.language.clear();
+                for (std::size_t i = 0; i < hooks_.languages.size(); ++i)
+                    if (ImGui::Selectable(hooks_.languages[i].c_str(), current == static_cast<int>(i) + 1))
+                        s.language = hooks_.languages[i];
+                ImGui::EndCombo();
+            }
+            if (s.language != hooks_.active_language) ImGui::TextDisabled("Applies when the game is started again.");
+        }
         ImGui::SeparatorText("Controls");
         int glyphs = static_cast<int>(s.button_glyphs);
         if (ImGui::Combo("Button glyphs", &glyphs, "Auto (last device used)\0PlayStation\0Xbox\0Nintendo\0Keyboard\0"))

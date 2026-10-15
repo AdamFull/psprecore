@@ -32,6 +32,7 @@ Settings Settings::load(nx::fs::path_view path) {
     const auto text = nx::fs::file_read_text(path);
     if (!text.has_value()) return s;
     nx::string_view rest = text.value();
+    if (rest.starts_with("\xEF\xBB\xBF")) rest.remove_prefix(3);  // a UTF-8 BOM (files saved by some editors)
     while (!rest.empty()) {
         const std::size_t end = std::min(rest.find('\n'), rest.size());
         nx::string_view line = rest.substr(0, end);
@@ -51,6 +52,7 @@ Settings Settings::load(nx::fs::path_view path) {
         else if (key == "vsync") s.vsync = to_int(value, 1) != 0;
         else if (key == "refresh_60hz") s.refresh_60hz = to_int(value, 1) != 0;
         else if (key == "button_glyphs") s.button_glyphs = to_glyphs(value);
+        else if (key == "language") s.language = nx::string(value);
     }
     return s;
 }
@@ -61,7 +63,8 @@ bool Settings::save(nx::fs::path_view path) const {
                                        software_renderer ? "software" : "vulkan", scale, msaa, int{texture_upscale},
                                        int{fullscreen}, volume,
                                        int{frame_limit}, int{vsync}, int{refresh_60hz}, int{show_fps},
-                                       kGlyphNames[static_cast<int>(button_glyphs)]);
+                                       kGlyphNames[static_cast<int>(button_glyphs)]) +
+                            nx::format("language={}\n", language);
     return nx::fs::file_write_text(path, text).has_value();
 }
 

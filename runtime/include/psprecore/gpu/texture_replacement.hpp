@@ -7,9 +7,10 @@
 //     mods/<mod>/textures/<16 hex digits>[anything].png      e.g. 3F2A..._title-logo.png
 //
 // Any size (texture coordinates are normalised, so a 2x or 4x picture just looks sharper), RGBA PNG up to 2048x2048.
-// Folders apply in name order; a later one wins. Pictures are read the first time the game uses their texture.
+// Mods apply in order (psprecore/platform/mods.hpp); a later one wins. Pictures are read when first needed.
 
 #include <cstdint>
+#include <span>
 
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
@@ -21,8 +22,8 @@ struct ReplacementImage {
     int width = 0, height = 0;
 };
 
-// Finds the pictures in <mods_dir>/*/textures (call once at start).
-void scan_texture_replacements(nx::string_view mods_dir);
+// Finds the pictures in <mod>/textures of the active mods (call once at start).
+void scan_texture_replacements(std::span<const nx::string> mods);
 bool have_texture_replacements();
 // The picture for a texture, or null (none, or it could not be read).
 const ReplacementImage* texture_replacement(std::uint64_t content_hash);

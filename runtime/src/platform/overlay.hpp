@@ -22,6 +22,8 @@ public:
         nx::unique_function<void()> quit;
         bool renderer_choice = true;                 // false: fixed by the command line (--renderer)
         bool gpu_renderer = true;                    // the renderer in use when the choice is fixed
+        nx::vector<nx::string> languages;            // the language packs installed (psprecore/platform/mods.hpp)
+        nx::string active_language;                  // the one in use since the start (empty: the game's own)
     };
     Overlay(Display& display, Settings& settings, Hooks hooks);
     ~Overlay();

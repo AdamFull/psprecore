@@ -434,10 +434,18 @@ void Display::Impl::init_imgui() {
     if (const char* windir = std::getenv("WINDIR")) fonts.push_back(path_join(windir, "Fonts", "segoeui.ttf"));
     fonts.push_back("/system/fonts/Roboto-Regular.ttf");
     fonts.push_back("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+    // Latin, Cyrillic and Greek (names of language packs and saves); the ranges must outlive the atlas build.
+    static ImVector<ImWchar> ranges;
+    if (ranges.empty()) {
+        ImFontGlyphRangesBuilder builder;
+        builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());  // with Basic Latin and Latin-1
+        builder.AddRanges(io.Fonts->GetGlyphRangesGreek());
+        builder.BuildRanges(&ranges);
+    }
     bool loaded = false;
     for (const auto& f : fonts) {
         if (!nx::fs::exists(f)) continue;
-        if (io.Fonts->AddFontFromFileTTF(f.c_str(), size)) {
+        if (io.Fonts->AddFontFromFileTTF(f.c_str(), size, nullptr, ranges.Data)) {
             loaded = true;
             break;
         }

@@ -41,6 +41,7 @@
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
 #include "platform/memory_watch.hpp"
+#include "psprecore/platform/mods.hpp"
 #include "platform/sampling_profiler.hpp"
 #include "psprecore/gpu/texture_replacement.hpp"
 #include "psprecore/runtime/hle.hpp"
@@ -617,8 +618,13 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             if (nx::fs::exists(saves)) (void)nx::fs::copy(saves, snapshot, true);
         }
         rt::set_storage(game_dir, saves);
-        if (game.mount) game.mount(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
-        rt::gpu::scan_texture_replacements(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
+        // Mods: every folder, except language packs other than the chosen one (applied at start).
+        const auto mods = platform::find_mods(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
+        const nx::string language = platform::Settings::load(settings_path).language;
+        const nx::vector<nx::string> active_mods = platform::active_mods(mods, language);
+        if (!language.empty()) std::fprintf(stderr, "mods: language %s\n", language.c_str());
+        if (game.mount) game.mount(active_mods);
+        rt::gpu::scan_texture_replacements(active_mods);
 
         // Input recording / replay. A replay also fixes the guest clock to the recording's.
         nx::unique_ptr<InputReplay> replay;
@@ -933,6 +939,8 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
             hooks.quit = nx::unique_function<void()>([&] { kernel.request_quit(); });
             hooks.renderer_choice = renderer_choice;
             hooks.gpu_renderer = gpu;
+            hooks.languages = platform::mod_languages(mods);
+            hooks.active_language = language;
             overlay = nx::make_unique<platform::Overlay>(*display, settings, std::move(hooks));
             display->set_ui(nx::unique_function<void()>([&] { overlay->draw(); }));
             rt::set_savedata_ui(true);

@@ -20,6 +20,7 @@ struct Settings {
     bool refresh_60hz = true; // Android: run the panel at 60 Hz (the game's rate) instead of the device's maximum
     bool show_fps = false;
     ButtonGlyphs button_glyphs = ButtonGlyphs::Auto;  // Auto: the last device used
+    nx::string language;  // the language pack to use (psprecore/platform/mods.hpp); empty: the game's own
 
     static Settings load(nx::fs::path_view path);  // defaults when the file is missing
     bool save(nx::fs::path_view path) const;
