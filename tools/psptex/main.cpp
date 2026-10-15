@@ -9,7 +9,14 @@
 // <original> is the FNV-1a 64 hash (16 hex digits) of the picture's RGBA pixels as unpacked. Pictures that still
 // match it are left alone; edited ones, of any size up to 2048 pixels, are written with their mipmaps in the formats
 // asked for, and one changed back to the original loses its replacement. <cooked>/textures/packed.tsv lists what was
-// packed, so only pictures edited since are packed again.
+// packed, so only pictures edited since are packed again. Layers (--layer, e.g. from `match`) are folders with
+// pictures at the same paths, used where the picture itself is unedited (the first layer that has one wins); ones
+// larger than the runtime takes are halved.
+//
+// `match` finds which pictures of a folder of high-resolution ones (another project's texture pack, whatever its
+// names) are the unpacked originals, enlarged: each one whose size is a whole multiple of an original's and that,
+// shrunk back, matches it closely (much more closely than the original matches its own average colour) is copied to
+// <out>/<the original's path>, a layer for `pack`; <out>/matched.tsv lists the matches and near misses.
 //
 // `bake` upscales a texture collection (--tex-collect, psprecore/gpu/texture_collection.hpp) with an external
 // upscaler into <cooked>/textures/<content hash>.png.
@@ -41,6 +48,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <span>
+#include <utility>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO_DEPRECATION
@@ -79,6 +88,8 @@ struct Options {
     nx::string quality = "medium";  // block compression effort: fast, medium, thorough
     std::size_t limit = static_cast<std::size_t>(-1);
     bool force = false, keep_temp = false;
+    nx::vector<nx::string> layers;  // pack
+    double threshold = 0.65;        // match: largest difference accepted, relative to the original's detail
 };
 
 struct Image {
@@ -587,7 +598,12 @@ int pack(const nx::string& assets, const nx::string& cooked_dir, const Options& 
         nx::string settings;  // the packed.tsv line it gets
     };
     nx::vector<Job> jobs;
-    std::size_t edited = 0, unchanged = 0, up_to_date = 0, reverted = 0, missing = 0, failed = 0;
+    std::size_t edited = 0, unchanged = 0, layered = 0, up_to_date = 0, reverted = 0, missing = 0, failed = 0;
+    const auto outputs_of = [&](const nx::string& hash) {
+        return (!want_png || nx::fs::exists(path_join(out_dir, hash + ".png"))) &&
+               (!want_bc7 || nx::fs::exists(path_join(out_dir, hash + ".bc7.ktx2"))) &&
+               (!want_astc || nx::fs::exists(path_join(out_dir, hash + ".astc.ktx2")));
+    };
     for (const nx::string& line : lines(path_join(assets, "index.tsv"))) {
         if (line.starts_with("#")) continue;
         const auto cols = split(line, '\t');
@@ -603,6 +619,30 @@ int pack(const nx::string& assets, const nx::string& cooked_dir, const Options& 
                           nx::format("{:016X}", now) == nx::string(cols[4]);
         if (same) {
             ++unchanged;
+            nx::string layer_path;
+            for (const nx::string& layer : opt.layers)
+                if (nx::fs::exists(path_join(layer, cols[0]))) {
+                    layer_path = path_join(layer, cols[0]);
+                    break;
+                }
+            if (!layer_path.empty()) {  // the layer's picture, known by its file's bytes (no decoding on every run)
+                const auto bytes = nx::fs::file_read(layer_path);
+                if (!bytes.has_value()) {
+                    ++missing;
+                    continue;
+                }
+                ++layered;
+                const auto data = std::as_bytes(std::span(bytes.value().data(), bytes.value().size()));
+                const nx::string settings =
+                    nx::format("{}\tL{:016X}\t{}\t{}", hash, cooked::fnv1a64(data), opt.formats, opt.quality);
+                const auto it = packed.find(hash);
+                if (!opt.force && it != packed.end() && it->second == settings && outputs_of(hash)) {
+                    ++up_to_date;
+                    continue;
+                }
+                jobs.push_back({hash, layer_path, settings});
+                continue;
+            }
             if (packed.erase(hash)) {  // edited before, back to the original now
                 remove_outputs(hash);
                 ++reverted;
@@ -617,17 +657,15 @@ int pack(const nx::string& assets, const nx::string& cooked_dir, const Options& 
         }
         const nx::string settings = nx::format("{}\t{:016X}\t{}\t{}", hash, now, opt.formats, opt.quality);
         const auto it = packed.find(hash);
-        const bool outputs = (!want_png || nx::fs::exists(path_join(out_dir, hash + ".png"))) &&
-                             (!want_bc7 || nx::fs::exists(path_join(out_dir, hash + ".bc7.ktx2"))) &&
-                             (!want_astc || nx::fs::exists(path_join(out_dir, hash + ".astc.ktx2")));
-        if (!opt.force && it != packed.end() && it->second == settings && outputs) {
+        if (!opt.force && it != packed.end() && it->second == settings && outputs_of(hash)) {
             ++up_to_date;
             continue;
         }
         jobs.push_back({hash, path, settings});
     }
-    std::fprintf(stderr, "%zu pictures edited (%zu up to date, %zu to pack), %zu unchanged, %zu changed back, %zu missing\n",
-                 edited, up_to_date, jobs.size(), unchanged, reverted, missing);
+    std::fprintf(stderr, "%zu pictures edited, %zu from layers (%zu up to date, %zu to pack), %zu unchanged, "
+                         "%zu changed back, %zu missing\n",
+                 edited, layered, up_to_date, jobs.size(), unchanged - layered, reverted, missing);
 
     bc7enc_compress_block_init();
     std::atomic<std::size_t> next{0};
@@ -642,6 +680,7 @@ int pack(const nx::string& assets, const nx::string& cooked_dir, const Options& 
                 nx::string error;
                 Image img;
                 if (!read_png(job.path, img)) error = "cannot read the picture";
+                while (img.w > 2048 || img.h > 2048) img = halved(img);  // layers: as large as the runtime takes
                 const nx::string base = path_join(out_dir, job.hash);
                 if (error.empty() && want_png && !write_png(base + ".png", img)) error = "cannot write the PNG file";
                 if (error.empty() && (want_bc7 || want_astc)) {
@@ -673,6 +712,201 @@ int pack(const nx::string& assets, const nx::string& cooked_dir, const Options& 
     return failed ? 1 : 0;
 }
 
+
+// Box averages over k x k blocks; colours weighted by alpha.
+Image shrunk(const Image& img, int k) {
+    Image out;
+    out.w = img.w / k, out.h = img.h / k;
+    out.px.resize(static_cast<std::size_t>(out.w) * static_cast<std::size_t>(out.h));
+    const std::uint64_t n = static_cast<std::uint64_t>(k) * static_cast<std::uint64_t>(k);
+    for (int y = 0; y < out.h; ++y)
+        for (int x = 0; x < out.w; ++x) {
+            std::uint64_t r = 0, g = 0, b = 0, a = 0, r0 = 0, g0 = 0, b0 = 0;
+            for (int dy = 0; dy < k; ++dy)
+                for (int dx = 0; dx < k; ++dx) {
+                    const std::uint32_t c = img.at(k * x + dx, k * y + dy);
+                    const std::uint64_t ca = alpha(c);
+                    r += (c & 0xFF) * ca, g += (c >> 8 & 0xFF) * ca, b += (c >> 16 & 0xFF) * ca, a += ca;
+                    r0 += c & 0xFF, g0 += c >> 8 & 0xFF, b0 += c >> 16 & 0xFF;
+                }
+            out.at(x, y) = static_cast<std::uint32_t>(
+                a ? r / a | (g / a) << 8 | (b / a) << 16 | ((a + n / 2) / n) << 24 : r0 / n | (g0 / n) << 8 | (b0 / n) << 16);
+        }
+    return out;
+}
+
+// How different two pictures of one size look, 0..1: alpha and alpha-weighted colour, averaged over the pixels.
+double difference(const Image& a, const Image& b) {
+    std::uint64_t sum = 0;
+    for (std::size_t i = 0; i < a.px.size(); ++i) {
+        const std::uint32_t ca = a.px[i], cb = b.px[i];
+        const int aa = static_cast<int>(alpha(ca)), ab = static_cast<int>(alpha(cb));
+        int d = 3 * std::abs(aa - ab);
+        for (int shift = 0; shift < 24; shift += 8)
+            d += std::abs(static_cast<int>(ca >> shift & 0xFF) * aa - static_cast<int>(cb >> shift & 0xFF) * ab) / 255;
+        sum += static_cast<std::uint64_t>(d);
+    }
+    return static_cast<double>(sum) / (static_cast<double>(a.px.size()) * 6.0 * 255.0);
+}
+
+// How much a picture differs from its own average colour, in the units of difference(): what a merely similar
+// picture (another stone floor) also gets wrong, so differences are measured against it.
+double detail_of(const Image& img) {
+    double r = 0, g = 0, b = 0, a = 0;
+    for (const std::uint32_t c : img.px) {
+        const double ca = alpha(c);
+        r += (c & 0xFF) * ca, g += (c >> 8 & 0xFF) * ca, b += (c >> 16 & 0xFF) * ca, a += ca;
+    }
+    const double n = static_cast<double>(img.px.size());
+    r /= n, g /= n, b /= n, a /= n;
+    double sum = 0;
+    for (const std::uint32_t c : img.px) {
+        const double ca = alpha(c);
+        sum += 3 * std::abs(ca - a) + (std::abs((c & 0xFF) * ca - r) + std::abs((c >> 8 & 0xFF) * ca - g) +
+                                       std::abs((c >> 16 & 0xFF) * ca - b)) / 255.0;
+    }
+    return sum / (n * 6.0 * 255.0);
+}
+
+// 4 x 4 averages of alpha-weighted colour and alpha: a quick first comparison.
+struct Signature {
+    float v[64] = {};
+};
+
+Signature signature_of(const Image& img) {
+    Signature sig;
+    for (int cy = 0; cy < 4; ++cy)
+        for (int cx = 0; cx < 4; ++cx) {
+            const int x0 = std::min(img.w - 1, cx * img.w / 4), x1 = std::max(x0 + 1, (cx + 1) * img.w / 4);
+            const int y0 = std::min(img.h - 1, cy * img.h / 4), y1 = std::max(y0 + 1, (cy + 1) * img.h / 4);
+            double r = 0, g = 0, b = 0, a = 0;
+            for (int y = y0; y < y1; ++y)
+                for (int x = x0; x < x1; ++x) {
+                    const std::uint32_t c = img.at(x, y);
+                    const double ca = alpha(c) / 255.0;
+                    r += (c & 0xFF) * ca, g += (c >> 8 & 0xFF) * ca, b += (c >> 16 & 0xFF) * ca, a += alpha(c);
+                }
+            const double n = static_cast<double>((y1 - y0) * (x1 - x0));
+            float* out = sig.v + 4 * (cy * 4 + cx);
+            out[0] = static_cast<float>(r / n), out[1] = static_cast<float>(g / n), out[2] = static_cast<float>(b / n);
+            out[3] = static_cast<float>(a / n);
+        }
+    return sig;
+}
+
+double signature_difference(const Signature& a, const Signature& b) {
+    double sum = 0;
+    for (int i = 0; i < 64; ++i) sum += std::abs(a.v[i] - b.v[i]);
+    return sum / (64.0 * 255.0);
+}
+
+int match(const nx::string& pictures, const nx::string& assets, const nx::string& out, const Options& opt) {
+    struct Original {
+        nx::string path;
+        Image img;
+        Signature sig;
+        double detail = 0;
+        double best = 1e9;  // the closest picture so far (difference / detail)
+        nx::string source;
+        int scale = 0;
+    };
+    nx::vector<Original> originals;
+    nx::hash_map<std::uint64_t, nx::vector<std::size_t>> by_shape;  // reduced aspect ratio -> originals
+    const auto shape_key = [](int w, int h) {
+        int a = w, b = h;
+        while (b) a = std::exchange(b, a % b);
+        return static_cast<std::uint64_t>(w / a) << 32 | static_cast<std::uint64_t>(h / a);
+    };
+    for (const nx::string& line : lines(path_join(assets, "index.tsv"))) {
+        if (line.starts_with("#")) continue;
+        const auto cols = split(line, '\t');
+        if (cols.size() < 5) continue;
+        Original o;
+        o.path = nx::string(cols[0]);
+        if (!read_png(path_join(assets, o.path), o.img) || o.img.w == 0 || o.img.h == 0) continue;
+        o.sig = signature_of(o.img);
+        o.detail = std::max(detail_of(o.img), 0.004);  // flat pictures: about one level of 255
+        by_shape[shape_key(o.img.w, o.img.h)].push_back(originals.size());
+        originals.push_back(std::move(o));
+    }
+    const auto entries = nx::fs::recursive_directory_entries(pictures);
+    if (!entries) {
+        std::fprintf(stderr, "psptex: cannot list %s\n", pictures.c_str());
+        return 1;
+    }
+    nx::vector<nx::string> files;
+    for (const auto& e : entries.value()) {
+        const auto ext = nx::fs::path_view(e.path).extension();
+        if (e.type == nx::fs::file_type::regular && (ext == ".png" || ext == ".PNG")) files.push_back(e.path);
+    }
+    std::fprintf(stderr, "%zu originals, %zu pictures\n", originals.size(), files.size());
+
+    std::atomic<std::size_t> next{0}, compared{0};
+    nx::mutex lock;
+    nx::vector<nx::thread> pool;
+    const unsigned threads = std::clamp<unsigned>(nx::cpu::logical_core_count(), 1u, 16u);
+    for (unsigned j = 0; j < threads; ++j)
+        pool.emplace_back([&] {
+            for (std::size_t i; (i = next++) < files.size();) {
+                int w = 0, h = 0, channels = 0;
+                if (!stbi_info(files[i].c_str(), &w, &h, &channels) || w <= 0 || h <= 0) continue;
+                const auto it = by_shape.find(shape_key(w, h));
+                if (it == by_shape.end()) continue;
+                nx::vector<std::size_t> candidates;  // originals this picture is a whole multiple of
+                for (const std::size_t k : it->second)
+                    if (w % originals[k].img.w == 0 && w / originals[k].img.w >= 2) candidates.push_back(k);
+                if (candidates.empty()) continue;
+                Image img;
+                if (!read_png(files[i], img)) continue;
+                ++compared;
+                const Signature sig = signature_of(img);
+                nx::hash_map<int, Image> shrunk_by_scale;
+                for (const std::size_t k : candidates) {
+                    Original& o = originals[k];
+                    if (signature_difference(sig, o.sig) > 2 * opt.threshold * o.detail) continue;
+                    const int scale = w / o.img.w;
+                    auto found = shrunk_by_scale.find(scale);
+                    if (found == shrunk_by_scale.end()) found = shrunk_by_scale.emplace(scale, shrunk(img, scale)).first;
+                    const double d = difference(found->second, o.img) / o.detail;
+                    nx::scoped_lock hold(lock);
+                    // The closest one; among equally close ones, the largest.
+                    if (d < o.best - 1e-9 || (std::abs(d - o.best) <= 1e-9 && scale > o.scale)) {
+                        o.best = d;
+                        o.source = files[i];
+                        o.scale = scale;
+                    }
+                }
+            }
+        });
+    for (auto& th : pool) th.join();
+
+    std::size_t matched = 0, rejected = 0, failed = 0;
+    nx::string report = "# psptex match: original\tsource\tscale\tdifference\n";
+    for (const Original& o : originals) {
+        if (o.source.empty()) continue;
+        const bool good = o.best <= opt.threshold;
+        report += nx::format("{}{}\t{}\t{}\t{:.4f}\n", good ? "" : "# too different: ", o.path, o.source, o.scale, o.best);
+        if (!good) {
+            ++rejected;
+            continue;
+        }
+        const nx::string target = path_join(out, o.path);
+        if (!nx::fs::create_directories(nx::string(nx::fs::path_view(target).parent_path().native())).has_value() ||
+            !nx::fs::copy_file(o.source, target, true).has_value()) {
+            std::fprintf(stderr, "%s: cannot copy to %s\n", o.source.c_str(), target.c_str());
+            ++failed;
+            continue;
+        }
+        ++matched;
+    }
+    (void)nx::fs::create_directories(out);
+    (void)nx::fs::file_write_text(path_join(out, "matched.tsv"), report);
+    std::fprintf(stderr, "%zu pictures compared: %zu originals matched, %zu closest ones too different (> %.3f), "
+                         "%zu failed; see %s\n",
+                 compared.load(), matched, rejected, opt.threshold, failed, path_join(out, "matched.tsv").c_str());
+    return failed ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -687,7 +921,20 @@ int main(int argc, char** argv) {
                 {.value_name = "LIST"})
         .option("quality", opt.quality, "block compression effort (default: medium)",
                 {.value_name = "LEVEL", .choices = {"fast", "medium", "thorough"}})
+        .option_many("layer", opt.layers,
+                     "folder of pictures at the same paths, used where a picture is unedited (e.g. from match; "
+                     "the first one that has a picture wins)", {.value_name = "DIR"})
         .flag("force", opt.force, "pack again pictures already packed");
+    nx::string pictures, out;
+    cli.command("match", "find the originals among high-resolution pictures -> a layer for pack")
+        .positional("pictures", pictures, "folder of high-resolution pictures (searched recursively)")
+        .positional("assets", assets, "unpacked textures (with index.tsv)")
+        .positional("out", out, "where the matches go, at the originals' paths (with matched.tsv)")
+        .option("threshold", opt.threshold,
+                "largest difference accepted: the picture shrunk back vs the original, relative to how much the "
+                "original differs from its average colour (default: 0.65; retouched pictures reach about 0.6, "
+                "unrelated but similar ones about 0.75)",
+                {.value_name = "D"});
     cli.command("bake", "upscale a texture collection (--tex-collect) into <cooked>/textures")
         .positional("collection", collection, "texture collection folder (with index.tsv)")
         .positional("cooked", cooked, "cooked media folder")
@@ -717,6 +964,7 @@ int main(int argc, char** argv) {
     if (const int code = parse_command_line(cli, argc, argv, &command); code >= 0) return code;
     try {
         if (command == "pack") return pack(assets, cooked, opt);
+        if (command == "match") return match(pictures, assets, out, opt);
         if (command == "bake") return bake(collection, cooked, opt);
         std::fputs(cli.help().c_str(), stderr);
         return 2;
