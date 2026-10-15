@@ -18,7 +18,8 @@
 // shrunk back, matches it closely (much more closely than the original matches its own average colour, and in
 // colour where the original is opaque) is copied to <out>/<the original's path>, a layer for `pack`;
 // <out>/matched.tsv lists the matches and near misses. --only limits what is copied (all pictures are still
-// compared); copies an earlier run made that no longer match are removed.
+// compared). <out> is a folder people edit: match never removes or replaces a picture there, it only adds missing
+// ones (to take a new version of a match, delete the picture by hand first).
 //
 // `bake` upscales a texture collection (--tex-collect, psprecore/gpu/texture_collection.hpp) with an external
 // upscaler into <cooked>/textures/<content hash>.png.
@@ -913,12 +914,7 @@ int match(const nx::string& pictures, const nx::string& assets, const nx::string
     if (!opt.only.empty())
         for (const nx::string& line : lines(opt.only))
             if (!line.starts_with("#")) only[relative(line)] = true;
-    // Copies an earlier run made and this one does not (its accepted lines in matched.tsv) are removed.
-    nx::hash_map<nx::string, bool> placed_before;
-    for (const nx::string& line : lines(path_join(out, "matched.tsv")))
-        if (!line.starts_with("#")) placed_before[nx::string(split(line, '\t')[0])] = true;
-
-    std::size_t matched = 0, rejected = 0, not_listed = 0, removed = 0, failed = 0;
+    std::size_t matched = 0, kept = 0, rejected = 0, not_listed = 0, failed = 0;
     nx::string report = "# psptex match: original\tsource\tscale\tdifference\tin colour\n";
     for (const Original& o : originals) {
         if (o.source.empty()) continue;
@@ -933,23 +929,24 @@ int match(const nx::string& pictures, const nx::string& assets, const nx::string
             ++(good ? not_listed : rejected);
             continue;
         }
-        placed_before.erase(o.path);
         const nx::string target = path_join(out, o.path);
+        if (nx::fs::exists(target)) {  // a picture already there (perhaps edited by hand) is never replaced
+            ++kept;
+            continue;
+        }
         if (!nx::fs::create_directories(nx::string(nx::fs::path_view(target).parent_path().native())).has_value() ||
-            !nx::fs::copy_file(o.source, target, true).has_value()) {
+            !nx::fs::copy_file(o.source, target, false).has_value()) {
             std::fprintf(stderr, "%s: cannot copy to %s\n", o.source.c_str(), target.c_str());
             ++failed;
             continue;
         }
         ++matched;
     }
-    for (const auto& [path, _] : placed_before)
-        if (nx::fs::remove(path_join(out, path)).has_value()) ++removed;
     (void)nx::fs::create_directories(out);
     (void)nx::fs::file_write_text(path_join(out, "matched.tsv"), report);
-    std::fprintf(stderr, "%zu pictures compared: %zu originals matched, %zu closest ones too different, %zu not listed, "
-                         "%zu earlier copies removed, %zu failed; see %s\n",
-                 compared.load(), matched, rejected, not_listed, removed, failed,
+    std::fprintf(stderr, "%zu pictures compared: %zu originals matched (%zu copied, %zu already had a picture, kept), "
+                         "%zu closest ones too different, %zu not listed, %zu failed; see %s\n",
+                 compared.load(), matched + kept, matched, kept, rejected, not_listed, failed,
                  path_join(out, "matched.tsv").c_str());
     return failed ? 1 : 0;
 }
