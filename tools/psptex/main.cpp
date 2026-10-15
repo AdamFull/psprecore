@@ -15,8 +15,10 @@
 //
 // `match` finds which pictures of a folder of high-resolution ones (another project's texture pack, whatever its
 // names) are the unpacked originals, enlarged: each one whose size is a whole multiple of an original's and that,
-// shrunk back, matches it closely (much more closely than the original matches its own average colour) is copied to
-// <out>/<the original's path>, a layer for `pack`; <out>/matched.tsv lists the matches and near misses.
+// shrunk back, matches it closely (much more closely than the original matches its own average colour, and in
+// colour where the original is opaque) is copied to <out>/<the original's path>, a layer for `pack`;
+// <out>/matched.tsv lists the matches and near misses. --only limits what is copied (all pictures are still
+// compared); copies an earlier run made that no longer match are removed.
 //
 // `bake` upscales a texture collection (--tex-collect, psprecore/gpu/texture_collection.hpp) with an external
 // upscaler into <cooked>/textures/<content hash>.png.
@@ -90,6 +92,8 @@ struct Options {
     bool force = false, keep_temp = false;
     nx::vector<nx::string> layers;  // pack
     double threshold = 0.65;        // match: largest difference accepted, relative to the original's detail
+    double colour_threshold = 0.1;  // match: largest colour difference where the original is opaque (0..1)
+    nx::string only;                // match: file listing the pictures that may be copied
 };
 
 struct Image {
@@ -768,6 +772,20 @@ double detail_of(const Image& img) {
     return sum / (n * 6.0 * 255.0);
 }
 
+// Colour alone, where the original is opaque, 0..1: pictures sharing an outline (a door and a window cut to one
+// arch) differ there.
+double difference_in_colour(const Image& other, const Image& orig) {
+    std::uint64_t sum = 0, n = 0;
+    for (std::size_t i = 0; i < orig.px.size(); ++i) {
+        if (alpha(orig.px[i]) < 128) continue;
+        for (int shift = 0; shift < 24; shift += 8)
+            sum += static_cast<std::uint64_t>(
+                std::abs(static_cast<int>(other.px[i] >> shift & 0xFF) - static_cast<int>(orig.px[i] >> shift & 0xFF)));
+        ++n;
+    }
+    return n ? static_cast<double>(sum) / (static_cast<double>(n) * 3.0 * 255.0) : 0.0;
+}
+
 // 4 x 4 averages of alpha-weighted colour and alpha: a quick first comparison.
 struct Signature {
     float v[64] = {};
@@ -807,6 +825,7 @@ int match(const nx::string& pictures, const nx::string& assets, const nx::string
         Signature sig;
         double detail = 0;
         double best = 1e9;  // the closest picture so far (difference / detail)
+        double colour = 0;  // its difference in colour / colour detail
         nx::string source;
         int scale = 0;
     };
@@ -868,10 +887,12 @@ int match(const nx::string& pictures, const nx::string& assets, const nx::string
                     auto found = shrunk_by_scale.find(scale);
                     if (found == shrunk_by_scale.end()) found = shrunk_by_scale.emplace(scale, shrunk(img, scale)).first;
                     const double d = difference(found->second, o.img) / o.detail;
+                    const double c = difference_in_colour(found->second, o.img);
                     nx::scoped_lock hold(lock);
                     // The closest one; among equally close ones, the largest.
                     if (d < o.best - 1e-9 || (std::abs(d - o.best) <= 1e-9 && scale > o.scale)) {
                         o.best = d;
+                        o.colour = c;
                         o.source = files[i];
                         o.scale = scale;
                     }
@@ -880,16 +901,39 @@ int match(const nx::string& pictures, const nx::string& assets, const nx::string
         });
     for (auto& th : pool) th.join();
 
-    std::size_t matched = 0, rejected = 0, failed = 0;
-    nx::string report = "# psptex match: original\tsource\tscale\tdifference\n";
+    // Pictures that may be copied (--only), by their path below `pictures` with forward slashes.
+    const auto relative = [&](const nx::string& path) {
+        nx::string rel = path.starts_with(pictures) ? path.substr(pictures.size()) : path;
+        for (char& ch : rel)
+            if (ch == '\\') ch = '/';
+        while (rel.starts_with("/")) rel.erase(0, 1);
+        return rel;
+    };
+    nx::hash_map<nx::string, bool> only;
+    if (!opt.only.empty())
+        for (const nx::string& line : lines(opt.only))
+            if (!line.starts_with("#")) only[relative(line)] = true;
+    // Copies an earlier run made and this one does not (its accepted lines in matched.tsv) are removed.
+    nx::hash_map<nx::string, bool> placed_before;
+    for (const nx::string& line : lines(path_join(out, "matched.tsv")))
+        if (!line.starts_with("#")) placed_before[nx::string(split(line, '\t')[0])] = true;
+
+    std::size_t matched = 0, rejected = 0, not_listed = 0, removed = 0, failed = 0;
+    nx::string report = "# psptex match: original\tsource\tscale\tdifference\tin colour\n";
     for (const Original& o : originals) {
         if (o.source.empty()) continue;
-        const bool good = o.best <= opt.threshold;
-        report += nx::format("{}{}\t{}\t{}\t{:.4f}\n", good ? "" : "# too different: ", o.path, o.source, o.scale, o.best);
-        if (!good) {
-            ++rejected;
+        // Colour up to the limit, or twice that for pictures that match closely otherwise (redrawn interface art).
+        const bool good = o.best <= opt.threshold &&
+                          (o.colour <= opt.colour_threshold || (o.colour <= 2 * opt.colour_threshold && o.best <= 0.2));
+        const bool listed = only.empty() || only.contains(relative(o.source));
+        report += nx::format("{}{}\t{}\t{}\t{:.4f}\t{:.4f}\n",
+                             !good ? "# too different: " : !listed ? "# not listed (--only): " : "", o.path, o.source,
+                             o.scale, o.best, o.colour);
+        if (!good || !listed) {
+            ++(good ? not_listed : rejected);
             continue;
         }
+        placed_before.erase(o.path);
         const nx::string target = path_join(out, o.path);
         if (!nx::fs::create_directories(nx::string(nx::fs::path_view(target).parent_path().native())).has_value() ||
             !nx::fs::copy_file(o.source, target, true).has_value()) {
@@ -899,11 +943,14 @@ int match(const nx::string& pictures, const nx::string& assets, const nx::string
         }
         ++matched;
     }
+    for (const auto& [path, _] : placed_before)
+        if (nx::fs::remove(path_join(out, path)).has_value()) ++removed;
     (void)nx::fs::create_directories(out);
     (void)nx::fs::file_write_text(path_join(out, "matched.tsv"), report);
-    std::fprintf(stderr, "%zu pictures compared: %zu originals matched, %zu closest ones too different (> %.3f), "
-                         "%zu failed; see %s\n",
-                 compared.load(), matched, rejected, opt.threshold, failed, path_join(out, "matched.tsv").c_str());
+    std::fprintf(stderr, "%zu pictures compared: %zu originals matched, %zu closest ones too different, %zu not listed, "
+                         "%zu earlier copies removed, %zu failed; see %s\n",
+                 compared.load(), matched, rejected, not_listed, removed, failed,
+                 path_join(out, "matched.tsv").c_str());
     return failed ? 1 : 0;
 }
 
@@ -930,6 +977,14 @@ int main(int argc, char** argv) {
         .positional("pictures", pictures, "folder of high-resolution pictures (searched recursively)")
         .positional("assets", assets, "unpacked textures (with index.tsv)")
         .positional("out", out, "where the matches go, at the originals' paths (with matched.tsv)")
+        .option("only", opt.only,
+                "file listing the pictures that may be copied (paths below <pictures>, one per line); all are still "
+                "compared, so an original whose closest picture is not listed gets none",
+                {.value_name = "FILE"})
+        .option("colour-threshold", opt.colour_threshold,
+                "largest difference in colour where the original is opaque, 0..1; twice that for pictures under 0.2 "
+                "otherwise (default: 0.1; a door and a window of one outline differ by 0.26)",
+                {.value_name = "D"})
         .option("threshold", opt.threshold,
                 "largest difference accepted: the picture shrunk back vs the original, relative to how much the "
                 "original differs from its average colour (default: 0.65; retouched pictures reach about 0.6, "
