@@ -57,6 +57,9 @@ public:
     // Drops draws until turned off again (fast-forwarding: only the frames that are shown are rendered). Nothing the
     // game sees changes: rendered pixels never reach guest memory, and transfers still copy there.
     void set_skip_draws(bool skip);
+    // The game's textures drawn in 3D upscaled 2x when they are uploaded (gpu/upscale.hpp); UI textures stay as they
+    // are. Changing it rebuilds the texture cache.
+    void set_texture_upscale(bool on);
 
     struct Output {
         VkImage image = VK_NULL_HANDLE;  // TRANSFER_SRC_OPTIMAL until the next frame starts

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "gpu/hash.hpp"
 #include "psprecore/runtime/memory.hpp"
 
 namespace psprecore::rt::gpu {
@@ -253,6 +254,17 @@ std::uint32_t TextureSampler::sample_fixed(const TextureSampler& t, float u, flo
 std::uint32_t TextureSampler::sample_generic(const TextureSampler& t, float u, float v, int level, bool linear) {
     const Level& l = t.level_[std::clamp(level, 0, t.levels_ - 1)];
     return filter(u, v, l.width, l.height, t.clamp_u_, t.clamp_v_, linear, [&](int x, int y) { return t.texel(l, x, y); });
+}
+
+std::uint64_t texture_content_hash(const ge::State& s, const TextureSampler& ts) {
+    std::uint64_t content = 0;
+    if (ts.uses_clut()) {
+        content = hash_bytes(s.clut.data(), s.clut.size() * sizeof(s.clut[0]));
+        const std::uint32_t clut_format = s.param(ge::CLUTFORMAT);
+        content = hash_bytes(&clut_format, 4, content);
+    }
+    for (int l = 0; l < ts.levels(); ++l) content = hash_bytes(ts.level_data(l), ts.level_size(l), content);
+    return content;
 }
 
 }  // namespace psprecore::rt::gpu

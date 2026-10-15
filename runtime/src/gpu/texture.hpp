@@ -76,4 +76,8 @@ private:
     std::uint32_t palette_format_ = 0, palette_count_ = 0;
 };
 
+// The texture's content: the texels of every level and, for palette formats, the palette and its format. The
+// Vulkan renderer's cache, texture replacement (psprecore/gpu/texture_replacement.hpp) and --tex-dump names use it.
+std::uint64_t texture_content_hash(const ge::State& state, const TextureSampler& sampler);
+
 }  // namespace psprecore::rt::gpu

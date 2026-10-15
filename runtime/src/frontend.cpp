@@ -42,6 +42,7 @@
 #include "gpu/vertex_pipeline.hpp"
 #include "platform/memory_watch.hpp"
 #include "platform/sampling_profiler.hpp"
+#include "psprecore/gpu/texture_replacement.hpp"
 #include "psprecore/runtime/hle.hpp"
 #include "psprecore/runtime/io.hpp"
 #include "psprecore/runtime/kernel.hpp"
@@ -617,6 +618,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         }
         rt::set_storage(game_dir, saves);
         if (game.mount) game.mount(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
+        rt::gpu::scan_texture_replacements(mods_dir.empty() ? path_join(data_dir, "mods") : mods_dir);
 
         // Input recording / replay. A replay also fixes the guest clock to the recording's.
         nx::unique_ptr<InputReplay> replay;
@@ -728,9 +730,12 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 const std::uint64_t h = rt::gpu::hash_bytes(rgba.data(), rgba.size() * 4);
                 const std::uint32_t address = rt::ge::vram_canonical(((s.param(rt::ge::TEXBUFWIDTH0) & 0x0F0000) << 8) |
                                                                      (s.param(rt::ge::TEXADDR0) & 0xFFFFF0));
-                // Named by the texel hash the button icon table uses (gpu/button_icons.cpp).
+                // Named by the content hash texture replacement matches (a dumped file can be edited and put in a
+                // mod's textures/ folder as it is), then address, format, size and the texel hash the button icon
+                // table uses (gpu/button_icons.cpp).
                 const std::uint64_t texels = rt::gpu::icon_texture_hash(t.level_data(0), t.level_size(0));
-                const nx::string name = nx::format("{:08X}_f{}_{}x{}_{:016X}", address, t.format(), t.width(), t.height(), texels);
+                const nx::string name = nx::format("{:016X}_{:08X}_f{}_{}x{}_{:016X}", rt::gpu::texture_content_hash(s, t),
+                                                   address, t.format(), t.width(), t.height(), texels);
                 if (dumped_textures.emplace(h, 0).second)
                     rt::write_png(path_join(tex_dump_dir, name + ".png"), rgba.data(), t.width(), t.height());
                 if (d.indices) {
@@ -912,6 +917,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 if (vulkan_renderer) {
                     vulkan_renderer->set_scale(s.scale);
                     vulkan_renderer->set_msaa(s.msaa);
+                    vulkan_renderer->set_texture_upscale(s.texture_upscale);
                 }
                 if (display->fullscreen() != s.fullscreen) display->set_fullscreen(s.fullscreen);
                 display->set_vsync(s.vsync);
@@ -987,6 +993,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     auto r = std::make_unique<platform::VulkanGeRenderer>(display->vulkan(), mem, settings.scale,
                                                                           path_join(data_dir, "vulkan_pipelines.bin"));
                     r->set_msaa(settings.msaa);
+                    r->set_texture_upscale(settings.texture_upscale);
                     vulkan_renderer = r.get();
                     if (renderer != "compare") return std::unique_ptr<rt::ge::Renderer>(std::move(r));
                     r->set_guest_copies(false);  // the software renderer already copies in guest memory
