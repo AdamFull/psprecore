@@ -1,4 +1,4 @@
-// psptex — HD textures baked offline. `bake` upscales a texture collection (--tex-collect,
+﻿// psptex â€” HD textures baked offline. `bake` upscales a texture collection (--tex-collect,
 // psprecore/gpu/texture_collection.hpp) with an external upscaler into <cooked>/textures/<content hash>.png, which the
 // runtime draws in place of the game's textures (psprecore/gpu/texture_replacement.hpp).
 //
@@ -274,6 +274,26 @@ bool write_file(const nx::string& path, std::span<const std::byte> data) {
     }
 }
 
+// Transparency the upscaler spread: wherever the original is fully transparent more than one texel away from
+// anything visible, the result is too (alpha 0). Games draw such textures with an alpha test that keeps any alpha
+// above 0: a faint halo around tightly packed glyphs or icons would show as boxes around them.
+void keep_transparent(Image& img, const Image& orig, int scale, bool repeat_u, bool repeat_v) {
+    const auto index = [](int i, int n, bool repeat) { return repeat ? ((i % n) + n) % n : std::clamp(i, 0, n - 1); };
+    nx::vector<std::uint8_t> near(orig.px.size());
+    for (int y = 0; y < orig.h; ++y)
+        for (int x = 0; x < orig.w; ++x) {
+            bool any = false;
+            for (int dy = -1; dy <= 1 && !any; ++dy)
+                for (int dx = -1; dx <= 1 && !any; ++dx)
+                    any = alpha(orig.at(index(x + dx, orig.w, repeat_u), index(y + dy, orig.h, repeat_v))) != 0;
+            near[static_cast<std::size_t>(y) * static_cast<std::size_t>(orig.w) + static_cast<std::size_t>(x)] = any;
+        }
+    for (int y = 0; y < img.h; ++y)
+        for (int x = 0; x < img.w; ++x)
+            if (!near[static_cast<std::size_t>(y / scale) * static_cast<std::size_t>(orig.w) + static_cast<std::size_t>(x / scale)])
+                img.at(x, y) &= 0x00FFFFFFu;
+}
+
 nx::string quote(nx::string_view s) { return nx::string("\"") + nx::string(s) + "\""; }
 
 // Runs a command line through the shell; returns the exit status.
@@ -350,7 +370,8 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
     }
     const auto settings = [&](const Texture& t) {
         return nx::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", t.hash, t.w, t.h, t.scale,
-                          t.two_d ? opt.model_2d : opt.model_3d, opt.detail, opt.formats, opt.quality);
+                          t.two_d ? opt.model_2d : opt.model_3d, opt.detail, opt.formats, opt.quality) +
+               "\ta2";  // a2: transparency kept (keep_transparent), atlases not wrapped
     };
     const bool want_png = opt.formats.find("png") != nx::string::npos,
                want_bc7 = opt.formats.find("bc7") != nx::string::npos,
@@ -369,8 +390,11 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
         if (cols.size() < 5 || cols[0].size() != 16) continue;
         Texture t{nx::string(cols[0]), to_int(cols[1]), to_int(cols[2]), cols[4] == "2d"};
         if ((opt.only == "2d" && !t.two_d) || (opt.only == "3d" && t.two_d)) continue;
-        if (cols.size() >= 6) t.repeat_u = cols[5] == "repeat" || cols[5] == "repeat-u",
-                              t.repeat_v = cols[5] == "repeat" || cols[5] == "repeat-v";
+        // Interface textures are atlases (pictures side by side, never tiled) even when drawn with the GE's default
+        // wrap mode, repeat: padding them with their opposite edges would put one picture's pixels into another's
+        // (e.g. a transparent corner a game samples on purpose).
+        if (cols.size() >= 6 && !t.two_d) t.repeat_u = cols[5] == "repeat" || cols[5] == "repeat-u",
+                                          t.repeat_v = cols[5] == "repeat" || cols[5] == "repeat-v";
         t.scale = opt.scale;
         while (t.scale > 1 && std::max(t.w, t.h) * t.scale > opt.max_size) t.scale /= 2;
         if (t.scale < 2) {
@@ -451,6 +475,7 @@ int bake(const nx::string& collection, const nx::string& cooked, const Options& 
             for (int f = factor; f > t.scale; f /= 2) img = halved(img);
             const Image& orig = originals.find(t.hash)->second;
             if (opt.detail) restore_detail(img, orig, t.scale, opt.detail, t.repeat_u, t.repeat_v);
+            keep_transparent(img, orig, t.scale, t.repeat_u, t.repeat_v);
             if (std::all_of(orig.px.begin(), orig.px.end(), [](std::uint32_t c) { return alpha(c) == 255; }))
                 for (auto& c : img.px) c |= 0xFF000000u;
             const nx::string base = path_join(out_dir, t.hash);
