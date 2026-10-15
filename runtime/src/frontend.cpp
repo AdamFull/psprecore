@@ -40,6 +40,7 @@
 #include "gpu/soft_renderer.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/vertex_pipeline.hpp"
+#include "platform/memory_watch.hpp"
 #include "platform/sampling_profiler.hpp"
 #include "psprecore/runtime/hle.hpp"
 #include "psprecore/runtime/io.hpp"
@@ -379,7 +380,8 @@ struct Options {
     nx::string screenshot_path, audio_dump, cooked_dir, renderer, settings;
     int scale = 0, soft_threads = 0;
     std::uint64_t vblanks = 0, ge_dump = 0, ge_dump_at = 0, ge_bench = 0, profile = 0, state_hash = 0;
-    std::uint64_t tex_dump_vblank = 0, ram_dump_vblank = 0, window_shot_vblank = 0;
+    std::uint64_t tex_dump_vblank = 0, ram_dump_vblank = 0, window_shot_vblank = 0, watch_vblank = 0;
+    std::uint32_t watch_address = 0, watch_size = 0;
     nx::string tex_dump_dir, ram_dump_path, window_shot_path;
     nx::string record, replay, saves, mods;
     std::int64_t clock = 0;
@@ -398,7 +400,7 @@ std::pair<std::uint64_t, nx::string> at_vblank(nx::string_view option, nx::strin
 
 Options parse_options(const platform::GameInfo& game, int argc, char** argv, const nx::string& data_dir) {
     Options o;
-    nx::string screenshot, screenshot_every, window_shot, tex_dump, ram_dump, clock;
+    nx::string screenshot, screenshot_every, window_shot, tex_dump, ram_dump, clock, watch;
     nx::vector<nx::string> presses, ui;
     nx::cli::Parser cli(game.name, nx::format("{} on the psprecore runtime.", game.title));
     nx::cli::Command& c = cli.root();
@@ -460,6 +462,8 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
              {.value_name = "VBLANK:DIR"});
     c.option("profile", o.profile, "Windows: sample where the host spends its time from VBLANK on",
              {.value_name = "VBLANK"});
+    c.option("watch", watch, "Windows: from VBLANK on, list the functions accessing guest memory ADDR..ADDR+SIZE (hex)",
+             {.value_name = "VBLANK:ADDR:SIZE"});
 
     const nx::cli::ParseResult parsed = cli.parse(argc, argv);
     if (parsed.status == nx::cli::ParseStatus::Help) {
@@ -482,6 +486,14 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
         split("window-shot", window_shot, o.window_shot_vblank, o.window_shot_path);
         split("tex-dump", tex_dump, o.tex_dump_vblank, o.tex_dump_dir);
         split("ram-dump", ram_dump, o.ram_dump_vblank, o.ram_dump_path);
+        if (!watch.empty()) {
+            nx::string range;
+            split("watch", watch, o.watch_vblank, range);
+            const auto colon = range.find(':');
+            if (colon == nx::string::npos) throw std::runtime_error("--watch: expected VBLANK:ADDR:SIZE");
+            o.watch_address = static_cast<std::uint32_t>(std::strtoul(range.substr(0, colon).c_str(), nullptr, 16));
+            o.watch_size = static_cast<std::uint32_t>(std::strtoul(range.substr(colon + 1).c_str(), nullptr, 16));
+        }
         if (!clock.empty()) {
             o.clock = parse_i64(clock);
             o.clock_given = true;
@@ -696,6 +708,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         };
         nx::vector<BenchDraw> bench_draws;
         nx::unique_ptr<platform::SamplingProfiler> profiler;
+        nx::unique_ptr<platform::MemoryWatch> memory_watch;
         // --tex-dump: every texture drawn during two vblanks as DIR/ADDRESS_fFORMAT_WxH_HASH.png, and per draw the
         // texture and the texel rectangle it uses (finding the textures of a scene, e.g. for replacement).
         nx::hash_map<std::uint64_t, int> dumped_textures;
@@ -744,6 +757,8 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         const auto bench_tick = [&] {
             tex_dump_tick();
             if (profile_vblank && kernel.vblank_count() == profile_vblank) profiler = nx::make_unique<platform::SamplingProfiler>();
+            if (o.watch_vblank && kernel.vblank_count() == o.watch_vblank)
+                memory_watch = nx::make_unique<platform::MemoryWatch>(o.watch_address, o.watch_size);
             if (!ge_bench_vblank) return;
             const std::uint64_t vblank = kernel.vblank_count();
             if (vblank == ge_bench_vblank) {
@@ -1110,6 +1125,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         std::fprintf(stderr, "stopped after %.3f s of guest time (%llu vblanks)\n",
                      static_cast<double>(kernel.now()) / 1e6, static_cast<unsigned long long>(kernel.vblank_count()));
         if (profiler) profiler->report(stderr);
+        if (memory_watch) memory_watch->report(stderr);
         if (recorder) recorder->flush();
         if (recorder_in) recorder_in->flush();
         if (trace || headless) kernel.dump_threads(stderr);
