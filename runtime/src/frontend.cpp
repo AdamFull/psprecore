@@ -382,7 +382,7 @@ struct Options {
     bool touch = false;
 #endif
     std::uint64_t screenshot_vblank = 0, screenshot_every = 0;
-    nx::string screenshot_path, audio_dump, cooked_dir, renderer, settings;
+    nx::string screenshot_path, audio_dump, cooked_dir, renderer, settings, window;
     int scale = 0, soft_threads = 0;
     std::uint64_t vblanks = 0, ge_dump = 0, ge_dump_at = 0, ge_bench = 0, profile = 0, state_hash = 0;
     std::uint64_t tex_dump_vblank = 0, ram_dump_vblank = 0, window_shot_vblank = 0, watch_vblank = 0;
@@ -421,6 +421,7 @@ Options parse_options(const platform::GameInfo& game, int argc, char** argv, con
              {.value_name = "NAME", .choices = {"vulkan", "soft", "compare"}});
     c.option("scale", o.scale, "Vulkan internal resolution, multiples of 480x272 (default: the setting)",
              {.value_name = "N"});
+    c.option("window", o.window, "window size in pixels (default: 960x544)", {.value_name = "WxH"});
     c.option("settings", o.settings, "settings file, written when changed in the pause menu (default: <game>.ini)",
              {.value_name = "FILE"});
     c.option("saves", o.saves, "save data folder (default: saves/ next to the settings)", {.value_name = "DIR"});
@@ -938,7 +939,12 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
         int skipped_frames = 0;  // frames not drawn in a row (frame skipping)
         nx::timestamp fast_forward_present = nx::timestamp::now();
         if (!headless) {
-            display = nx::make_unique<platform::Display>(game.title, 960, 544);
+            int window_w = 960, window_h = 544;
+            if (const auto x = o.window.find('x'); x != nx::string::npos) {
+                window_w = std::max(64, std::atoi(o.window.substr(0, x).c_str()));
+                window_h = std::max(64, std::atoi(o.window.substr(x + 1).c_str()));
+            }
+            display = nx::make_unique<platform::Display>(game.title, window_w, window_h);
             display->set_touch_controls(touch);
             // Android blocks the game inside poll_events() while the app is in the background; the sound device
             // would play on.
@@ -1046,7 +1052,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                     const auto out = vulkan_renderer->finish_frame(address, stride, static_cast<int>(format), capture ? &frame : nullptr);
                     // Fast-forwarding: only every frame due for a present (10 a second) is drawn and shown.
                     if (out.image && frame_drawn) {
-                        display->present_image(out.image, out.width, out.height);
+                        display->present_image(out.image, out.width, out.height, out.x, out.y);
                         fast_forward_present = nx::timestamp::now();
                     }
                     // Frame skipping: when the game runs behind real time, the next frame is not drawn (a few in a
@@ -1112,6 +1118,7 @@ int psprecore::platform::run_game(const GameInfo& game, int argc, char** argv) {
                 }
                 if (!window_shot_path.empty() && vblank == window_shot_vblank) window_shot_armed = true;
                 if (!display->poll_events()) kernel.request_quit();
+                if (vulkan_renderer) vulkan_renderer->set_fill_aspect(settings.fill_screen ? display->aspect() : 0.0f);
                 if (vulkan_renderer) {  // follows the setting and, for Auto, the gamepad plugged in
                     const platform::ButtonGlyphs g = display->button_glyphs();
                     vulkan_renderer->set_button_icons(g == platform::ButtonGlyphs::Xbox       ? rt::gpu::IconStyle::Xbox

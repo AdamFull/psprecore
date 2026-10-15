@@ -51,6 +51,7 @@ Settings Settings::load(nx::fs::path_view path) {
         else if (key == "vsync") s.vsync = to_int(value, 1) != 0;
         else if (key == "frame_skip") s.frame_skip = to_int(value, 1) != 0;
         else if (key == "hd_textures") s.hd_textures = to_int(value, 1) != 0;
+        else if (key == "fill_screen") s.fill_screen = to_int(value, 0) != 0;
         else if (key == "refresh_60hz") s.refresh_60hz = to_int(value, 1) != 0;
         else if (key == "button_glyphs") s.button_glyphs = to_glyphs(value);
         else if (key == "language") s.language = nx::string(value);
@@ -65,8 +66,8 @@ bool Settings::save(nx::fs::path_view path) const {
                                        int{fullscreen}, volume,
                                        int{frame_limit}, int{vsync}, int{refresh_60hz}, int{show_fps},
                                        kGlyphNames[static_cast<int>(button_glyphs)]) +
-                            nx::format("frame_skip={}\nhd_textures={}\nlanguage={}\n", int{frame_skip}, int{hd_textures},
-                                       language);
+                            nx::format("frame_skip={}\nhd_textures={}\nfill_screen={}\nlanguage={}\n", int{frame_skip},
+                                       int{hd_textures}, int{fill_screen}, language);
     return nx::fs::file_write_text(path, text).has_value();
 }
 

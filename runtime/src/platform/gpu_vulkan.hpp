@@ -59,10 +59,18 @@ public:
     // Drops draws until turned off again (fast-forwarding: only the frames that are shown are rendered). Nothing the
     // game sees changes: rendered pixels never reach guest memory, and transfers still copy there.
     void set_skip_draws(bool skip);
+    // Fills a display of this aspect ratio (width / height; 0: off, the PSP's 480x272 picture): framebuffers that
+    // are displayed get margins, left and right for a wider display, top and bottom for a narrower one. 3D drawn
+    // with a full-screen scissor extends into them (the scene shows more at the sides, or above and below, with the
+    // same view in the other direction), clears and solid full-screen fills cover them, other 2D stays centred.
+    // Frames without 3D (movies, menus) are shown without the margins. What the game itself culls outside its own
+    // view does not appear in them.
+    void set_fill_aspect(float aspect);
 
     struct Output {
         VkImage image = VK_NULL_HANDLE;  // TRANSFER_SRC_OPTIMAL until the next frame starts
-        int width = 0, height = 0;       // displayed region (480x272 times the scale)
+        int width = 0, height = 0;       // displayed region (480x272 times the scale, plus margins when filling)
+        int x = 0, y = 0;                // its top-left corner in the image
     };
     // Ends the frame and submits it; returns the render target holding framebuffer `address`. With `capture`,
     // also reads the displayed region back (RGBA8, Output::width x height); this waits for the GPU.

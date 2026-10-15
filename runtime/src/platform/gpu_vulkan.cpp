@@ -28,6 +28,7 @@
 #include "core/foundation/containers/map.h"
 #include "core/foundation/core/time.h"
 #include "core/foundation/containers/hash_map.h"
+#include "core/foundation/containers/hash_set.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/format.h"
 
@@ -79,6 +80,11 @@ struct Target {
     std::uint32_t address = 0, stride = 0;
     int format = 3;
     int used_height = 272;  // lines the game has drawn to (scissor extent); textures past it are not ours
+    // Filling the screen: guest pixels added on each side of a display framebuffer, left/right and top/bottom
+    // (guest x, y map to host x + margin_x, y + margin_y), and whether 3D was drawn into it since it was last
+    // shown (else it is shown without the margins).
+    int margin_x = 0, margin_y = 0;
+    bool filled = false;
     Image color;  // single-sample: what textures, the display and readbacks use
     // With MSAA: drawing goes to the multisampled image, resolved into `color` when a rendering pass ends. After
     // the CPU writes into `color` (uploads), the samples are refreshed from it before the next drawing.
@@ -170,6 +176,9 @@ struct VulkanGeRenderer::Impl {
     std::array<VkPipeline, 4> copy_pipelines{};  // by log2(samples) - 1
     bool guest_copies = true;
     bool skip_draws = false;
+    int fill_x = 0, fill_y = 0;                   // set_fill_aspect: margins for display framebuffers
+    float fill_aspect = 0;                        // and the aspect ratio shown (the margins may be a little larger)
+    nx::hash_set<std::uint32_t> display_targets;  // framebuffers that have been displayed
 
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -558,8 +567,8 @@ struct VulkanGeRenderer::Impl {
         blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         blit.srcOffsets[1] = {w, h, 1};
         blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.dstOffsets[0] = {x * scale, y * scale, 0};
-        blit.dstOffsets[1] = {(x + w) * scale, (y + h) * scale, 1};
+        blit.dstOffsets[0] = {(x + t.margin_x) * scale, (y + t.margin_y) * scale, 0};
+        blit.dstOffsets[1] = {(x + w + t.margin_x) * scale, (y + h + t.margin_y) * scale, 1};
         vkCmdBlitImage(cmd, tmp.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t.color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &blit, VK_FILTER_NEAREST);
         frame().garbage.push_back(tmp);
@@ -569,8 +578,11 @@ struct VulkanGeRenderer::Impl {
     Target& target(std::uint32_t address, std::uint32_t stride, int format) {
         address = 0x04000000 | (address & 0x1FFFF0);
         stride = std::clamp<std::uint32_t>(stride, 64, 1024);
+        const bool displayed = display_targets.contains(address);
+        const int margin_x = displayed ? fill_x : 0, margin_y = displayed ? fill_y : 0;
         auto it = targets.find(address);
-        if (it != targets.end() && it->second->stride == stride) {
+        if (it != targets.end() && it->second->stride == stride && it->second->margin_x == margin_x &&
+            it->second->margin_y == margin_y) {
             it->second->format = format;
             return *it->second;
         }
@@ -584,7 +596,10 @@ struct VulkanGeRenderer::Impl {
         t.address = address;
         t.stride = stride;
         t.format = format;
-        t.color = make_image(static_cast<int>(stride) * scale, kTargetHeight * scale, kColorFormat,
+        t.margin_x = margin_x;
+        t.margin_y = margin_y;
+        t.color = make_image((static_cast<int>(stride) + 2 * margin_x) * scale, (kTargetHeight + 2 * margin_y) * scale,
+                             kColorFormat,
                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                              VK_IMAGE_ASPECT_COLOR_BIT);
@@ -597,7 +612,8 @@ struct VulkanGeRenderer::Impl {
     }
 
     Image& depth(std::uint32_t address, const Target& t) {
-        const std::uint64_t key = (std::uint64_t{0x04000000u | (address & 0x1FFFF0)} << 16) | t.stride;
+        const std::uint64_t key = (std::uint64_t{0x04000000u | (address & 0x1FFFF0)} << 16) | t.stride |
+                                  std::uint64_t(t.margin_x / 8) << 44 | std::uint64_t(t.margin_y / 8) << 54;
         auto it = depths.find(key);
         if (it != depths.end()) return *it->second;
         Image& d = *(depths[key] = nx::make_unique<Image>());
@@ -978,7 +994,7 @@ struct VulkanGeRenderer::Impl {
         transition(cmd, t.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkImageCopy region{};
         region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.srcOffset = {x * scale, y * scale, 0};
+        region.srcOffset = {(x + t.margin_x) * scale, (y + t.margin_y) * scale, 0};
         region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.extent = {static_cast<std::uint32_t>(cw * scale), static_cast<std::uint32_t>(ch * scale), 1};
         vkCmdCopyImage(cmd, t.color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, copy.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1119,12 +1135,16 @@ struct VulkanGeRenderer::Impl {
     // ---- vertex assembly ---------------------------------------------------------------------------------
 
     float target_w = 512, target_h = kTargetHeight;
+    float margin_x = 0, margin_y = 0;  // margins of the target drawn to (guest pixels)
+    // Filling the screen: sprites reaching an edge of the PSP's screen are stretched over the margins beyond it.
+    // 1: each such edge (clears, drawn in strips); 2: only sprites covering the whole screen (solid fills: fades).
+    int stretch_edges = 0;
 
     // Drawing-space pixels (already projected) -> Vulkan clip space with w = 1.
     GpuVertex screen_vertex(float x, float y, float z, float s, float t, float q, const float* color, const float* spec, float fog) const {
         GpuVertex v{};
-        v.pos[0] = 2.0f * x / target_w - 1.0f;
-        v.pos[1] = 2.0f * y / target_h - 1.0f;
+        v.pos[0] = 2.0f * (x + margin_x) / target_w - 1.0f;
+        v.pos[1] = 2.0f * (y + margin_y) / target_h - 1.0f;
         v.pos[2] = std::clamp(z, 0.0f, 65535.0f) / 65535.0f;
         v.pos[3] = 1.0f;
         v.uvq[0] = s;
@@ -1140,8 +1160,8 @@ struct VulkanGeRenderer::Impl {
     GpuVertex clip_vertex(const ClipVertex& c, const float* color) const {
         GpuVertex v{};
         const float w = c.clip[3];
-        v.pos[0] = c.clip[0] * (2.0f * vp.vp_scale[0] / target_w) + w * (2.0f * (vp.vp_center[0] - vp.offset_x) / target_w - 1.0f);
-        v.pos[1] = c.clip[1] * (2.0f * vp.vp_scale[1] / target_h) + w * (2.0f * (vp.vp_center[1] - vp.offset_y) / target_h - 1.0f);
+        v.pos[0] = c.clip[0] * (2.0f * vp.vp_scale[0] / target_w) + w * (2.0f * (vp.vp_center[0] - vp.offset_x + margin_x) / target_w - 1.0f);
+        v.pos[1] = c.clip[1] * (2.0f * vp.vp_scale[1] / target_h) + w * (2.0f * (vp.vp_center[1] - vp.offset_y + margin_y) / target_h - 1.0f);
         v.pos[2] = c.clip[2] * (vp.vp_scale[2] / 65535.0f) + w * (vp.vp_center[2] / 65535.0f);
         v.pos[3] = w;
         v.uvq[0] = c.s;
@@ -1215,6 +1235,18 @@ struct VulkanGeRenderer::Impl {
         float x0, y0, z0, x1, y1, z1;
         screen_xy(a, x0, y0, z0);
         screen_xy(b, x1, y1, z1);
+        if (stretch_edges) {
+            float& left = x0 < x1 ? x0 : x1;
+            float& right = x0 < x1 ? x1 : x0;
+            float& top = y0 < y1 ? y0 : y1;
+            float& bottom = y0 < y1 ? y1 : y0;
+            if (stretch_edges == 1 || (left <= 0.0f && right >= 480.0f && top <= 0.0f && bottom >= 272.0f)) {
+                if (left <= 0.0f) left = -margin_x;
+                if (right >= 480.0f) right = 480.0f + margin_x;
+                if (top <= 0.0f) top = -margin_y;
+                if (bottom >= 272.0f) bottom = 272.0f + margin_y;
+            }
+        }
         const float u0 = a.s / a.q, v0 = a.t / a.q, u1 = b.s / b.q, v1 = b.t / b.q;
         const GpuVertex tl = screen_vertex(x0, y0, z1, u0, v0, 1, b.color, b.spec, b.fog);
         const GpuVertex tr = screen_vertex(x1, y0, z1, u1, v0, 1, b.color, b.spec, b.fog);
@@ -1256,8 +1288,13 @@ struct VulkanGeRenderer::Impl {
         for (std::size_t i = 0; i < vertices.size(); ++i) clip[i] = vp.transform(s, vertices[i]);
 
         Target& t = target(s.param(ge::FRAMEBUFPTR), s.param(ge::FRAMEBUFWIDTH) & 0x7FC, static_cast<int>(s.param(ge::FRAMEBUFPIXFORMAT) & 3));
-        target_w = static_cast<float>(t.stride);
-        target_h = static_cast<float>(kTargetHeight);
+        const bool margins = t.margin_x || t.margin_y;
+        target_w = static_cast<float>(static_cast<int>(t.stride) + 2 * t.margin_x);
+        target_h = static_cast<float>(kTargetHeight + 2 * t.margin_y);
+        margin_x = static_cast<float>(t.margin_x);
+        margin_y = static_cast<float>(t.margin_y);
+        stretch_edges = !margins ? 0 : clear ? 1 : through && !texturing ? 2 : 0;
+        if (margins && !through && !clear) t.filled = true;
 
         out.clear();
         const std::size_t n = clip.size();
@@ -1457,9 +1494,16 @@ struct VulkanGeRenderer::Impl {
         const int x2 = std::min(static_cast<int>(sc2 & 0x3FF), static_cast<int>(t.stride) - 1);
         const int y2 = std::min(static_cast<int>((sc2 >> 10) & 0x3FF), kTargetHeight - 1);
         t.used_height = std::max(t.used_height, y2 + 1);
-        VkRect2D scissor{{x1 * scale, y1 * scale}, {0, 0}};
+        VkRect2D scissor{{(x1 + t.margin_x) * scale, (y1 + t.margin_y) * scale}, {0, 0}};
         if (x2 >= x1 && y2 >= y1)
             scissor.extent = {static_cast<std::uint32_t>((x2 - x1 + 1) * scale), static_cast<std::uint32_t>((y2 - y1 + 1) * scale)};
+        // Filling the screen: a full-screen scissor opens the margins to 3D, clears and stretched fills (other 2D
+        // stays centred).
+        if ((t.margin_x || t.margin_y) && x1 == 0 && y1 == 0 && x2 >= 479 && y2 >= 271 && (!through || stretch_edges)) {
+            scissor.offset = {0, 0};
+            scissor.extent = {static_cast<std::uint32_t>((480 + 2 * t.margin_x) * scale),
+                              static_cast<std::uint32_t>((272 + 2 * t.margin_y) * scale)};
+        }
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_ref);
         vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_mask);
@@ -1499,10 +1543,23 @@ struct VulkanGeRenderer::Impl {
         // a render target transition and a fence wait, which on mobile GPUs adds up when fast-forwarding).
         if (skip_draws && !recording && !capture) return {};
         begin_frame();
+        if (fill_x || fill_y) display_targets.insert(0x04000000 | (address & 0x1FFFF0));  // gets margins from now on
         Target& t = target(address, stride ? stride : 512, format);
         end_rendering();
         transition(frame().draw, t.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        VulkanGeRenderer::Output o{t.color.image, 480 * scale, 272 * scale};
+        // With margins: all of them when 3D was drawn (the scene extends into them), else the centre only (movies,
+        // menus and other 2D screens stay pillarboxed).
+        const bool fill = (t.margin_x || t.margin_y) && t.filled && fill_aspect > 0;
+        t.filled = false;
+        VulkanGeRenderer::Output o{t.color.image, 480 * scale, 272 * scale, t.margin_x * scale, t.margin_y * scale};
+        if (fill) {  // the display's aspect ratio exactly, from the middle of the margins (rounded up to 8 pixels)
+            const int full_w = (480 + 2 * t.margin_x) * scale, full_h = (272 + 2 * t.margin_y) * scale;
+            const float s = static_cast<float>(scale);
+            if (t.margin_x) o.width = std::min(full_w, static_cast<int>(272.0f * s * fill_aspect + 0.5f));
+            if (t.margin_y) o.height = std::min(full_h, static_cast<int>(480.0f * s / fill_aspect + 0.5f));
+            o.x = (full_w - o.width) / 2;
+            o.y = (full_h - o.height) / 2;
+        }
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(o.width) * static_cast<VkDeviceSize>(o.height) * 4;
         if (capture) {
             if (readback_size < bytes) {
@@ -1515,6 +1572,7 @@ struct VulkanGeRenderer::Impl {
             }
             VkBufferImageCopy copy{};
             copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageOffset = {o.x, o.y, 0};
             copy.imageExtent = {static_cast<std::uint32_t>(o.width), static_cast<std::uint32_t>(o.height), 1};
             vkCmdCopyImageToBuffer(frame().draw, t.color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &copy);
         }
@@ -1589,6 +1647,21 @@ int VulkanGeRenderer::scale() const { return impl_->scale; }
 void VulkanGeRenderer::set_guest_copies(bool on) { impl_->guest_copies = on; }
 
 void VulkanGeRenderer::set_skip_draws(bool skip) { impl_->skip_draws = skip; }
+
+void VulkanGeRenderer::set_fill_aspect(float aspect) {
+    // Margins rounded up to 8 pixels (window resizing does not rebuild the framebuffers at every step; the shown
+    // picture is cut to the exact ratio): left/right for displays wider than 480:272, top/bottom for narrower
+    // ones; no larger than the GPU's largest image.
+    int x = 0, y = 0;
+    if (aspect > 480.0f / 272.0f) x = (static_cast<int>(std::ceil((272.0f * aspect - 480.0f) / 2.0f)) + 7) / 8 * 8;
+    else if (aspect > 0.0f) y = (static_cast<int>(std::ceil((480.0f / aspect - 272.0f) / 2.0f)) + 7) / 8 * 8;
+    impl_->fill_aspect = x || y ? aspect : 0.0f;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(impl_->vk.gpu, &props);
+    const int largest = static_cast<int>(props.limits.maxImageDimension2D) / std::max(1, impl_->pending_scale);
+    impl_->fill_x = std::clamp(x, 0, std::max(0, (largest - 1024) / 2)) / 8 * 8;
+    impl_->fill_y = std::clamp(y, 0, std::max(0, (largest - kTargetHeight) / 2)) / 8 * 8;
+}
 
 VulkanGeRenderer::Output VulkanGeRenderer::finish_frame(std::uint32_t address, std::uint32_t stride, int format,
                                                        nx::vector<std::uint32_t>* capture) {

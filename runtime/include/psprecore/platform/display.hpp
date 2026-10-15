@@ -41,9 +41,12 @@ public:
     void set_background_handler(nx::unique_function<void(bool background)> handler);
     // Shows a frame of 32-bit RGBA pixels (row-major, `width` pixels per row).
     void present(const std::uint32_t* rgba, int width, int height);
-    // Shows the top-left width x height region of a GPU image (e.g. a GE render target). The image must be in
-    // TRANSFER_SRC_OPTIMAL layout and is left in it; work submitted earlier on the queue is ordered before.
-    void present_image(VkImage image, int width, int height);
+    // Shows the width x height region of a GPU image (e.g. a GE render target) whose top-left corner is (x, y). The
+    // image must be in TRANSFER_SRC_OPTIMAL layout and is left in it; work submitted earlier on the queue is
+    // ordered before.
+    void present_image(VkImage image, int width, int height, int x = 0, int y = 0);
+    // Width / height of the window's picture area (0 while minimised).
+    float aspect() const;
     const VulkanContext& vulkan() const;
     PadState pad() const;
 

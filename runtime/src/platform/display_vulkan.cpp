@@ -122,7 +122,7 @@ struct Display::Impl {
     ImGuiStyle ui_base_style;
     nx::unique_function<void()> ui;
     VkImage last_source = VK_NULL_HANDLE;  // the last presented frame, for present_again()
-    int last_w = 0, last_h = 0;
+    int last_x = 0, last_y = 0, last_w = 0, last_h = 0;
     VkSampler ui_sampler = VK_NULL_HANDLE;
     struct UiTexture {
         VkImage image;
@@ -144,7 +144,8 @@ struct Display::Impl {
     bool try_create_surface();
     void drop_surface();
     void present_failed(const char* what, VkResult r);
-    void blit_and_present(VkImage source, int width, int height, nx::function_ref<void(VkCommandBuffer)> prepare);
+    void blit_and_present(VkImage source, int x, int y, int width, int height,
+                          nx::function_ref<void(VkCommandBuffer)> prepare);
 };
 
 void Display::Impl::create_device() {
@@ -822,7 +823,7 @@ bool Display::Impl::begin_present() {
     return true;
 }
 
-void Display::Impl::blit_and_present(VkImage source, int width, int height,
+void Display::Impl::blit_and_present(VkImage source, int x, int y, int width, int height,
                                      nx::function_ref<void(VkCommandBuffer)> prepare) {
     std::uint32_t index = 0;
     // Anything but success leaves `acquired` unsignalled: submitting work that waits on it would never finish and
@@ -858,6 +859,8 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
         if (overlay->TotalVtxCount == 0) overlay = nullptr;
     }
     last_source = source;
+    last_x = x;
+    last_y = y;
     last_w = width;
     last_h = height;
     vkResetFences(device, 1, &fence);
@@ -887,7 +890,8 @@ void Display::Impl::blit_and_present(VkImage source, int width, int height,
     const int dx = (static_cast<int>(extent.width) - dw) / 2, dy = (static_cast<int>(extent.height) - dh) / 2;
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.srcOffsets[1] = {width, height, 1};
+    blit.srcOffsets[0] = {x, y, 0};
+    blit.srcOffsets[1] = {x + width, y + height, 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[0] = {dx, dy, 0};
     blit.dstOffsets[1] = {dx + dw, dy + dh, 1};
@@ -1002,7 +1006,7 @@ void Display::present(const std::uint32_t* rgba, int width, int height) {
     if (!d.begin_present()) return;
     d.ensure_frame_image(width, height);
     std::memcpy(d.staging_ptr, rgba, static_cast<std::size_t>(width) * height * 4);
-    d.blit_and_present(d.frame, width, height, [&](VkCommandBuffer cmd) {
+    d.blit_and_present(d.frame, 0, 0, width, height, [&](VkCommandBuffer cmd) {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -1025,10 +1029,15 @@ void Display::present(const std::uint32_t* rgba, int width, int height) {
     });
 }
 
-void Display::present_image(VkImage image, int width, int height) {
+void Display::present_image(VkImage image, int width, int height, int x, int y) {
     auto& d = *impl_;
     if (!d.begin_present()) return;
-    d.blit_and_present(image, width, height, {});
+    d.blit_and_present(image, x, y, width, height, {});
+}
+
+float Display::aspect() const {
+    const VkExtent2D e = impl_->extent;
+    return e.width && e.height ? static_cast<float>(e.width) / static_cast<float>(e.height) : 0.0f;
 }
 
 void Display::forget_last_image() { impl_->last_source = VK_NULL_HANDLE; }
@@ -1036,7 +1045,7 @@ void Display::forget_last_image() { impl_->last_source = VK_NULL_HANDLE; }
 bool Display::present_again() {
     auto& d = *impl_;
     if (!d.last_source || !d.begin_present()) return false;
-    d.blit_and_present(d.last_source, d.last_w, d.last_h, {});
+    d.blit_and_present(d.last_source, d.last_x, d.last_y, d.last_w, d.last_h, {});
     return true;
 }
 
