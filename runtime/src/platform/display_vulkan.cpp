@@ -1024,6 +1024,7 @@ void Display::present(const std::uint32_t* rgba, int width, int height) {
     if (!d.begin_present()) return;
     d.ensure_frame_image(width, height);
     std::memcpy(d.staging_ptr, rgba, static_cast<std::size_t>(width) * height * 4);
+    check(vmaFlushAllocation(d.allocator, d.staging_mem, 0, VK_WHOLE_SIZE), "flush display staging");
     d.blit_and_present(d.frame, 0, 0, width, height, [&](VkCommandBuffer cmd) {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1192,6 +1193,7 @@ std::uint64_t Display::create_texture(const std::uint32_t* rgba, int width, int 
     VmaAllocationInfo info;
     check(vmaCreateBuffer(d.allocator, &bci, &sai, &staging, &staging_mem, &info), "overlay staging buffer");
     std::memcpy(info.pMappedData, rgba, bytes);
+    check(vmaFlushAllocation(d.allocator, staging_mem, 0, bytes), "flush overlay staging");
 
     vkWaitForFences(d.device, 1, &d.fence, VK_TRUE, UINT64_MAX);
     vkResetCommandBuffer(d.cmd, 0);
